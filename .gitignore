@@ -1,0 +1,5 @@
+codex-app
+mygo-agent
+mygo-codex
+*.tmp
+.DS_Store
