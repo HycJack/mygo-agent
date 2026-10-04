@@ -17,7 +17,7 @@ type DiffLine struct {
 // unifiedDiff renders the change from old to new text as colored diff
 // lines: common head and tail become context, the middle is diffed
 // with a line-based longest common subsequence.
-func unifiedDiff(oldText, newText string) []DiffLine {
+func UnifiedDiff(oldText, newText string) []DiffLine {
 	a := strings.Split(strings.TrimRight(oldText, "\n"), "\n")
 	b := strings.Split(strings.TrimRight(newText, "\n"), "\n")
 
@@ -35,7 +35,7 @@ func unifiedDiff(oldText, newText string) []DiffLine {
 	}
 	midA, midB := a[:len(a)-tail], b[:len(b)-tail]
 
-	out = append(out, lcsDiff(midA, midB)...)
+	out = append(out, LcsDiff(midA, midB)...)
 	for k := len(a) - tail; k < len(a); k++ {
 		out = append(out, DiffLine{Kind: ' ', Text: a[k]})
 	}
@@ -44,7 +44,7 @@ func unifiedDiff(oldText, newText string) []DiffLine {
 
 // lcsDiff diffs two line slices with the classic DP, bounded: past the
 // cap it degrades to a wholesale replacement.
-func lcsDiff(a, b []string) []DiffLine {
+func LcsDiff(a, b []string) []DiffLine {
 	const maxLines = 1200
 	if len(a) > maxLines || len(b) > maxLines {
 		var out []DiffLine

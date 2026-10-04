@@ -83,6 +83,8 @@ func (a *app) dispatch(th *Thread, prompt string, at int) {
 	switch {
 	case a.backend == "builtin":
 		go a.runBuiltin(th, prompt, at)
+	case a.backend == "claude" && a.claudePath != "":
+		go a.runClaude(th, prompt, at)
 	case a.backend == "codex" && a.codexPath != "":
 		go a.runCodex(th, prompt, at)
 	default:

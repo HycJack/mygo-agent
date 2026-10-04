@@ -145,7 +145,7 @@ func editFileTool(workdir string) Tool {
 				return "", err
 			}
 			var b strings.Builder
-			for _, l := range unifiedDiff(in.OldText, in.NewText) {
+			for _, l := range UnifiedDiff(in.OldText, in.NewText) {
 				b.WriteByte(l.Kind)
 				b.WriteByte(' ')
 				b.WriteString(l.Text)

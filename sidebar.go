@@ -82,6 +82,11 @@ func (a *app) sidebar(c *ui.Context, top float32) {
 						a.backend = "demo"
 						a.saveConfig()
 					}
+					if a.menuItem(c, "Claude Code — runs the claude binary", a.backend == "claude") {
+						closeMenu()
+						a.backend = "claude"
+						a.saveConfig()
+					}
 					label := "Codex CLI — runs the codex binary"
 					if a.codexPath == "" {
 						label = "Codex CLI — not found in PATH"

@@ -16,7 +16,7 @@ import (
 func TestUnifiedDiff(t *testing.T) {
 	oldText := "alpha\nbeta\ngamma\ndelta\n"
 	newText := "alpha\nbeta\nGAMMA\ndelta\n"
-	lines := unifiedDiff(oldText, newText)
+	lines := UnifiedDiff(oldText, newText)
 	var del, add, ctx int
 	for _, l := range lines {
 		switch l.Kind {
@@ -54,7 +54,7 @@ func TestLcsDiffOversizedFallsBackToReplacement(t *testing.T) {
 		a[i] = "old line"
 		b[i] = "new line"
 	}
-	lines := lcsDiff(a, b)
+	lines := LcsDiff(a, b)
 	var del, add int
 	for _, l := range lines {
 		switch l.Kind {

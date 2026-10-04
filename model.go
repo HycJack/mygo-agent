@@ -57,6 +57,7 @@ type Thread struct {
 	Created   time.Time
 	Updated   time.Time
 	CodexID   string // codex exec session id, for resuming
+	ClaudeID  string // Claude Code session id, for resuming
 }
 
 // Project is a working directory the tasks run in.
@@ -132,6 +133,7 @@ type app struct {
 
 	workdir    string // the active project's path
 	codexPath  string
+	claudePath string
 	savePath   string
 	configPath string
 
@@ -210,6 +212,9 @@ func newApp() *app {
 	if p, err := exec.LookPath("codex"); err == nil {
 		a.codexPath = p
 	}
+	if p, err := exec.LookPath("claude"); err == nil {
+		a.claudePath = p
+	}
 	base, err := os.UserConfigDir()
 	if err != nil {
 		base, _ = os.UserHomeDir()
@@ -244,6 +249,14 @@ func (a *app) ensureDefaults() {
 		a.projects = []Project{{ID: "default", Path: a.workdir}}
 	}
 	a.activeProject = a.activeID()
+	for _, want := range []Provider{
+		{ID: "codex", Name: "Codex CLI", Models: slices.Clone(defaultModels)},
+		{ID: "claude", Name: "Claude Code", Models: []string{"claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"}},
+	} {
+		if a.providerByID(want.ID) == nil {
+			a.providers = append(a.providers, want)
+		}
+	}
 	if len(a.providers) == 0 {
 		a.providers = []Provider{{ID: "codex", Name: "Codex CLI", Models: slices.Clone(defaultModels)}}
 	}
