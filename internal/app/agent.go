@@ -3,14 +3,11 @@ package app
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"fmt"
 	"os"
 	"os/exec"
 	"strings"
 	"time"
-
-	"mygo-agent/internal/agent"
 )
 
 // send takes the draft, appends it to the thread, and starts the agent.
@@ -261,9 +258,7 @@ func (a *app) runCodex(th *Thread, prompt string, at int) {
 	}
 	a.codexPid = cmd.Process.Pid
 
-	// Block indexes by the event's item id, so updates find their card.
-	blocks := map[string]int{}
-	sawEvent := false
+	run := &codexRun{a: a, th: th, at: at, blocks: map[string]int{}}
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
 	for sc.Scan() {
@@ -271,41 +266,9 @@ func (a *app) runCodex(th *Thread, prompt string, at int) {
 		if line == "" {
 			continue
 		}
-		var ev codexEvent
-		if json.Unmarshal([]byte(line), &ev) != nil {
-			continue
-		}
-		sawEvent = true
-		switch {
-		case ev.Type == "thread.started" && ev.ThreadID != "":
-			id := ev.ThreadID
-			a.update(func() {
-				th.CodexID = id
-				a.save()
-			})
-		case strings.HasSuffix(ev.Type, ".delta") && ev.Delta != "":
-			delta := ev.Delta
-			a.update(func() {
-				if m := reply(th, at); m != nil {
-					m.Text += delta
-				}
-			})
-		case ev.Item != nil:
-			a.codexItem(th, at, ev, blocks)
-		case ev.Type == "error" || ev.Type == "turn.failed":
-			msg := ev.Message
-			if msg == "" {
-				msg = "The agent failed."
-			}
-			a.update(func() {
-				if m := reply(th, at); m != nil {
-					m.Blocks = append(m.Blocks, Block{Type: "error", Text: msg})
-				}
-			})
-		case ev.Type == "turn.completed" || ev.Type == "thread.completed":
-			// The reply is complete; keep reading for more events.
-		}
+		run.handle(line)
 	}
+	sawEvent := run.sawEvent
 	waitErr := cmd.Wait()
 	errText := ""
 	if ctx.Err() != nil {
@@ -320,102 +283,6 @@ func (a *app) runCodex(th *Thread, prompt string, at int) {
 		}
 	}
 	a.finish(th, at, errText)
-}
-
-// codexItem maps one item.started/updated/completed event to a card.
-func (a *app) codexItem(th *Thread, at int, ev codexEvent, blocks map[string]int) {
-	id := ev.Item.ID
-	it := ev.Item
-	switch it.Type {
-	case "command_execution":
-		a.update(func() {
-			m := reply(th, at)
-			if m == nil {
-				return
-			}
-			bi, ok := blocks[id]
-			if !ok {
-				m.Blocks = append(m.Blocks, Block{Type: "command", Text: it.Command, Running: true, Exit: -1})
-				blocks[id] = len(m.Blocks) - 1
-				bi = blocks[id]
-			}
-			b := &m.Blocks[bi]
-			b.Text = it.Command
-			if it.AggregatedOutput != "" {
-				b.Output = it.AggregatedOutput
-			}
-			if it.ExitCode != nil {
-				b.Exit = *it.ExitCode
-			}
-			if it.Status != "in_progress" {
-				b.Running = false
-				if b.Exit == -1 {
-					b.Exit = 0
-				}
-			}
-		})
-	case "file_change":
-		a.update(func() {
-			m := reply(th, at)
-			if m == nil {
-				return
-			}
-			bi, ok := blocks[id]
-			if !ok {
-				m.Blocks = append(m.Blocks, Block{Type: "diff"})
-				blocks[id] = len(m.Blocks) - 1
-				bi = blocks[id]
-			}
-			b := &m.Blocks[bi]
-			b.Type = "diff"
-			b.Open = true
-			if len(it.Changes) > 0 {
-				var paths []string
-				for _, ch := range it.Changes {
-					paths = append(paths, ch.Path)
-				}
-				b.File = strings.Join(paths, ", ")
-			}
-			if it.Diff != "" {
-				b.Lines = agent.ParseUnifiedDiff(it.Diff)
-				for _, l := range b.Lines {
-					switch l.Kind {
-					case '+':
-						b.Add++
-					case '-':
-						b.Del++
-					}
-				}
-			}
-		})
-	case "agent_message":
-		text := it.Text
-		a.update(func() {
-			if m := reply(th, at); m != nil && text != "" {
-				m.Text = text
-			}
-		})
-	case "reasoning":
-		text := it.Text
-		if text == "" && len(it.Summary) > 0 {
-			text = strings.Join(it.Summary, " ")
-		}
-		if text == "" {
-			return
-		}
-		a.update(func() {
-			if m := reply(th, at); m != nil {
-				m.Blocks = append(m.Blocks, Block{Type: "reasoning", Text: text})
-			}
-		})
-	case "error":
-		text := it.Text
-		a.update(func() {
-			if m := reply(th, at); m != nil && text != "" {
-				m.Blocks = append(m.Blocks, Block{Type: "error", Text: text})
-			}
-		})
-	}
 }
 
 // codexEvent is one JSONL line of codex exec --json; only the fields the

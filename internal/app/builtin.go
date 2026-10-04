@@ -87,6 +87,7 @@ func (a *app) runBuiltin(th *Thread, prompt string, at int) {
 		SystemPrompt:    builtinSystemPrompt(a.workdir, skills),
 		Tools:           tools,
 		MaxTurns:        a.maxTurns,
+		MaxMessages:     a.maxTurns*6 + 12,
 		OnEvent: func(e agent.Event) {
 			switch e.Kind {
 			case "text":

@@ -29,6 +29,7 @@ type LoopConfig struct {
 	SystemPrompt    string
 	Tools           []Tool
 	MaxTurns        int
+	MaxMessages     int // compact the transcript past this many messages
 	OnEvent         func(Event)
 }
 
@@ -63,6 +64,7 @@ func Run(ctx context.Context, cfg LoopConfig, history []ChatMessage) ([]ChatMess
 		if ctx.Err() != nil {
 			return messages, ctx.Err()
 		}
+		messages = CompactHistory(messages, cfg.MaxMessages)
 		scfg := StreamConfig{
 			BaseURL:         cfg.BaseURL,
 			APIKey:          cfg.APIKey,
@@ -217,4 +219,32 @@ func TrimOutput(s string, max int) string {
 		return s
 	}
 	return s[:max] + "\n… output truncated …"
+}
+
+// CompactHistory folds old tool exchanges once the transcript outgrows
+// maxMessages: the system prompt, the first user message and the most
+// recent turns survive, everything between is dropped at a clean turn
+// boundary (a user message). Long tasks keep running instead of
+// overflowing the model's context window.
+func CompactHistory(msgs []ChatMessage, maxMessages int) []ChatMessage {
+	if maxMessages <= 0 || len(msgs) <= maxMessages {
+		return msgs
+	}
+	head := 0
+	for head < len(msgs) && msgs[head].Role == "system" {
+		head++
+	}
+	keepFrom := len(msgs) - (maxMessages - head)
+	// The kept window must start on a user turn, never on a tool
+	// result whose call it answers.
+	for keepFrom > head && msgs[keepFrom].Role != "user" {
+		keepFrom--
+	}
+	if keepFrom <= head {
+		return msgs
+	}
+	out := make([]ChatMessage, 0, maxMessages)
+	out = append(out, msgs[:head]...)
+	out = append(out, msgs[keepFrom:]...)
+	return out
 }

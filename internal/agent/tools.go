@@ -9,6 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"slices"
 	"strings"
 	"time"
@@ -53,7 +54,12 @@ func bashTool(workdir string) Tool {
 			}
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, "bash", "-c", in.Command)
+			shell, flag := "bash", "-c"
+			if runtime.GOOS == "windows" {
+				shell, flag = "powershell", "-NoProfile -Command"
+			}
+			argv := append(strings.Fields(flag), in.Command)
+			cmd := exec.CommandContext(ctx, shell, argv...)
 			cmd.Dir = workdir
 			out, err := cmd.CombinedOutput()
 			res := TrimOutput(string(out), 32<<10)
