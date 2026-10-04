@@ -137,6 +137,8 @@ type app struct {
 	savePath   string
 	configPath string
 
+	claudePid int // the running claude CLI process, for the stop test
+
 	term       *terminal.Terminal
 	termOpen   bool
 	termHeight float32

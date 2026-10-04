@@ -33,6 +33,7 @@ func (a *app) runClaude(th *Thread, prompt string, at int) {
 
 	cmd := exec.CommandContext(ctx, a.claudePath, args...)
 	cmd.Dir = a.workdir
+	claudeProcAttr(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		a.finish(th, at, "claude: "+err.Error())
@@ -44,6 +45,7 @@ func (a *app) runClaude(th *Thread, prompt string, at int) {
 		a.finish(th, at, "claude: "+err.Error())
 		return
 	}
+	a.claudePid = cmd.Process.Pid
 
 	r := &claudeRun{a: a, th: th, at: at, cards: map[string]int{}}
 	sc := bufio.NewScanner(stdout)
