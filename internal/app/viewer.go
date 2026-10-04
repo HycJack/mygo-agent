@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"bytes"
@@ -8,6 +8,8 @@ import (
 	"strings"
 
 	"github.com/egoist/mygo"
+	"mygo-agent/internal/agent"
+
 	"github.com/egoist/mygo/ui"
 )
 
@@ -68,8 +70,8 @@ func (a *app) openFile(path string) {
 	case markdownExts[ext]:
 		a.viewer = viewerState{Path: path, Kind: "markdown", Title: base, Raw: text, Text: text, Sub: humanBytes(int64(len(data)))}
 	case diffExts[ext]:
-		lines := parseUnifiedDiff(text)
-		add, del := diffStats(lines)
+		lines := agent.ParseUnifiedDiff(text)
+		add, del := agent.DiffStats(lines)
 		a.viewer = viewerState{Path: path, Kind: "diff", Title: base, Lines: lines, Raw: text, Sub: sprintStats(add, del)}
 	default:
 		lines := strings.Split(strings.TrimRight(text, "\n"), "\n")

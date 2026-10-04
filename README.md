@@ -37,20 +37,18 @@ A Codex-style desktop AI coding agent built with [MyGo](https://github.com/egois
 ## Layout
 
 ```
-main.go               entry, window, version, packaging hooks
-model.go              app state, threads, persistence, projects
-view.go sidebar.go    shell: header, panels, task list
-thread.go composer.go message rendering, mini-markdown, composer
-viewer.go workspace.go file viewer, file tree, git status/diff
-rail.go               the message anchor rail
-diff.go builtin.go    word-level diffs, the built-in backend runner
-claude.go             the Claude Code CLI backend
-settings.go           providers, API keys, models, MCP servers
-theme.go              the dark Codex palette and icons
+main.go               entry only: flags, version, starting the app
+internal/app          the application: state, four backends, all views
+  model.go threads.go projects.go      state, persistence, projects
+  view.go sidebar.go thread.go         shell, task list, messages
+  composer.go viewer.go workspace.go   composer, file viewer, panels
+  builtin.go claude.go                 built-in and Claude Code runners
+  settings.go rail.go theme.go         settings, anchor rail, palette
 internal/agent        the agent loop: streaming clients (chat +
                       responses), tools, skills, MCP, diffs
 internal/config       persisted configuration
 internal/components   reusable UI pieces (anchor rail, formatters)
+packaging/            macOS Info.plist for the .app bundles
 ```
 
 ## Build

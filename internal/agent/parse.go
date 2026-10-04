@@ -1,19 +1,11 @@
-package main
+package agent
 
-import (
-	"strings"
+import "strings"
 
-	"mygo-agent/internal/agent"
-)
-
-// DiffLine is the agent package's diff line; the app renders it with
-// hunk headers and word-level marks.
-type DiffLine = agent.DiffLine
-
-// parseUnifiedDiff turns a unified diff into colored lines, keeping hunk
-// headers as '@' lines and marking the word-level change of each
+// ParseUnifiedDiff turns a unified diff into colored lines, keeping
+// hunk headers as '@' lines and marking the word-level change of each
 // replaced pair of lines.
-func parseUnifiedDiff(diff string) []DiffLine {
+func ParseUnifiedDiff(diff string) []DiffLine {
 	var lines []DiffLine
 	for _, line := range strings.Split(strings.TrimRight(diff, "\n"), "\n") {
 		switch {
@@ -34,14 +26,14 @@ func parseUnifiedDiff(diff string) []DiffLine {
 			lines = append(lines, DiffLine{Kind: kind, Text: line})
 		}
 	}
-	markWordDiff(lines)
+	MarkWordDiff(lines)
 	return lines
 }
 
-// markWordDiff pairs each run of removed lines with the run of added
+// MarkWordDiff pairs each run of removed lines with the run of added
 // lines that follows and marks the changed middle of each pair, so the
 // renderer can highlight just what changed, as godiff does.
-func markWordDiff(lines []DiffLine) {
+func MarkWordDiff(lines []DiffLine) {
 	for i := 0; i < len(lines); {
 		if lines[i].Kind != '-' {
 			i++
@@ -92,7 +84,7 @@ func markPair(del, add *DiffLine) {
 }
 
 // diffStats counts the added and removed lines of a diff.
-func diffStats(lines []DiffLine) (add, del int) {
+func DiffStats(lines []DiffLine) (add, del int) {
 	for _, l := range lines {
 		switch l.Kind {
 		case '+':

@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"bytes"
@@ -9,6 +9,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"mygo-agent/internal/agent"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -313,8 +315,8 @@ func (a *app) openGitDiff(ch gitChange) {
 				text = "@@ no unstaged or staged diff for " + ch.Path + "\n"
 			}
 		}
-		lines := parseUnifiedDiff(text)
-		add, del := diffStats(lines)
+		lines := agent.ParseUnifiedDiff(text)
+		add, del := agent.DiffStats(lines)
 		a.update(func() {
 			a.viewer.Lines = lines
 			a.viewer.Raw = text

@@ -34,20 +34,18 @@
 ## 目录结构
 
 ```
-main.go               入口、窗口、版本号、打包钩子
-model.go              应用状态、任务、持久化、项目
-view.go sidebar.go    外壳：标题栏、面板、任务列表
-thread.go composer.go 消息渲染、迷你 Markdown、输入框
-viewer.go workspace.go 文件查看器、文件树、git 状态/diff
-rail.go               消息锚点轨
-diff.go builtin.go    词级 diff、内置后端运行器
-claude.go             Claude Code CLI 后端
-settings.go           厂商、API key、模型、MCP 服务器
-theme.go              Codex 深色调色板与图标
+main.go               仅入口：参数、版本号、启动应用
+internal/app          应用本体：状态、四种后端、全部界面
+  model.go threads.go projects.go      状态、持久化、项目
+  view.go sidebar.go thread.go         外壳、任务列表、消息
+  composer.go viewer.go workspace.go   输入框、文件查看器、面板
+  builtin.go claude.go                 内置 agent 与 Claude Code 运行器
+  settings.go rail.go theme.go         设置、锚点轨、调色板
 internal/agent        agent 循环：流式客户端（chat + responses）、
                       工具、技能、MCP、diff
 internal/config       持久化配置
 internal/components   可复用 UI 组件（锚点轨、格式化）
+packaging/            macOS .app 的 Info.plist
 ```
 
 ## 构建

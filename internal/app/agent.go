@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"bufio"
@@ -9,6 +9,8 @@ import (
 	"os/exec"
 	"strings"
 	"time"
+
+	"mygo-agent/internal/agent"
 )
 
 // send takes the draft, appends it to the thread, and starts the agent.
@@ -362,7 +364,7 @@ func (a *app) codexItem(th *Thread, at int, ev codexEvent, blocks map[string]int
 				b.File = strings.Join(paths, ", ")
 			}
 			if it.Diff != "" {
-				b.Lines = parseUnifiedDiff(it.Diff)
+				b.Lines = agent.ParseUnifiedDiff(it.Diff)
 				for _, l := range b.Lines {
 					switch l.Kind {
 					case '+':

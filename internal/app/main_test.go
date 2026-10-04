@@ -1,4 +1,4 @@
-package main
+package app
 
 import (
 	"os"
@@ -311,7 +311,7 @@ func TestMarkdownSpans(t *testing.T) {
 }
 
 func TestUnifiedDiffParsing(t *testing.T) {
-	lines := parseUnifiedDiff("diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n@@ -1,3 +1,3 @@\n context\n-removed\n+added")
+	lines := agent.ParseUnifiedDiff("diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n@@ -1,3 +1,3 @@\n context\n-removed\n+added")
 	if len(lines) != 4 || lines[0].Kind != '@' {
 		t.Fatalf("got %d lines: %v", len(lines), lines)
 	}
@@ -321,7 +321,7 @@ func TestUnifiedDiffParsing(t *testing.T) {
 	if lines[2].Text != "removed" || lines[3].Text != "added" {
 		t.Fatalf("texts: %q %q", lines[2].Text, lines[3].Text)
 	}
-	add, del := diffStats(lines)
+	add, del := agent.DiffStats(lines)
 	if add != 1 || del != 1 {
 		t.Fatalf("stats: +%d −%d", add, del)
 	}
@@ -329,7 +329,7 @@ func TestUnifiedDiffParsing(t *testing.T) {
 
 func TestWordDiffMarks(t *testing.T) {
 	// "return old value" → "return new value": the middle word changed.
-	lines := parseUnifiedDiff("-return oldValue\n+return newValue\n context")
+	lines := agent.ParseUnifiedDiff("-return oldValue\n+return newValue\n context")
 	del, add := lines[0], lines[1]
 	if del.MarkHi <= del.MarkLo || add.MarkHi <= add.MarkLo {
 		t.Fatalf("no word marks: %+v %+v", del, add)
@@ -345,7 +345,7 @@ func TestWordDiffMarks(t *testing.T) {
 		t.Fatalf("add mark %q", string(a[add.MarkLo:add.MarkHi]))
 	}
 	// Whole-line rewrites get no mark; the row tint is enough.
-	lines = parseUnifiedDiff("-completely different\n+totally other things")
+	lines = agent.ParseUnifiedDiff("-completely different\n+totally other things")
 	if lines[0].MarkHi > lines[0].MarkLo {
 		t.Fatalf("unexpected mark on a rewrite: %+v", lines[0])
 	}
