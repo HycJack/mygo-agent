@@ -22,7 +22,6 @@ type Colors struct {
 type RailItem struct {
 	ID      any    // stable identity across frames
 	Preview string // a few lines of the message, shown in the hover card
-	Kind    string // "user" for the user's own messages, else the agent's
 	Active  bool   // the message at the top of the viewport right now
 }
 
@@ -44,18 +43,20 @@ func AnchorRail(c *ui.Context, items []RailItem, colors Colors, onJump func(item
 			it := it
 			ui.Row(c).Key(it.ID).AlignItems(ui.Center).Children(func() {
 				label := "Jump to: " + FirstLine(it.Preview)
-				// The dash itself: longer messages draw longer dashes;
-				// the message at the top of the viewport is brightest.
-				dash := ui.Box(c).Height(3).Radius(2).Cursor(ui.CursorPointer).Label(label)
+				// Every dash is the same length and colour; only the
+				// message at the top of the viewport is highlighted, and
+				// hovering brightens a dash while its preview is open.
+				// ButtonBase keeps the hit area honest.
+				dash := ui.ButtonBase(c).Label(label).Tooltip(label).
+					Width(20).Height(3).Radius(2).Cursor(ui.CursorPointer)
 				switch {
 				case it.Active:
-					dash.Width(34).Background(colors.Active)
-				case it.Kind == "user":
-					dash.Width(26).Background(colors.TextMuted)
+					dash.Width(34).Background(colors.Text)
+				case dash.Hovered():
+					dash.Background(colors.TextMuted)
 				default:
-					dash.Width(18).Background(colors.Border)
+					dash.Background(colors.Border)
 				}
-				dash.Focusable()
 				// The preview card opens while the dash is hovered and
 				// closes when the pointer leaves; the open state rides
 				// on the element itself.

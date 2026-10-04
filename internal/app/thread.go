@@ -42,7 +42,7 @@ func (a *app) messages(c *ui.Context, th *Thread) {
 		first, _ := st.Visible()
 		for i := range th.Messages {
 			m := &th.Messages[i]
-			items[i] = components.RailItem{ID: m.ID, Preview: railPreview(m), Kind: m.Role, Active: i == first}
+			items[i] = components.RailItem{ID: m.ID, Preview: railPreview(m), Active: i == first}
 		}
 		components.AnchorRail(c, items, components.Colors{
 			Active:    a.pal.Text,

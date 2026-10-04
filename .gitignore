@@ -1,5 +1,9 @@
-codex-app
+# build outputs
+dist/
 mygo-agent
-mygo-codex
+mygo-agent.exe
+codex-app
 *.tmp
+
+# OS
 .DS_Store

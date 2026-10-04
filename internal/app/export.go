@@ -24,19 +24,21 @@ func New(version string) *App {
 // view, and the initial git refresh.
 func (a *app) Setup() {
 	a.applyEnv()
-	a.win = mygo.NewWindow(mygo.WindowOptions{
-		Title:         "Codex",
-		Width:         1240,
-		Height:        800,
-		MinWidth:      880,
-		MinHeight:     560,
-		TitleBarStyle: mygo.TitleBarHiddenInset,
-		StateKey:      "codex-main",
-		Content:       ui.View(a.view),
+	mygo.App.WhenReady(func() {
+		a.win = mygo.NewWindow(mygo.WindowOptions{
+			Title:         "Codex",
+			Width:         1240,
+			Height:        800,
+			MinWidth:      880,
+			MinHeight:     560,
+			TitleBarStyle: mygo.TitleBarHiddenInset,
+			StateKey:      "codex-main",
+			Content:       ui.View(a.view),
+		})
+		if shot := os.Getenv("CODEX_SHOT"); shot != "" {
+			a.captureShot(shot)
+		}
 	})
-	if shot := os.Getenv("CODEX_SHOT"); shot != "" {
-		a.captureShot(shot)
-	}
 	a.refreshGit()
 }
 
