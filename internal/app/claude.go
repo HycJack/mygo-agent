@@ -5,9 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
-	"sort"
+	"slices"
 	"strings"
 
 	"mygo-agent/internal/agent"
@@ -323,11 +324,7 @@ func shortArgs(raw json.RawMessage) string {
 		}
 		return s
 	}
-	keys := make([]string, 0, len(in))
-	for k := range in {
-		keys = append(keys, k)
-	}
-	sort.Strings(keys)
+	keys := slices.Sorted(maps.Keys(in))
 	var parts []string
 	for _, k := range keys {
 		if s, ok := in[k].(string); ok {

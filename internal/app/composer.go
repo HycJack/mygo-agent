@@ -118,7 +118,6 @@ func (a *app) modelButton(c *ui.Context) {
 						ui.Textf(c, "%s", p.Name).FontSize(10).FontWeight(600).TextColor(a.pal.TextMuted).
 							Padding(8, 10, 2).LetterSpacing(0.4)
 						for _, m := range p.Models {
-							m := m
 							active := a.providerID == p.ID && a.model == m
 							row := ui.ButtonBase(c).Padding(6, 10).Radius(7).Gap(8).Cursor(ui.CursorPointer)
 							if row.Hovered() {

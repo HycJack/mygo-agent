@@ -59,7 +59,7 @@ func skillRoots(projectDir string) []string {
 	var roots []string
 	// Walk up from the project to its repository root for .agents/skills.
 	dir := projectDir
-	for i := 0; i < 8; i++ {
+	for range 8 {
 		roots = append(roots, filepath.Join(dir, ".agents", "skills"))
 		if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
 			break

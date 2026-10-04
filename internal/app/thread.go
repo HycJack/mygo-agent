@@ -534,7 +534,7 @@ func splitFences(src string) []fencePart {
 			buf = nil
 		}
 	}
-	for _, line := range strings.Split(src, "\n") {
+	for line := range strings.SplitSeq(src, "\n") {
 		trimmed := strings.TrimSpace(line)
 		if strings.HasPrefix(trimmed, "```") {
 			flush()

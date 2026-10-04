@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -301,11 +302,7 @@ func (a *app) effectiveMCPServers() []agent.MCPServer {
 	if json.Unmarshal(data, &f) != nil {
 		return out
 	}
-	names := make([]string, 0, len(f.MCPServers))
-	for name := range f.MCPServers {
-		names = append(names, name)
-	}
-	slices.Sort(names)
+	names := slices.Sorted(maps.Keys(f.MCPServers))
 	for _, name := range names {
 		srv := f.MCPServers[name]
 		dup := false

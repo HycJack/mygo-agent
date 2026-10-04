@@ -40,7 +40,6 @@ func AnchorRail(c *ui.Context, items []RailItem, colors Colors, onJump func(item
 	rail := ui.Column(c).Width(30).PaddingY(18).Gap(7).AlignItems(ui.Center)
 	rail.Children(func() {
 		for i, it := range items {
-			it := it
 			ui.Row(c).Key(it.ID).AlignItems(ui.Center).Children(func() {
 				label := "Jump to: " + FirstLine(it.Preview)
 				// Every dash is the same length and colour; only the

@@ -14,7 +14,6 @@ import (
 	"io"
 	"net/http"
 	"strings"
-	"time"
 )
 
 // ChatMessage is one message of the OpenAI chat transcript.
@@ -249,8 +248,3 @@ func streamChatCompletions(ctx context.Context, cfg StreamConfig, onText func(de
 	}
 	return res, nil
 }
-
-// httpClientTimeout is the budget for one whole streaming call.
-const httpClientTimeout = 10 * time.Minute
-
-var _ = httpClientTimeout
