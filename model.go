@@ -197,7 +197,7 @@ func newApp() *app {
 		backend:       "demo",
 		termHeight:    260,
 		navOpen:       true,
-		wsOpen:        true,
+		wsOpen:        false,
 		focusComposer: true,
 	}
 	a.workdir, _ = os.Getwd()

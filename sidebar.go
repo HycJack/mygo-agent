@@ -15,11 +15,10 @@ func (a *app) sidebar(c *ui.Context, top float32) {
 	t := c.Theme()
 	ui.Column(c).Width(264).Shrink(0).Background(a.pal.SidebarBG).
 		BorderWidth(0, 1, 0, 0).BorderColor(a.pal.Border).Children(func() {
-		// The strip the window controls sit over, which drags the window.
-		ui.Row(c).Height(top + 2).PaddingX(16).DragWindow().AlignItems(ui.Center).Gap(8).Children(func() {
-			logo := ui.Box(c).Size(20, 20).Radius(6).Background(a.pal.Text).Center()
-			logo.Children(func() { ui.Icon(c, icSparkles).FontSize(12).TextColor(a.pal.AccentSub) })
-			ui.Text(c, "Codex").FontSize(13).Bold()
+		// The strip the window controls sit over, which drags the
+		// window. No branding here: the macOS traffic lights own this
+		// corner.
+		ui.Row(c).Height(top + 2).PaddingX(16).DragWindow().AlignItems(ui.Center).Children(func() {
 			ui.Spacer(c)
 			ui.Text(c, a.version).FontSize(10).TextColor(a.pal.TextMuted)
 		})
