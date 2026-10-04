@@ -14,13 +14,21 @@ func (a *app) messages(c *ui.Context, th *Thread) {
 	st := a.listState(th.ID)
 	st.Key = func(i int) any { return th.Messages[i].ID }
 	st.FollowEnd = true
-	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
+	ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
+		// The anchor rail: one dash per message, hover previews it,
+		// click jumps to it.
+		items := make([]RailItem, len(th.Messages))
+		first, _ := st.Visible()
+		for i := range th.Messages {
+			m := &th.Messages[i]
+			items[i] = RailItem{ID: m.ID, Preview: railPreview(m), Kind: m.Role, Active: i == first}
+		}
+		MessageAnchorRail(c, items, func(it RailItem, index int) {
+			st.ScrollTo(index, ui.Start)
+		})
 		ui.List(c, st, len(th.Messages), func(i int) {
 			a.messageRow(c, th, i)
 		}).Grow(1).MinHeight(0).Justify(ui.End).Gap(20).Padding(24, 44, 16)
-		// The anchor rail: one dot per message, hover previews it,
-		// click jumps to it.
-		a.messageRail(c, th, st)
 	})
 }
 
@@ -552,63 +560,4 @@ func (a *app) codeCard(c *ui.Context, p fencePart) {
 				Padding(10, 12).NoWrap()
 		})
 	})
-}
-
-// messageRail is the slim column on the right of the thread: one dot
-// per message — accent for the user's, grey for the agent's — whose
-// tooltip previews the message and whose click scrolls it into view.
-func (a *app) messageRail(c *ui.Context, th *Thread, st *ui.ListState) {
-	t := c.Theme()
-	n := len(th.Messages)
-	if n == 0 {
-		return
-	}
-	stride := 1
-	if n > 36 {
-		stride = (n + 35) / 36
-	}
-	rail := ui.Column(c).Width(20).PaddingY(16).Gap(7).AlignItems(ui.Center)
-	rail.Children(func() {
-		for i := 0; i < n; i += stride {
-			i := i
-			m := &th.Messages[i]
-			preview := a.previewOf(m)
-			dot := ui.ButtonBase(c).Label("Jump to: "+preview).Tooltip("Jump to: "+preview).
-				Size(8, 8).Radius(4).Center().Cursor(ui.CursorPointer)
-			if m.Role == "user" {
-				dot.Background(t.Text)
-			} else {
-				dot.Background(t.Border)
-			}
-			if dot.Hovered() {
-				dot.Background(t.TextMuted)
-			}
-			if dot.Clicked() {
-				st.ScrollTo(i, ui.Start)
-			}
-		}
-		ui.Spacer(c)
-	})
-}
-
-// previewOf boils a message down to one line for the rail's tooltip.
-func (a *app) previewOf(m *Message) string {
-	if s := strings.TrimSpace(m.Text); s != "" {
-		first := s
-		if i := strings.IndexByte(first, '\n'); i >= 0 {
-			first = first[:i]
-		}
-		return truncTitle(first, 80)
-	}
-	for _, b := range m.Blocks {
-		switch b.Type {
-		case "command":
-			return truncTitle("$ "+b.Text, 80)
-		case "diff":
-			return truncTitle("edited "+b.File, 80)
-		case "error":
-			return truncTitle(b.Text, 80)
-		}
-	}
-	return "message"
 }
