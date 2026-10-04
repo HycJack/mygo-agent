@@ -48,6 +48,10 @@ type Message struct {
 	Blocks  []Block
 	Running bool
 	At      time.Time
+
+	// LogAt marks where this assistant turn begins in the thread's
+	// ChatLog, so regenerate can rewind it.
+	LogAt int
 }
 
 // Thread is one Codex task, belonging to a project.
@@ -60,6 +64,11 @@ type Thread struct {
 	Updated   time.Time
 	CodexID   string // codex exec session id, for resuming
 	ClaudeID  string // Claude Code session id, for resuming
+
+	// ChatLog is the built-in backend's full transcript, including the
+	// tool round-trips, so a task survives app restarts with context
+	// intact.
+	ChatLog []agent.ChatMessage `json:"chat_log,omitempty"`
 }
 
 // fsNode is one entry of the workspace file tree.
@@ -131,6 +140,7 @@ type app struct {
 	configPath string
 
 	claudePid int // the running claude CLI process, for the stop test
+	codexPid  int // the running codex CLI process
 
 	term       *terminal.Terminal
 	termOpen   bool

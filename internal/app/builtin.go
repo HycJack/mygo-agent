@@ -174,10 +174,29 @@ func (a *app) runBuiltin(th *Thread, prompt string, at int) {
 		},
 	}
 
-	history := a.builtinHistory(th, prompt, at)
-	_, err := agent.Run(ctx, cfg, history)
+	// The ChatLog carries the full transcript across turns and app
+	// restarts. First builtin turn: seed it from the thread's visible
+	// messages; later turns: just add the new user prompt.
+	if th.ChatLog == nil {
+		th.ChatLog = a.seedChatLog(th, at, prompt)
+	} else if prompt != "" {
+		th.ChatLog = append(th.ChatLog, agent.ChatMessage{Role: "user", Content: prompt})
+	}
+	logAt := len(th.ChatLog)
+	a.update(func() {
+		if m := reply(th, at); m != nil {
+			m.LogAt = logAt
+		}
+	})
+
+	transcript, err := agent.Run(ctx, cfg, th.ChatLog)
 	close(done)
 	flush()
+	a.update(func() {
+		if m := reply(th, at); m != nil {
+			th.ChatLog = transcript
+		}
+	})
 	errText := ""
 	if err != nil && ctx.Err() == nil && !errors.Is(err, agent.ErrTurnLimit) {
 		// The turn limit already announced itself as a notice.
@@ -196,32 +215,6 @@ func (a *app) connectMCP(ctx context.Context) []*agent.ServerClient {
 		}
 	}
 	return clients
-}
-
-// builtinHistory builds the chat transcript: the system prompt, the
-// thread's earlier turns, then the new prompt.
-func (a *app) builtinHistory(th *Thread, prompt string, at int) []agent.ChatMessage {
-	skills := agent.DiscoverSkills(a.workdir)
-	msgs := []agent.ChatMessage{{
-		Role: "system",
-		Content: builtinSystemPrompt(a.workdir, skills) +
-			"\n\nAnswer in the user's language. " +
-			"When you have the result, summarise what you did and stop; do not call tools without a reason.",
-	}}
-	for i, m := range th.Messages {
-		if i >= at {
-			break
-		}
-		switch m.Role {
-		case "user":
-			msgs = append(msgs, agent.ChatMessage{Role: "user", Content: m.Text})
-		case "assistant":
-			if strings.TrimSpace(m.Text) != "" {
-				msgs = append(msgs, agent.ChatMessage{Role: "assistant", Content: m.Text})
-			}
-		}
-	}
-	return msgs
 }
 
 // builtinSystemPrompt describes the agent, its project and its skills.
@@ -297,4 +290,33 @@ func parseToolDiff(out string) []DiffLine {
 		}
 	}
 	return lines
+}
+
+// seedChatLog builds a fresh transcript from the thread's visible
+// messages plus the new prompt: system, prior user/assistant texts,
+// then the prompt. Tool round-trips from earlier app sessions are not
+// carried over.
+func (a *app) seedChatLog(th *Thread, at int, prompt string) []agent.ChatMessage {
+	msgs := []agent.ChatMessage{{
+		Role: "system",
+		Content: builtinSystemPrompt(a.workdir, agent.DiscoverSkills(a.workdir)) +
+			"\n\nAnswer in the user's language. When you have the result, summarise what you did and stop; do not call tools without a reason.",
+	}}
+	for i, m := range th.Messages {
+		if i >= at-1 {
+			break
+		}
+		switch m.Role {
+		case "user":
+			msgs = append(msgs, agent.ChatMessage{Role: "user", Content: m.Text})
+		case "assistant":
+			if strings.TrimSpace(m.Text) != "" {
+				msgs = append(msgs, agent.ChatMessage{Role: "assistant", Content: m.Text})
+			}
+		}
+	}
+	if prompt != "" {
+		msgs = append(msgs, agent.ChatMessage{Role: "user", Content: prompt})
+	}
+	return msgs
 }

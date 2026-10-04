@@ -36,7 +36,8 @@ func (a *app) resend(th *Thread, text string) {
 }
 
 // regenerate drops the thread's last assistant reply and runs the same
-// turn again.
+// turn again. The built-in backend rewinds its ChatLog to where the
+// turn started, so the retry sees the same history.
 func (a *app) regenerate(th *Thread) {
 	if a.running || len(th.Messages) == 0 {
 		return
@@ -44,6 +45,8 @@ func (a *app) regenerate(th *Thread) {
 	if th.Messages[len(th.Messages)-1].Role != "assistant" {
 		return
 	}
+	last := th.Messages[len(th.Messages)-1]
+	logAt := last.LogAt
 	th.Messages = th.Messages[:len(th.Messages)-1]
 	prompt := ""
 	for i := len(th.Messages) - 1; i >= 0; i-- {
@@ -52,11 +55,19 @@ func (a *app) regenerate(th *Thread) {
 			break
 		}
 	}
+	if a.backend == "builtin" {
+		th.ChatLog = th.ChatLog[:min(int(logAt), len(th.ChatLog))]
+	}
 	now := time.Now()
-	th.Messages = append(th.Messages, Message{ID: uid(), Role: "assistant", Running: true, At: now})
+	th.Messages = append(th.Messages, Message{ID: uid(), Role: "assistant", Running: true, At: now, LogAt: logAt})
 	a.running = true
 	a.save()
 	at := len(th.Messages) - 1
+	if a.backend == "builtin" {
+		// No new user turn: the transcript already holds it.
+		go a.runBuiltin(th, "", at)
+		return
+	}
 	a.dispatch(th, prompt, at)
 }
 
@@ -235,6 +246,7 @@ func (a *app) runCodex(th *Thread, prompt string, at int) {
 
 	cmd := exec.CommandContext(ctx, a.codexPath, args...)
 	cmd.Dir = a.workdir
+	procGroupAttr(cmd)
 	cmd.Env = cmdEnv
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
@@ -247,6 +259,7 @@ func (a *app) runCodex(th *Thread, prompt string, at int) {
 		a.finish(th, at, "codex: "+err.Error())
 		return
 	}
+	a.codexPid = cmd.Process.Pid
 
 	// Block indexes by the event's item id, so updates find their card.
 	blocks := map[string]int{}

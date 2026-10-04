@@ -34,7 +34,7 @@ func (a *app) runClaude(th *Thread, prompt string, at int) {
 
 	cmd := exec.CommandContext(ctx, a.claudePath, args...)
 	cmd.Dir = a.workdir
-	claudeProcAttr(cmd)
+	procGroupAttr(cmd)
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		a.finish(th, at, "claude: "+err.Error())
