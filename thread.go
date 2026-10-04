@@ -1,12 +1,33 @@
 package main
 
 import (
-	"fmt"
 	"strings"
+
+	"mygo-agent/internal/components"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
+
+// railPreview boils a message down to a short preview for the rail.
+func railPreview(m *Message) string {
+	if s := strings.TrimSpace(m.Text); s != "" {
+		return s
+	}
+	for _, b := range m.Blocks {
+		switch b.Type {
+		case "command":
+			return "$ " + b.Text
+		case "diff":
+			return "edited " + b.File
+		case "error":
+			return b.Text
+		case "reasoning":
+			return b.Text
+		}
+	}
+	return "message"
+}
 
 // messages is the conversation: a virtualized list that follows its end
 // as the agent replies, like a chat.
@@ -17,13 +38,19 @@ func (a *app) messages(c *ui.Context, th *Thread) {
 	ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
 		// The anchor rail: one dash per message, hover previews it,
 		// click jumps to it.
-		items := make([]RailItem, len(th.Messages))
+		items := make([]components.RailItem, len(th.Messages))
 		first, _ := st.Visible()
 		for i := range th.Messages {
 			m := &th.Messages[i]
-			items[i] = RailItem{ID: m.ID, Preview: railPreview(m), Kind: m.Role, Active: i == first}
+			items[i] = components.RailItem{ID: m.ID, Preview: railPreview(m), Kind: m.Role, Active: i == first}
 		}
-		MessageAnchorRail(c, items, func(it RailItem, index int) {
+		components.AnchorRail(c, items, components.Colors{
+			Active:    a.pal.Text,
+			TextMuted: a.pal.TextMuted,
+			Border:    a.pal.Border,
+			Surface:   a.pal.Card,
+			Text:      a.pal.Text,
+		}, func(it components.RailItem, index int) {
 			st.ScrollTo(index, ui.Start)
 		})
 		ui.List(c, st, len(th.Messages), func(i int) {
@@ -172,7 +199,7 @@ func (a *app) blockCommand(c *ui.Context, b *Block) {
 		}
 		ui.Text(c, "$ "+b.Text).Font("monospace").FontSize(12).Grow(1).MinWidth(0).SingleLine()
 		if b.Ms > 0 {
-			ui.Text(c, fmtDur(b.Ms)).FontSize(10.5).TextColor(a.pal.TextMuted)
+			ui.Text(c, components.Duration(b.Ms)).FontSize(10.5).TextColor(a.pal.TextMuted)
 		}
 		chev := ui.Icon(c, icChevDown).FontSize(12).TextColor(a.pal.TextMuted)
 		if b.Open {
@@ -191,15 +218,6 @@ func (a *app) blockCommand(c *ui.Context, b *Block) {
 			})
 		})
 	}
-}
-
-// fmtDur renders a duration the way tool rows do: milliseconds under a
-// second, otherwise seconds with one decimal.
-func fmtDur(ms int64) string {
-	if ms < 1000 {
-		return fmt.Sprintf("%dms", ms)
-	}
-	return fmt.Sprintf("%.1fs", float64(ms)/1000)
 }
 
 // blockDiff is a card for a file the agent changed: the path, the counts,

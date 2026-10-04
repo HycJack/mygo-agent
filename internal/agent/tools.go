@@ -9,7 +9,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"time"
 )
@@ -178,7 +178,7 @@ func listFilesTool(workdir string) Tool {
 				}
 				names = append(names, n)
 			}
-			sort.Strings(names)
+			slices.Sort(names)
 			if len(names) == 0 {
 				return "(empty)", nil
 			}

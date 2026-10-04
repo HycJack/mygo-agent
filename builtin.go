@@ -190,7 +190,7 @@ func (a *app) runBuiltin(th *Thread, prompt string, at int) {
 // fail (they would only produce tool errors).
 func (a *app) connectMCP(ctx context.Context) []*agent.ServerClient {
 	var clients []*agent.ServerClient
-	for _, s := range a.mcpServers {
+	for _, s := range a.effectiveMCPServers() {
 		if c, err := agent.StartServer(ctx, s); err == nil {
 			clients = append(clients, c)
 		}

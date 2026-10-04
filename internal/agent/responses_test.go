@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"context"
 	"encoding/json"
 	"io"
 	"net/http"
@@ -99,7 +98,7 @@ func TestStreamResponsesEvents(t *testing.T) {
 	defer srv.Close()
 
 	var text strings.Builder
-	res, err := streamChat(context.Background(), StreamConfig{
+	res, err := streamChat(t.Context(), StreamConfig{
 		BaseURL: srv.URL, Wire: WireResponses, Model: "gpt-5.2-codex",
 		Messages: []ChatMessage{{Role: "system", Content: "sys"}, {Role: "user", Content: "hi"}},
 	}, func(d string) { text.WriteString(d) })
@@ -128,7 +127,7 @@ func TestStreamResponsesFailed(t *testing.T) {
 			`data: {"type":"response.failed","response":{"error":{"message":"quota exhausted"}}}`+"\n\n")
 	}))
 	defer srv2.Close()
-	_, err := streamChat(context.Background(), StreamConfig{
+	_, err := streamChat(t.Context(), StreamConfig{
 		BaseURL: srv2.URL, Wire: WireResponses, Model: "m",
 		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
 	}, func(string) {})

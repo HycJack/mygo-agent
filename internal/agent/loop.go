@@ -59,7 +59,7 @@ func Run(ctx context.Context, cfg LoopConfig, history []ChatMessage) ([]ChatMess
 	messages := make([]ChatMessage, 0, len(history)+8)
 	messages = append(messages, history...)
 
-	for turn := 0; turn < cfg.MaxTurns; turn++ {
+	for range cfg.MaxTurns {
 		if ctx.Err() != nil {
 			return messages, ctx.Err()
 		}

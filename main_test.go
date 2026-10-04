@@ -2,10 +2,13 @@ package main
 
 import (
 	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"mygo-agent/internal/agent"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -346,4 +349,21 @@ func TestWordDiffMarks(t *testing.T) {
 	if lines[0].MarkHi > lines[0].MarkLo {
 		t.Fatalf("unexpected mark on a rewrite: %+v", lines[0])
 	}
+}
+
+func TestEffectiveMCPServersMergesDotMCPJSON(t *testing.T) {
+	a := newTestApp(t)
+	a.mcpServers = []agent.MCPServer{{Name: "configured", Command: "configured-cmd"}}
+	mcpJSON := `{"mcpServers":{"from-project":{"command":"npx","args":["-y","@modelcontextprotocol/server-everything"]}}}`
+	if err := os.WriteFile(filepath.Join(a.workdir, ".mcp.json"), []byte(mcpJSON), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	got := a.effectiveMCPServers()
+	if len(got) != 2 {
+		t.Fatalf("servers %+v", got)
+	}
+	if got[0].Name != "configured" || got[1].Name != "from-project" || got[1].Command != "npx" {
+		t.Fatalf("merge order/content wrong: %+v", got)
+	}
+	// The project file never overrides the configured name.
 }

@@ -182,7 +182,7 @@ func TestExecuteToolRepairsArguments(t *testing.T) {
 	var call ToolCall
 	call.Function.Name = "bash"
 	call.Function.Arguments = "```json\n{\"command\":\"pwd\"}\n```"
-	out, err := executeTool(context.Background(), tools, call)
+	out, err := executeTool(t.Context(), tools, call)
 	if err != nil || out != "ok" || ran != `{"command":"pwd"}` {
 		t.Fatalf("execute: %q %v %q", out, err, ran)
 	}
@@ -194,7 +194,7 @@ func TestStreamChatAcceptsObjectArguments(t *testing.T) {
 	sse := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"id\":\"call_1\",\"function\":{\"name\":\"read_file\",\"arguments\":{\"path\":\"main.go\"}}}]}}]}\n\n" +
 		"data: {\"choices\":[{\"delta\":{},\"finish_reason\":\"tool_calls\"}]}\n\n" +
 		"data: [DONE]\n\n"
-	res := accumulateSSE(sse)
+	res := accumulateSSE(t, sse)
 	if len(res.ToolCalls) != 1 {
 		t.Fatalf("tool calls: %+v", res.ToolCalls)
 	}
@@ -212,14 +212,15 @@ func TestStreamChatAcceptsObjectArguments(t *testing.T) {
 }
 
 // accumulateSSE runs a streaming call against an in-memory SSE body.
-func accumulateSSE(sse string) assistantResult {
+func accumulateSSE(t *testing.T, sse string) assistantResult {
+	t.Helper()
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/event-stream")
 		io.WriteString(w, sse)
 	}))
 	defer srv.Close()
 	var got strings.Builder
-	res, err := streamChat(context.Background(), StreamConfig{
+	res, err := streamChat(t.Context(), StreamConfig{
 		BaseURL: srv.URL, Model: "m",
 		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
 	}, func(d string) { got.WriteString(d) })
@@ -233,7 +234,7 @@ func TestStreamChatAccumulatesFragmentedStringArgs(t *testing.T) {
 	sse := "data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"c1\",\"function\":{\"name\":\"bash\",\"arguments\":\"{\\\"comm\"}}]}}]}\n\n" +
 		"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"function\":{\"arguments\":\"and\\\":\\\"ls\\\"}\"}}]}}]}\n\n" +
 		"data: [DONE]\n\n"
-	res := accumulateSSE(sse)
+	res := accumulateSSE(t, sse)
 	if len(res.ToolCalls) != 1 || res.ToolCalls[0].Function.Arguments != `{"command":"ls"}` {
 		t.Fatalf("fragmented accumulation: %+v", res.ToolCalls)
 	}

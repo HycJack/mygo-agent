@@ -21,7 +21,7 @@ func (a *app) sidebar(c *ui.Context, top float32) {
 			logo.Children(func() { ui.Icon(c, icSparkles).FontSize(12).TextColor(a.pal.AccentSub) })
 			ui.Text(c, "Codex").FontSize(13).Bold()
 			ui.Spacer(c)
-			ui.Text(c, "Go").FontSize(10).TextColor(a.pal.TextMuted)
+			ui.Text(c, a.version).FontSize(10).TextColor(a.pal.TextMuted)
 		})
 		// The project switcher.
 		ui.Column(c).Padding(6, 10, 0).Children(func() {

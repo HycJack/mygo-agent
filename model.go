@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"mygo-agent/internal/agent"
+	"mygo-agent/internal/config"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/terminal"
@@ -60,24 +61,6 @@ type Thread struct {
 	ClaudeID  string // Claude Code session id, for resuming
 }
 
-// Project is a working directory the tasks run in.
-type Project struct {
-	ID   string
-	Path string
-}
-
-// Provider is one model vendor: an OpenAI-compatible endpoint with its
-// key and the models it serves. The built-in "codex" provider instead
-// uses whatever the codex CLI is signed in with.
-type Provider struct {
-	ID      string
-	Name    string
-	BaseURL string
-	APIKey  string
-	Models  []string
-	Wire    string // "chat" (default) or "responses"
-}
-
 // fsNode is one entry of the workspace file tree.
 type fsNode struct {
 	Name string
@@ -106,6 +89,14 @@ type viewerState struct {
 	Note    string // e.g. "showing the first 20,000 lines"
 	Loading bool
 }
+
+// The persisted types live in internal/config; alias them so the rest
+// of the app reads naturally.
+type (
+	Project   = config.Project
+	Provider  = config.Provider
+	MCPServer = config.MCPServer
+)
 
 // app is the whole application state; the view is a function of it.
 type app struct {
@@ -185,6 +176,7 @@ type app struct {
 	viewerWrap bool
 
 	focusComposer bool
+	version       string
 }
 
 // defaultModels are the models of the built-in Codex CLI provider.
@@ -231,19 +223,126 @@ func newApp() *app {
 	return a
 }
 
-// appConfig is what persists between launches besides the tasks.
-type appConfig struct {
-	Projects      []Project         `json:"projects"`
-	ActiveProject string            `json:"active_project"`
-	Providers     []Provider        `json:"providers"`
-	Provider      string            `json:"provider"`
-	Model         string            `json:"model"`
-	Effort        int               `json:"effort"`
-	Backend       string            `json:"backend"`
-	MCPServers    []agent.MCPServer `json:"mcp_servers,omitempty"`
-	MaxTurns      int               `json:"max_turns,omitempty"`
-	// CustomModels is the pre-providers field, read only to migrate it.
-	CustomModels []string `json:"custom_models,omitempty"`
+// loadConfig reads config.json into the app's fields, migrating older
+// shapes (pre-providers custom models, wire-less codex provider).
+func (a *app) loadConfig() {
+	cfg, err := config.Load(a.configPath)
+	if err != nil {
+		return
+	}
+	a.projects = cfg.Projects
+	a.activeProject = cfg.ActiveProject
+	a.providers = cfg.Providers
+	a.providerID = cfg.Provider
+	if cfg.Model != "" {
+		a.model = cfg.Model
+	}
+	if cfg.Effort >= 0 && cfg.Effort <= 2 {
+		a.effort = cfg.Effort
+	}
+	switch cfg.Backend {
+	case "demo", "codex", "builtin", "claude":
+		a.backend = cfg.Backend
+	}
+	a.mcpServers = toAgentServers(cfg.MCPServers)
+	if cfg.MaxTurns > 0 {
+		a.maxTurns = cfg.MaxTurns
+	}
+	// Migrate the pre-providers config: its model and custom models
+	// fold into the built-in Codex CLI provider.
+	if len(a.providers) == 0 && (len(cfg.CustomModels) > 0 || cfg.Model != "") {
+		ms := slices.Clone(defaultModels)
+		for _, m := range append([]string{cfg.Model}, cfg.CustomModels...) {
+			if m != "" && !slices.Contains(ms, m) {
+				ms = append(ms, m)
+			}
+		}
+		a.providers = []Provider{{ID: "codex", Name: "Codex CLI", Wire: agent.WireResponses, Models: ms}}
+		a.providerID = "codex"
+	}
+}
+
+// saveConfig snapshots the app's settings into a Config and writes it.
+func (a *app) saveConfig() {
+	if a.configPath == "" {
+		return
+	}
+	_ = config.Save(a.configPath, config.Config{
+		Projects:      a.projects,
+		ActiveProject: a.activeProject,
+		Providers:     a.providers,
+		Provider:      a.providerID,
+		Model:         a.model,
+		Effort:        a.effort,
+		Backend:       a.backend,
+		MCPServers:    fromAgentServers(a.mcpServers),
+		MaxTurns:      a.maxTurns,
+	})
+}
+
+// toAgentServers / fromAgentServers convert between the config type
+// and the agent package's server description.
+// effectiveMCPServers merges the configured servers with the active
+// project's .mcp.json — the convention Claude Code and pi use, so
+// checking a project in brings its tools along.
+func (a *app) effectiveMCPServers() []agent.MCPServer {
+	out := slices.Clone(a.mcpServers)
+	data, err := os.ReadFile(filepath.Join(a.workdir, ".mcp.json"))
+	if err != nil {
+		return out
+	}
+	var f struct {
+		MCPServers map[string]struct {
+			Command string   `json:"command"`
+			Args    []string `json:"args"`
+			Env     []string `json:"env"`
+		} `json:"mcpServers"`
+	}
+	if json.Unmarshal(data, &f) != nil {
+		return out
+	}
+	names := make([]string, 0, len(f.MCPServers))
+	for name := range f.MCPServers {
+		names = append(names, name)
+	}
+	slices.Sort(names)
+	for _, name := range names {
+		srv := f.MCPServers[name]
+		dup := false
+		for _, have := range out {
+			if have.Name == name {
+				dup = true
+				break
+			}
+		}
+		if dup || srv.Command == "" {
+			continue
+		}
+		out = append(out, agent.MCPServer{Name: name, Command: srv.Command, Args: srv.Args, Env: srv.Env})
+	}
+	return out
+}
+
+func toAgentServers(in []config.MCPServer) []agent.MCPServer {
+	if in == nil {
+		return nil
+	}
+	out := make([]agent.MCPServer, len(in))
+	for i, s := range in {
+		out[i] = agent.MCPServer{Name: s.Name, Command: s.Command, Args: s.Args, Env: s.Env}
+	}
+	return out
+}
+
+func fromAgentServers(in []agent.MCPServer) []config.MCPServer {
+	if in == nil {
+		return nil
+	}
+	out := make([]config.MCPServer, len(in))
+	for i, s := range in {
+		out[i] = config.MCPServer{Name: s.Name, Command: s.Command, Args: s.Args, Env: s.Env}
+	}
+	return out
 }
 
 // ensureDefaults fills in what a fresh or half-migrated config lacks.
@@ -392,76 +491,6 @@ func (a *app) openTerminal() bool {
 		w.OnClosed(func() { term.Close() })
 	}
 	return true
-}
-
-func (a *app) loadConfig() {
-	data, err := os.ReadFile(a.configPath)
-	if err != nil {
-		return
-	}
-	var cfg appConfig
-	if json.Unmarshal(data, &cfg) != nil {
-		return
-	}
-	a.projects = cfg.Projects
-	a.activeProject = cfg.ActiveProject
-	a.providers = cfg.Providers
-	a.providerID = cfg.Provider
-	if cfg.Model != "" {
-		a.model = cfg.Model
-	}
-	if cfg.Effort >= 0 && cfg.Effort <= 2 {
-		a.effort = cfg.Effort
-	}
-	if cfg.Backend == "demo" || cfg.Backend == "codex" || cfg.Backend == "builtin" {
-		a.backend = cfg.Backend
-	}
-	a.mcpServers = cfg.MCPServers
-	// The codex models speak the Responses API; older configs may not
-	// have carried the wire yet.
-	for i := range a.providers {
-		if a.providers[i].ID == "codex" && a.providers[i].Wire == "" {
-			a.providers[i].Wire = agent.WireResponses
-		}
-	}
-	if cfg.MaxTurns > 0 {
-		a.maxTurns = cfg.MaxTurns
-	}
-	// Migrate the pre-providers config: its model and custom models fold
-	// into the built-in Codex CLI provider.
-	if len(a.providers) == 0 && (len(cfg.CustomModels) > 0 || cfg.Model != "") {
-		ms := slices.Clone(defaultModels)
-		for _, m := range append([]string{cfg.Model}, cfg.CustomModels...) {
-			if m != "" && !slices.Contains(ms, m) {
-				ms = append(ms, m)
-			}
-		}
-		a.providers = []Provider{{ID: "codex", Name: "Codex CLI", Models: ms}}
-		a.providerID = "codex"
-	}
-}
-
-func (a *app) saveConfig() {
-	if a.configPath == "" {
-		return
-	}
-	cfg := appConfig{
-		Projects:      a.projects,
-		ActiveProject: a.activeProject,
-		Providers:     a.providers,
-		Provider:      a.providerID,
-		Model:         a.model,
-		Effort:        a.effort,
-		Backend:       a.backend,
-		MCPServers:    a.mcpServers,
-		MaxTurns:      a.maxTurns,
-	}
-	data, err := json.MarshalIndent(cfg, "", "  ")
-	if err != nil {
-		return
-	}
-	// 0600: the providers' API keys live here.
-	writeFileAtomic(a.configPath, data, 0o600)
 }
 
 // writeFileAtomic writes through a temp file and a rename, so a crash
