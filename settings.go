@@ -15,12 +15,13 @@ import (
 var providerPresets = []struct {
 	name    string
 	baseURL string
+	wire    string
 	models  []string
 }{
-	{"OpenAI", "https://api.openai.com/v1", []string{"gpt-5.2", "gpt-5.2-mini"}},
-	{"DeepSeek", "https://api.deepseek.com/v1", []string{"deepseek-chat", "deepseek-reasoner"}},
-	{"OpenRouter", "https://openrouter.ai/api/v1", []string{"openai/gpt-5.2"}},
-	{"Ollama (local)", "http://localhost:11434/v1", []string{"llama3.2"}},
+	{"OpenAI", "https://api.openai.com/v1", agent.WireResponses, []string{"gpt-5.2", "gpt-5.2-mini"}},
+	{"DeepSeek", "https://api.deepseek.com/v1", agent.WireChat, []string{"deepseek-chat", "deepseek-reasoner"}},
+	{"OpenRouter", "https://openrouter.ai/api/v1", agent.WireChat, []string{"openai/gpt-5.2"}},
+	{"Ollama (local)", "http://localhost:11434/v1", agent.WireChat, []string{"llama3.2"}},
 }
 
 // settingsModal is the manage-providers dialog: the providers on the
@@ -102,6 +103,7 @@ func (a *app) settingsModal(c *ui.Context) {
 									if pr.Clicked() {
 										a.providers[pi].Name = ps.name
 										a.providers[pi].BaseURL = ps.baseURL
+										a.providers[pi].Wire = ps.wire
 										a.providers[pi].Models = slices.Clone(ps.models)
 										a.saveConfig()
 									}
@@ -110,6 +112,36 @@ func (a *app) settingsModal(c *ui.Context) {
 							a.formField(c, "Name", &a.providers[pi].Name, false)
 							a.formField(c, "Base URL", &a.providers[pi].BaseURL, false)
 							a.formField(c, "API key", &a.providers[pi].APIKey, true)
+							// Which wire the endpoint speaks: the codex
+							// and OpenAI models use the Responses API,
+							// most other vendors chat completions.
+							ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+								ui.Text(c, "API").FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
+								for _, w := range []struct {
+									id, label string
+								}{{agent.WireChat, "Chat Completions"}, {agent.WireResponses, "Responses"}} {
+									wire := a.providers[pi].Wire
+									if wire == "" {
+										wire = agent.WireChat
+									}
+									b := ui.ButtonBase(c).Padding(4, 10).Radius(999).Gap(6)
+									if wire == w.id {
+										b.Background(t.Text)
+										b.Children(func() {
+											ui.Text(c, w.label).FontSize(11.5).TextColor(t.AccentText)
+										})
+									} else {
+										b.Border(1, t.Border)
+										b.Children(func() {
+											ui.Text(c, w.label).FontSize(11.5).TextColor(t.TextMuted)
+										})
+									}
+									if b.Clicked() {
+										a.providers[pi].Wire = w.id
+										a.saveConfig()
+									}
+								}
+							})
 							ui.Column(c).Gap(4).Children(func() {
 								ui.Text(c, "Models").FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
 								ui.TokenField(c, &a.providers[pi].Models, nil)

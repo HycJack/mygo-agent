@@ -21,13 +21,15 @@ type Event struct {
 
 // LoopConfig configures one run of the agent loop.
 type LoopConfig struct {
-	BaseURL      string
-	APIKey       string
-	Model        string
-	SystemPrompt string
-	Tools        []Tool
-	MaxTurns     int
-	OnEvent      func(Event)
+	BaseURL         string
+	APIKey          string
+	Model           string
+	Wire            string // WireChat (default) or WireResponses
+	ReasoningEffort string // responses API only
+	SystemPrompt    string
+	Tools           []Tool
+	MaxTurns        int
+	OnEvent         func(Event)
 }
 
 // ToolCallResult is what executing one tool call produced.
@@ -62,11 +64,13 @@ func Run(ctx context.Context, cfg LoopConfig, history []ChatMessage) ([]ChatMess
 			return messages, ctx.Err()
 		}
 		scfg := StreamConfig{
-			BaseURL:  cfg.BaseURL,
-			APIKey:   cfg.APIKey,
-			Model:    cfg.Model,
-			Messages: messages,
-			Tools:    cfg.Tools,
+			BaseURL:         cfg.BaseURL,
+			APIKey:          cfg.APIKey,
+			Model:           cfg.Model,
+			Wire:            cfg.Wire,
+			Messages:        messages,
+			Tools:           cfg.Tools,
+			ReasoningEffort: cfg.ReasoningEffort,
 		}
 		res, err := streamChat(ctx, scfg, func(delta string) {
 			emit(Event{Kind: "text", TextDelta: delta})

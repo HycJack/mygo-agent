@@ -75,6 +75,7 @@ type Provider struct {
 	BaseURL string
 	APIKey  string
 	Models  []string
+	Wire    string // "chat" (default) or "responses"
 }
 
 // fsNode is one entry of the workspace file tree.
@@ -252,7 +253,7 @@ func (a *app) ensureDefaults() {
 	}
 	a.activeProject = a.activeID()
 	for _, want := range []Provider{
-		{ID: "codex", Name: "Codex CLI", Models: slices.Clone(defaultModels)},
+		{ID: "codex", Name: "Codex CLI", Wire: agent.WireResponses, Models: slices.Clone(defaultModels)},
 		{ID: "claude", Name: "Claude Code", Models: []string{"claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"}},
 	} {
 		if a.providerByID(want.ID) == nil {
@@ -416,6 +417,13 @@ func (a *app) loadConfig() {
 		a.backend = cfg.Backend
 	}
 	a.mcpServers = cfg.MCPServers
+	// The codex models speak the Responses API; older configs may not
+	// have carried the wire yet.
+	for i := range a.providers {
+		if a.providers[i].ID == "codex" && a.providers[i].Wire == "" {
+			a.providers[i].Wire = agent.WireResponses
+		}
+	}
 	if cfg.MaxTurns > 0 {
 		a.maxTurns = cfg.MaxTurns
 	}

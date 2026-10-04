@@ -55,13 +55,17 @@ type Tool struct {
 	Execute     func(ctx context.Context, args string) (string, error)
 }
 
-// StreamConfig configures one streaming completion call.
+// StreamConfig configures one streaming completion call. Wire selects
+// the request shape: WireChat (default) or WireResponses.
 type StreamConfig struct {
 	BaseURL  string
 	APIKey   string
 	Model    string
+	Wire     string
 	Messages []ChatMessage
 	Tools    []Tool
+
+	ReasoningEffort string // responses API only: low / medium / high
 }
 
 // assistantResult is what one streaming call produced.
@@ -72,9 +76,20 @@ type assistantResult struct {
 	Err       string
 }
 
-// streamChat calls POST {base}/chat/completions with stream:true and
-// feeds deltas to onText. It returns the assembled assistant message.
+// streamChat runs one streaming completion over the provider's wire
+// API and feeds text deltas to onText. It returns the assembled
+// assistant message.
 func streamChat(ctx context.Context, cfg StreamConfig, onText func(delta string)) (assistantResult, error) {
+	if cfg.Wire == WireResponses {
+		return streamResponses(ctx, cfg, onText)
+	}
+	return streamChatCompletions(ctx, cfg, onText)
+}
+
+// streamChatCompletions calls POST {base}/chat/completions with
+// stream:true and feeds deltas to onText. It returns the assembled
+// assistant message.
+func streamChatCompletions(ctx context.Context, cfg StreamConfig, onText func(delta string)) (assistantResult, error) {
 	body := map[string]any{
 		"model":    cfg.Model,
 		"messages": cfg.Messages,

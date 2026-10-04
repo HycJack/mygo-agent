@@ -74,13 +74,19 @@ func (a *app) runBuiltin(th *Thread, prompt string, at int) {
 		}
 	}()
 
+	wire := p.Wire
+	if wire == "" {
+		wire = agent.WireChat
+	}
 	cfg := agent.LoopConfig{
-		BaseURL:      p.BaseURL,
-		APIKey:       p.APIKey,
-		Model:        a.model,
-		SystemPrompt: builtinSystemPrompt(a.workdir, skills),
-		Tools:        tools,
-		MaxTurns:     a.maxTurns,
+		BaseURL:         p.BaseURL,
+		APIKey:          p.APIKey,
+		Model:           a.model,
+		Wire:            wire,
+		ReasoningEffort: []string{"low", "medium", "high"}[a.effort],
+		SystemPrompt:    builtinSystemPrompt(a.workdir, skills),
+		Tools:           tools,
+		MaxTurns:        a.maxTurns,
 		OnEvent: func(e agent.Event) {
 			switch e.Kind {
 			case "text":
