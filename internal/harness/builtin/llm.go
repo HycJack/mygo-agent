@@ -2,7 +2,7 @@
 // compatible streaming client, the tool-calling loop, the built-in
 // tools, skill discovery (Agent Skills spec) and a stdio MCP client.
 // The design follows pi and pi-ai-go.
-package harness
+package builtin
 
 import (
 	"bufio"
@@ -15,24 +15,6 @@ import (
 	"net/http"
 	"strings"
 )
-
-// ChatMessage is one message of the OpenAI chat transcript.
-type ChatMessage struct {
-	Role       string     `json:"role"`
-	Content    any        `json:"content"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-}
-
-// ToolCall is one function the assistant asked for.
-type ToolCall struct {
-	ID       string `json:"id"`
-	Type     string `json:"type"`
-	Function struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	} `json:"function"`
-}
 
 // chatTool is the tools entry of the request body.
 type chatTool struct {

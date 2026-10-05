@@ -1,6 +1,8 @@
-package harness
+package builtin
 
 import (
+	"mygo-agent/internal/harness/cli"
+
 	"context"
 	"encoding/json"
 	"errors"
@@ -9,23 +11,6 @@ import (
 	"strings"
 	"time"
 )
-
-// ApprovalRequest is the loop asking the host to decide one prepared tool
-// call whose permission resolved to ask (spec/approvals.md). Summary is a
-// bounded, redacted presentation built by host code.
-type ApprovalRequest struct {
-	Call    ToolCall
-	Summary string
-	Reason  string // why policy asked, from a fixed vocabulary
-}
-
-// ApprovalDecision is the host's answer. Approved covers exactly the one
-// call; there is no "always allow" decision — durable authority lives in
-// permission rules.
-type ApprovalDecision struct {
-	Approved bool
-	Reason   string // the denial reason shown to the model; empty when approved
-}
 
 // defaultApprovalTimeout bounds every wait on the host: expiry denies.
 const defaultApprovalTimeout = 10 * time.Minute
@@ -223,40 +208,6 @@ func askApproval(ctx context.Context, cfg LoopConfig, t Tool, call ToolCall) err
 	}
 }
 
-// ApprovalSummary renders the bounded, redacted one-line presentation of a
-// call for an approval prompt: command text, path, or server/tool name —
-// never credentials or wholesale argument dumps.
-func ApprovalSummary(call ToolCall) string {
-	var in map[string]any
-	_ = json.Unmarshal([]byte(call.Function.Arguments), &in)
-	get := func(k string) string {
-		if s, ok := in[k].(string); ok {
-			return s
-		}
-		return ""
-	}
-	name := call.Function.Name
-	switch {
-	case name == "bash":
-		return "$ " + trunc(strings.Join(strings.Fields(get("command")), " "), 160)
-	case get("path") != "":
-		return name + " " + trunc(get("path"), 160)
-	case get("pattern") != "":
-		return name + " " + trunc(get("pattern"), 120)
-	case get("name") != "":
-		return name + " " + trunc(get("name"), 120)
-	default:
-		if _, ok := strings.CutPrefix(name, "mcp_"); ok {
-			// MCP arguments are free-form: a bounded, flattened view so
-			// the ask is not a blind yes (spec/approvals.md).
-			if args := trunc(strings.Join(strings.Fields(call.Function.Arguments), " "), 160); args != "" {
-				return name + " " + args
-			}
-		}
-		return name
-	}
-}
-
 // executeTool finds the tool by name and runs it with its JSON args.
 // Weak models often emit near-JSON (code fences, trailing commas,
 // single quotes, smart quotes), so the arguments go through a repair
@@ -291,7 +242,7 @@ func parseToolArgs(raw string) (string, error) {
 			return candidate, nil
 		}
 	}
-	return "", fmt.Errorf("tool arguments are not valid JSON (model wrote: %s)", trunc(args, 200))
+	return "", fmt.Errorf("tool arguments are not valid JSON (model wrote: %s)", cli.Trunc(args, 200))
 }
 
 // repairJSON lists the fix-ups tried in order.
@@ -327,26 +278,9 @@ var (
 	trailingComma = regexp.MustCompile(`,(\s*[}\]])`)
 )
 
-func trunc(s string, n int) string {
-	r := []rune(s)
-	if len(r) <= n {
-		return s
-	}
-	return string(r[:n]) + "…"
-}
-
 // Args decodes a tool call's arguments into a struct.
 func Args(call ToolCall, into any) error {
 	return json.Unmarshal([]byte(call.Function.Arguments), into)
-}
-
-// TrimOutput caps a tool result so one command cannot flood the context.
-func TrimOutput(s string, max int) string {
-	s = strings.TrimRight(s, "\n")
-	if len(s) <= max {
-		return s
-	}
-	return s[:max] + "\n… output truncated …"
 }
 
 // CompactHistory folds old tool exchanges once the transcript outgrows

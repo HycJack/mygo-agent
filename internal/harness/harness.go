@@ -4,7 +4,7 @@ import "context"
 
 // The Harness protocol (spec/architecture.md): one turn of agent work,
 // behind four interchangeable adapters — the builtin loop, the codex
-// app-server client, the claude stream-json client and the demo. The Host
+// app-server client and the claude stream-json client. The Host
 // dispatches by Kind and never branches on an adapter's internals.
 
 // Harness is one replaceable agent backend. Instances are per-turn: a
@@ -34,6 +34,11 @@ type Turn struct {
 	// SessionID resumes a prior harness session when non-empty.
 	SessionID string
 
+	// Endpoint is an OpenAI-compatible endpoint a CLI adapter runs
+	// against instead of the CLI's own sign-in (codex only today).
+	// nil means the CLI's own credentials apply.
+	Endpoint *Endpoint
+
 	// Sandbox is the shell execution boundary (nil: full access).
 	Sandbox Sandbox
 
@@ -46,8 +51,18 @@ type Turn struct {
 	InitialTranscript []ChatMessage
 
 	// OnApproval decides calls whose permission resolves to ask
-	// (approvals.md). nil denies ask calls up front.
-	OnApproval func(ApprovalRequest) ApprovalDecision
+	// (approvals.md). It receives the run's context, so a stopped run
+	// settles its pending cards. nil denies ask calls up front.
+	OnApproval func(ctx context.Context, req ApprovalRequest) ApprovalDecision
+}
+
+// Endpoint is an OpenAI-compatible endpoint a CLI adapter can be pointed
+// at instead of the CLI vendor's own service.
+type Endpoint struct {
+	ID      string
+	Name    string
+	BaseURL string
+	APIKey  string
 }
 
 // EventKinds are the values of Event.Kind.
@@ -91,3 +106,55 @@ type Event struct {
 	// EventSession: the harness session id to persist for resume.
 	SessionID string
 }
+
+// ChatMessage is one message of a model conversation.
+type ChatMessage struct {
+	Role       string     `json:"role"`
+	Content    any        `json:"content"`
+	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	ToolCallID string     `json:"tool_call_id,omitempty"`
+}
+
+// ToolCall is one function the assistant asked for.
+type ToolCall struct {
+	ID       string `json:"id"`
+	Type     string `json:"type"`
+	Function struct {
+		Name      string `json:"name"`
+		Arguments string `json:"arguments"`
+	} `json:"function"`
+}
+
+// ApprovalRequest asks the host to decide one call (approvals.md).
+type ApprovalRequest struct {
+	Call    ToolCall
+	Summary string
+	Reason  string // why policy asked, from a fixed vocabulary
+}
+
+// ApprovalDecision is the host's answer. Approved covers exactly the one
+// call; there is no "always allow" decision — durable authority lives in
+// permission rules.
+type ApprovalDecision struct {
+	Approved bool
+	Reason   string // the denial reason shown to the model; empty when approved
+}
+
+// ToolOptions tunes how the built-in tools execute. The host derives
+// them from the approval mode: agent mode sandboxes the shell and
+// confines writes to the workspace; full access does neither.
+type ToolOptions struct {
+	// Sandbox wraps shell commands in the workspace-scoped execution
+	// boundary (spec/sandbox.md). nil means no sandbox (full access);
+	// a provider whose platform has no backend reports that as the
+	// tool's error instead of running unsandboxed.
+	Sandbox Sandbox
+	// ConfineWrites rejects edit_file targets outside the workdir.
+	ConfineWrites bool
+}
+
+// WireAPI names the two request shapes a provider endpoint may speak.
+const (
+	WireChat      = "chat"      // POST /chat/completions
+	WireResponses = "responses" // POST /responses — what the codex models use
+)

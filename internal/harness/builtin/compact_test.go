@@ -1,4 +1,4 @@
-package harness
+package builtin
 
 import "testing"
 

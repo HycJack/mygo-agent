@@ -1,4 +1,4 @@
-package harness
+package builtin
 
 import (
 	"bufio"
@@ -12,11 +12,6 @@ import (
 )
 
 // WireAPI names the two request shapes a provider may speak.
-const (
-	WireChat      = "chat"      // POST /chat/completions
-	WireResponses = "responses" // POST /responses — what the codex models use
-)
-
 // streamResponses runs one streaming call against the OpenAI Responses
 // API: instructions carry the system prompt, input carries the typed
 // transcript, and function calls come back as output items.

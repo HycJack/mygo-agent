@@ -1,6 +1,10 @@
 package harness
 
 import (
+	"encoding/json"
+
+	"mygo-agent/internal/harness/cli"
+
 	"fmt"
 	"strings"
 )
@@ -165,4 +169,38 @@ func (e *DenialError) Error() string {
 		return fmt.Sprintf("permission denied: the tool %q is not allowed in the current mode; ask the user to change the approval mode or the permission rules", e.Tool)
 	}
 	return fmt.Sprintf("permission denied (%s): %s", e.Tool, e.Reason)
+}
+
+// ApprovalSummary renders the bounded, redacted one-line presentation of a
+// call for an approval prompt: command text, path, or server/tool name —
+// never credentials or wholesale argument dumps.
+func ApprovalSummary(call ToolCall) string {
+	var in map[string]any
+	_ = json.Unmarshal([]byte(call.Function.Arguments), &in)
+	get := func(k string) string {
+		if s, ok := in[k].(string); ok {
+			return s
+		}
+		return ""
+	}
+	name := call.Function.Name
+	switch {
+	case name == "bash":
+		return "$ " + cli.Trunc(strings.Join(strings.Fields(get("command")), " "), 160)
+	case get("path") != "":
+		return name + " " + cli.Trunc(get("path"), 160)
+	case get("pattern") != "":
+		return name + " " + cli.Trunc(get("pattern"), 120)
+	case get("name") != "":
+		return name + " " + cli.Trunc(get("name"), 120)
+	default:
+		if _, ok := strings.CutPrefix(name, "mcp_"); ok {
+			// MCP arguments are free-form: a bounded, flattened view so
+			// the ask is not a blind yes (spec/approvals.md).
+			if args := cli.Trunc(strings.Join(strings.Fields(call.Function.Arguments), " "), 160); args != "" {
+				return name + " " + args
+			}
+		}
+		return name
+	}
 }

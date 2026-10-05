@@ -1,6 +1,8 @@
-package harness
+package builtin
 
 import (
+	"mygo-agent/internal/harness/cli"
+
 	"context"
 	"encoding/json"
 	"fmt"
@@ -131,10 +133,10 @@ func TestExecuteToolUnknownAndBadArgs(t *testing.T) {
 }
 
 func TestTrimOutput(t *testing.T) {
-	if got := TrimOutput("hello\n", 100); got != "hello" {
+	if got := cli.TrimOutput("hello\n", 100); got != "hello" {
 		t.Fatalf("trim changed a short output: %q", got)
 	}
-	got := TrimOutput(strings.Repeat("x", 5000), 100)
+	got := cli.TrimOutput(strings.Repeat("x", 5000), 100)
 	if len(got) != 100+len("\n… output truncated …") || !strings.HasSuffix(got, "… output truncated …") {
 		t.Fatalf("long output not truncated: %d", len(got))
 	}

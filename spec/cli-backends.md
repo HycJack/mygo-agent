@@ -8,11 +8,11 @@ reference implementations are OpenAgentCore's codex adapter
 
 ## Mode mapping (normative)
 
-| Mode | codex (app-server) | claude CLI |
-| --- | --- | --- |
-| read-only | `sandbox: "read-only"`, `approvalPolicy: "never"` | `--permission-mode default`; the app **denies every** `can_use_tool` |
-| agent | `sandbox: "workspace-write"`, `approvalPolicy: "on-request"` | `--permission-mode default`; every `can_use_tool` forwards to an approval card |
-| full | `sandbox: "danger-full-access"`, `approvalPolicy: "never"` | `--permission-mode bypassPermissions` |
+| Mode | codex (app-server) | claude CLI | pi CLI |
+| --- | --- | --- | --- |
+| read-only | `sandbox: "read-only"`, `approvalPolicy: "never"` | `--permission-mode default`; the app **denies every** `can_use_tool` | `--tools read` (allowlist keeps the read tool only) |
+| agent | `sandbox: "workspace-write"`, `approvalPolicy: "on-request"` | `--permission-mode default`; every `can_use_tool` forwards to an approval card | pi defaults |
+| full | `sandbox: "danger-full-access"`, `approvalPolicy: "never"` | `--permission-mode bypassPermissions` | pi defaults |
 
 In codex agent mode the sandbox is the boundary; codex sends approval
 requests when the model wants to *escalate beyond* the sandbox. In claude
@@ -79,6 +79,35 @@ stdin stays open until the `result` event (or an error) arrives, then closes.
   hanging: an unanswered control request stalls the CLI turn forever.
 - In read-only mode every `can_use_tool` is denied with a fixed message
   naming the mode (the model reads it as the tool result).
+
+## pi JSON mode protocol
+
+Spawn `pi -p --mode json -ne --session-id <id> [--thinking <level>] [--tools read] -- <prompt>`;
+one fresh process per turn; JSONL events on stdout.
+
+- `-ne` skips extension discovery: a broken local extension must not block
+  the app's runs. `-ne` also means pi extensions are out of scope here.
+- **Session**: the stream's `{"type":"session","id"}` is stored as
+  `threadMeta.pi_id`; the next turn passes it back via `--session-id`
+  (pi creates it if missing), so a task resumes pi's own session file.
+- **Model/provider**: pi resolves models from its own configuration
+  (`~/.pi/agent/settings.json`, models.json, auth.json). The app passes
+  no `--model` today — pi's default applies; a per-agent model mapping
+  is future work (spec/agents.md §4.5).
+- **Events** (the ones the projector consumes): `session`;
+  `message_update` with `assistantMessageEvent.type` `text_delta` /
+  `thinking_delta` (streamed; the deltas are the text); `message_end`
+  whose assistant message repeats the text **whole** (emit only when no
+  delta streamed it) and carries `content` blocks `text` / `toolCall`
+  `{id,name,arguments}`, `usage.totalTokens`, `usage.cost.total`,
+  `errorMessage`; `turn_end` with `toolResults` — messages with
+  `role:"toolResult"`, `toolCallId`, `toolName`, `content`, `isError`;
+  `auto_retry_start`; `agent_settled` — the turn is over.
+- **Settle**: break the read loop on `agent_settled` and reap the
+  process; the CLI may keep its streams open (the claude lesson).
+- **Approvals**: pi executes its tools with its own permissions; the
+  app's approval cards do not cover pi. Read-only mode therefore maps to
+  a tool allowlist, the only lever pi exposes.
 
 ## Invariants (extending approvals.md)
 

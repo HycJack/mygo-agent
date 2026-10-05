@@ -1,6 +1,6 @@
 //go:build windows
 
-package harness
+package builtin
 
 import "os/exec"
 
