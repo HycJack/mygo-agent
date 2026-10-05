@@ -57,8 +57,13 @@ func ShortArgs(raw json.RawMessage) string {
 }
 
 // TrimOutput caps a tool result so one command cannot flood the context.
+//
+// The carriage return goes with the trailing newline: a Windows command
+// ends its line with CRLF, so trimming only the \n left a \r inside the
+// stored card — a stray character on screen, and a mismatch against the
+// command's actual words for anything that compares them.
 func TrimOutput(s string, max int) string {
-	s = strings.TrimRight(s, "\n")
+	s = strings.TrimRight(s, "\r\n")
 	if len(s) <= max {
 		return s
 	}

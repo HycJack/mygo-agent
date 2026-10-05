@@ -1,6 +1,10 @@
+//go:build !windows
+
 package codex
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -45,5 +49,60 @@ func TestSpawnArgsWire(t *testing.T) {
 	turn.Endpoint.Wire = harness.WireChat
 	if _, _, err := spawnArgs(turn); err == nil || !strings.Contains(err.Error(), "Responses") {
 		t.Fatalf("chat endpoint should be rejected with the fix named, got: %v", err)
+	}
+}
+
+// TestRunSpawnsTheProviderWire is the regression for the defect that made
+// this a false sense of safety: spawnArgs had the right logic and its own
+// tests, and Run never called it — it inlined a second copy that still
+// passed wire_api="chat". The unit tests were green the whole time
+// because they exercised a function production code did not reach.
+//
+// So this drives Run itself, against a stub that records the argv it was
+// given. A test of a helper is only worth what the caller does with it.
+func TestRunSpawnsTheProviderWire(t *testing.T) {
+	dir := t.TempDir()
+	turn := harness.Turn{Workdir: dir, Mode: harness.ModeAgent, Prompt: "hi",
+		Endpoint: &harness.Endpoint{
+			ID: "prov-2a9a9d8a5746", Name: "Custom", BaseURL: "http://x/v1", APIKey: "k",
+		}}
+	if _, err := drive(t, fakeBin(t, "ok"), dir, turn); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	args, err := os.ReadFile(filepath.Join(dir, "args.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := strings.Join(strings.Fields(string(args)), " ")
+	// A chat-completions provider is what the CLI rejects outright
+	// (openai/codex discussion 7782), so the arg must never say chat.
+	if strings.Contains(got, `wire_api="chat"`) {
+		t.Fatalf("Run spawned the rejected wire: %s", got)
+	}
+	if !strings.Contains(got, `wire_api="responses"`) {
+		t.Fatalf("the provider's wire did not ride through: %s", got)
+	}
+}
+
+// TestRunRejectsAChatEndpoint checks the other half through Run: the
+// refusal has to happen before the process is spawned, with the fix
+// named, rather than as a config error from a server that never started.
+func TestRunRejectsAChatEndpoint(t *testing.T) {
+	dir := t.TempDir()
+	turn := harness.Turn{Workdir: dir, Mode: harness.ModeAgent, Prompt: "hi",
+		Endpoint: &harness.Endpoint{
+			ID: "prov-1", Name: "Chatty", BaseURL: "http://x/v1", APIKey: "k",
+			Wire: harness.WireChat,
+		}}
+	_, err := drive(t, fakeBin(t, "ok"), dir, turn)
+	if err == nil {
+		t.Fatal("a chat-completions endpoint was accepted")
+	}
+	if !strings.Contains(err.Error(), "Responses") {
+		t.Fatalf("the error does not name the fix: %v", err)
+	}
+	// Nothing was spawned, so the stub left no trace of a run.
+	if _, statErr := os.Stat(filepath.Join(dir, "args.txt")); statErr == nil {
+		t.Fatal("the process was spawned despite the endpoint being unsupported")
 	}
 }
