@@ -2,7 +2,7 @@ module mygo-agent
 
 go 1.27.1
 
-require github.com/egoist/mygo v0.2.6
+require github.com/egoist/mygo v0.2.9
 
 require (
 	github.com/ebitengine/purego v0.11.1 // indirect
