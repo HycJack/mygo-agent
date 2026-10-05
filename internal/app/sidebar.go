@@ -31,6 +31,7 @@ func (a *app) sidebarViewModel() *uipkg.SidebarVM {
 	vm.BackendMenu = a.backendMenu
 	vm.ProjectMenu = a.projectMenu
 	vm.HoverRow = a.hoverRow
+	vm.Width = a.navWidth
 	vm.Pal = a.pal
 	vm.Projects = vm.Projects[:0]
 	for i := range a.projects {

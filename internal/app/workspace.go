@@ -39,6 +39,7 @@ var skippedDirs = map[string]bool{
 func (a *app) workspaceViewModel() *uipkg.WorkspaceVM {
 	vm := &uipkg.WorkspaceVM{
 		Workdir:  a.workdir,
+		Width:    a.wsWidth,
 		GitErr:   a.gitErr,
 		Expanded: maps.Clone(a.dirs),
 		Pal:      a.pal,
