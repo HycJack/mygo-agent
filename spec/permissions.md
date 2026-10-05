@@ -58,13 +58,13 @@ per tool:
 
 ```json
 "permissions": { "rules": { "bash": "ask", "mcp_github_*": "allow" } }
-}
 ```
 
 - Selectors match tool names: exact match wins, then the longest prefix
   ending in `*`, then the bare `*`, then the mode default.
-- Values are `allow`, `deny`, `ask`. `ask` without an approval handler is a
-  denial (approvals.md).
+- Values are `allow`, `deny`, `ask` — case- and space-insensitive; any
+  other value fails closed to `deny`. `ask` without an approval handler
+  is a denial (approvals.md).
 - Rules widen and narrow alike: a rule may grant `mcp_x_*: allow` in agent
   mode or force `bash: ask` in full mode. There is no rule the UI applies
   that config cannot express — interactive decisions never write back to the

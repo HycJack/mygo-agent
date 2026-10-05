@@ -21,11 +21,15 @@ type ApprovalRequest struct {
 ```
 
 - The request travels from the agent loop to the host through a single
-  callback (`OnApproval`). The loop blocks on the answer; the host owns
-  rendering. There is no second channel and no polling.
+  callback (`OnApproval`), which receives a context that expires exactly
+  when the loop stops waiting — the `ApprovalTimeout` deadline or run
+  cancellation. The loop blocks on the answer; the host owns rendering.
+  There is no second channel and no polling.
 - The summary is derived by host code from the call's parsed arguments:
-  command line, file path, or server/tool name. Credentials, bearer tokens
-  and long payloads are redacted or omitted, never rendered wholesale.
+  command line, file path, or server/tool name — MCP calls append a
+  bounded, single-line view of their arguments so the user is not
+  approving blind. Credentials, bearer tokens and long payloads are
+  redacted or bounded, never rendered wholesale.
 
 ## Decision
 
@@ -45,7 +49,10 @@ type ApprovalDecision struct {
 ## Timing
 
 - The loop waits on `OnApproval` for at most `ApprovalTimeout` (default
-  10 minutes). Expiry is a denial with reason "approval timed out".
+  10 minutes). Expiry is a denial with reason "approval timed out"; the
+  callback's context expires at the same instant with `ErrApprovalTimedOut`
+  as its cause, so the host settles its card instead of leaving it
+  pending.
 - Run cancellation (stop button) denies any pending request with reason
   "cancelled"; it never leaves a request waiting on a dead run.
 - A host with no `OnApproval` handler denies `ask` calls up front with
@@ -65,3 +72,8 @@ type ApprovalDecision struct {
    progress.
 5. The pending request is visible to the user while it waits (the approval
    card) and its outcome stays in the thread transcript after the decision.
+6. The card never outlives the loop's wait. When the callback's context
+   expires the card records the cause — "approval timed out" or
+   "cancelled" — and stops accepting decisions; a decision delivered at
+   the same instant as the deadline may be dropped either way, never
+   mis-recorded as an execution that did not happen.

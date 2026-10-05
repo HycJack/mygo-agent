@@ -20,10 +20,14 @@ type Boundary struct {
 }
 ```
 
-- Grants are exact directories. `Workdir` is read-write; system roots
-  (`/System`, `/usr`, `/bin`, `/sbin`, `/lib*`, `/etc`) are read-only;
-  `Scratch` is read-write and becomes `HOME` and `TMPDIR` of the child so
-  caches and temp files land inside the boundary.
+- Grants are exact directories. `Workdir` is read-write; reads are broad
+  (the whole host filesystem) so toolchains work from wherever they are
+  installed — **except a fixed credentials denylist** (`~/.ssh`,
+  `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`), which stays unread.
+  This is the codex *workspace-write* contract: read the disk, write the
+  workspace, no network. `Scratch` is read-write and becomes `HOME` and
+  `TMPDIR` of the child so caches and temp files land inside the
+  boundary.
 - **The working directory is a default, not a boundary.** Containment comes
   from the grants, not from `cmd.Dir`.
 - **No per-command weakening.** The boundary is fixed for the mode; there is
@@ -36,8 +40,8 @@ type Boundary struct {
 
 | Platform | Primitive | Network | Status |
 | --- | --- | --- | --- |
-| macOS | Seatbelt (`/usr/bin/sandbox-exec`) with a generated `(deny default)` profile | `(deny network*)` | supported |
-| Linux | bubblewrap (`bwrap`) when on PATH: mount namespaces, `--cap-drop ALL`, `--clearenv`, `--die-with-parent` | `--unshare-net` | supported when `bwrap` exists |
+| macOS | Seatbelt (`/usr/bin/sandbox-exec`) with a generated `(deny default)` profile | `(deny network*)` by default | supported |
+| Linux | bubblewrap (`bwrap`) when on PATH: mount namespaces, `--ro-bind / /`, credential dirs masked by tmpfs, `--cap-drop ALL`, `--die-with-parent` | `--unshare-net` | supported when `bwrap` exists |
 | Windows | — | — | unsupported, reported |
 
 Rules:
@@ -57,12 +61,13 @@ Rules:
 Generated SBPL, launched as `sandbox-exec -p <profile> -- <argv>`:
 
 - `(version 1)` header, `(deny default)` base.
-- Allowed unconditionally: `process-exec*`, `process-fork`, `signal` to
-  same-sandbox processes, `sysctl-read*`, `file-read-metadata`,
-  `file-read*` on `/dev/null`, `/dev/zero`, `/dev/random`, `/dev/urandom`,
-  `/var/empty`, and read-only access to the system roots.
-- Per grant: `file-read*` (+ `file-write*` for read-write grants) on the
-  canonicalized subpath.
+- Allowed unconditionally: `process-exec`, `process-fork`, `signal` to
+  same-sandbox processes, `process-info*` (same-sandbox), `sysctl-read`,
+  `file-read-metadata`, `file-read*`/`file-write*` on `/dev/null`,
+  `/dev/zero`, `/dev/random`, `/dev/urandom`.
+- Broad `file-read*` so toolchains run from anywhere, with the fixed
+  credentials denylist denied over it (more specific filters win).
+- Per grant: `file-read*` + `file-write*` on the canonicalized subpath.
 - `Network: deny` adds nothing (default deny); `inherit` would add
   `(allow network*)` and the DNS mach-lookups — reserved for a future mode
   and not generated today.
