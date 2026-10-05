@@ -354,3 +354,54 @@ func TestOutsideDirArgsWithNoHandlerGrantsNothing(t *testing.T) {
 		t.Fatalf("a run with no handler was granted %v", args)
 	}
 }
+
+// TestCompactionSaysSoOnTheWire pins the frame that tells the user the
+// model stopped seeing the earlier conversation. Without it the only
+// symptom is the agent quietly contradicting an instruction it accepted
+// twenty turns ago.
+func TestCompactionSaysSoOnTheWire(t *testing.T) {
+	r, evs := collect(harness.Turn{})
+	r.handle(`{"type":"system","subtype":"compact_boundary","session_id":"s1",` +
+		`"compact_metadata":{"trigger":"manual","pre_tokens":25876,"post_tokens":5253,` +
+		`"cumulative_dropped_tokens":20623,"duration_ms":16001}}`)
+
+	notes := kind(evs, harness.EventNote)
+	if len(notes) != 1 {
+		t.Fatalf("notes %d, want 1: %+v", len(notes), notes)
+	}
+	text := notes[0].Text
+	if !strings.Contains(text, "claude") || !strings.Contains(text, "compacted") {
+		t.Fatalf("note %q", text)
+	}
+	// The counts live in compact_metadata, which is snake_case on this
+	// wire. Reading it as compactMetadata decodes nothing and quietly
+	// leaves both counts at zero, which is why the numbers are asserted
+	// rather than merely the presence of a note.
+	if !strings.Contains(text, "25.9k") || !strings.Contains(text, "5.3k") {
+		t.Fatalf("note %q lost the token counts", text)
+	}
+}
+
+// A boundary frame with no metadata still means the context was folded.
+func TestCompactionWithoutMetadataStillReports(t *testing.T) {
+	r, evs := collect(harness.Turn{})
+	r.handle(`{"type":"system","subtype":"compact_boundary"}`)
+	notes := kind(evs, harness.EventNote)
+	if len(notes) != 1 {
+		t.Fatalf("a metadata-less boundary went unreported: %+v", notes)
+	}
+	if strings.Contains(notes[0].Text, "→") {
+		t.Fatalf("a note with no counts invented them: %q", notes[0].Text)
+	}
+}
+
+// The other system frames must stay quiet: init reports the session, and
+// neither is a compaction.
+func TestOtherSystemFramesAreNotCompactions(t *testing.T) {
+	r, evs := collect(harness.Turn{})
+	r.handle(`{"type":"system","subtype":"init","session_id":"s1"}`)
+	r.handle(`{"type":"system","subtype":"status"}`)
+	if notes := kind(evs, harness.EventNote); len(notes) != 0 {
+		t.Fatalf("unrelated system frames produced notes: %+v", notes)
+	}
+}

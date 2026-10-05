@@ -41,3 +41,37 @@ func TestTrimOutputStillCaps(t *testing.T) {
 		t.Fatalf("a long output was not shortened: %d >= %d", len(got), len(long))
 	}
 }
+
+// A compaction note is read once, mid-task, and the one thing it must
+// say is that the earlier turns still exist. The counts are a bonus, so
+// they are only present when the backend reported them.
+func TestCompactedNoticeSaysTheTurnsAreNotLost(t *testing.T) {
+	full := CompactedNotice("claude", 25876, 5253)
+	if !strings.Contains(full, "claude") || !strings.Contains(full, "not lost") {
+		t.Fatalf("note %q", full)
+	}
+	if !strings.Contains(full, "25.9k") || !strings.Contains(full, "5.3k") {
+		t.Fatalf("note %q lost the counts", full)
+	}
+
+	bare := CompactedNotice("codex", 0, 0)
+	if strings.Contains(bare, "→") || strings.Contains(bare, "0") {
+		t.Fatalf("a note with no counts invented them: %q", bare)
+	}
+	if !strings.Contains(bare, "not lost") {
+		t.Fatalf("note %q", bare)
+	}
+}
+
+func TestCompactTokensStaysReadable(t *testing.T) {
+	cases := map[int]string{
+		0: "0", 512: "512", 999: "999",
+		1000: "1.0k", 5253: "5.3k", 25876: "25.9k",
+		134208: "134k", 2_500_000: "2.5M",
+	}
+	for in, want := range cases {
+		if got := CompactTokens(in); got != want {
+			t.Errorf("CompactTokens(%d) = %q, want %q", in, got, want)
+		}
+	}
+}

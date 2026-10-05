@@ -286,7 +286,15 @@ func (r *run) handle(line string) {
 		Type      string `json:"type"`
 		Subtype   string `json:"subtype"`
 		SessionID string `json:"session_id"`
-		Message   *struct {
+		// compact_metadata is snake_case, like the rest of claude's
+		// stream-json wire. Reading it as `compactMetadata` decodes to
+		// nothing and silently costs the note its counts.
+		CompactMetadata *struct {
+			Trigger    string `json:"trigger"`
+			PreTokens  int    `json:"pre_tokens"`
+			PostTokens int    `json:"post_tokens"`
+		} `json:"compact_metadata"`
+		Message *struct {
 			Content []block `json:"content"`
 		} `json:"message"`
 		ResultText string  `json:"result"`
@@ -310,6 +318,22 @@ func (r *run) handle(line string) {
 	case "system":
 		if ev.Subtype == "init" && ev.SessionID != "" {
 			r.send(harness.Event{Kind: harness.EventSession, SessionID: ev.SessionID})
+		}
+		// claude summarises its own context when the conversation
+		// outgrows the window, and says so on this wire as a system
+		// frame with subtype compact_boundary. Without it the only
+		// symptom is the model quietly forgetting an earlier
+		// instruction. A frame with no metadata still counts: the
+		// event happened, the counts are a bonus.
+		if ev.Subtype == "compact_boundary" {
+			var before, after int
+			if ev.CompactMetadata != nil {
+				before, after = ev.CompactMetadata.PreTokens, ev.CompactMetadata.PostTokens
+			}
+			r.send(harness.Event{
+				Kind: harness.EventNote,
+				Text: cli.CompactedNotice("claude", before, after),
+			})
 		}
 
 	case "assistant":

@@ -6,8 +6,10 @@ package cli
 
 import (
 	"encoding/json"
+	"fmt"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 )
 
@@ -76,6 +78,39 @@ func ShortSession(id string) string {
 		return id[:8]
 	}
 	return id
+}
+
+// CompactedNotice is the one line a backend's own context compaction
+// produces. The transcript keeps every turn, but from here on the model no
+// longer sees the part that was summarised, so the user has to be told:
+// without this a long task silently forgets, and the only symptom is an
+// answer that contradicts something it agreed to twenty turns ago.
+//
+// The counts are optional because only some backends report them, and a
+// missing count is no reason to stay quiet about the event itself.
+func CompactedNotice(provider string, before, after int) string {
+	if before > 0 && after > 0 {
+		return fmt.Sprintf("%s compacted its context · %s → %s tokens · earlier turns are summarised, not lost",
+			provider, CompactTokens(before), CompactTokens(after))
+	}
+	return fmt.Sprintf("%s compacted its context · earlier turns are summarised, not lost", provider)
+}
+
+// CompactTokens renders a token count at the size a note can carry: exact
+// below a thousand, then one decimal while a decimal still carries
+// information, then whole thousands. "25.9k → 5.3k" says the shape of a
+// compaction; "25876 → 5253" is a wall of digits nobody reads.
+func CompactTokens(n int) string {
+	switch {
+	case n < 1000:
+		return strconv.Itoa(n)
+	case n < 100000:
+		return strconv.FormatFloat(float64(n)/1000, 'f', 1, 64) + "k"
+	case n < 1000000:
+		return strconv.Itoa(n/1000) + "k"
+	default:
+		return strconv.FormatFloat(float64(n)/1e6, 'f', 1, 64) + "M"
+	}
 }
 
 // Redact masks credential-shaped text before it reaches a card, a
