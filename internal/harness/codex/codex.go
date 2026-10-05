@@ -92,6 +92,7 @@ func (h *Harness) Run(ctx context.Context, turn harness.Turn, emit func(harness.
 	// abort tears the transport down on every early exit: cancel kills
 	// the process group and Wait reaps it, so no zombie outlives the run.
 	abort := func(format string, args ...any) error {
+		_ = stdin.Close()
 		cancel := cmd.Cancel
 		if cancel != nil {
 			_ = cancel()
@@ -168,6 +169,9 @@ func (h *Harness) Run(ctx context.Context, turn harness.Turn, emit func(harness.
 		case <-time.After(250 * time.Millisecond):
 		}
 	}
+	// The app-server is a resident process: it exits only on stdin EOF.
+	// Without this, Wait blocks forever after a completed turn.
+	_ = stdin.Close()
 	c.close()
 	waitErr := cmd.Wait()
 	if ctx.Err() != nil {
