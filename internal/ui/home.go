@@ -9,7 +9,7 @@ func Home(c *ui.Context, vm *ViewModel, acts Actions, suggestions []string) {
 	t := c.Theme()
 	ui.Scroll(c).Grow(1).MinHeight(0).Children(func() {
 		ui.Column(c).Fill().Justify(ui.Center).AlignItems(ui.Center).Gap(22).Padding(24).
-			MaxWidth(860).Margin(0, ui.Auto).Children(func() {
+			MaxWidth(composerMaxWidth).Margin(0, ui.Auto).Children(func() {
 			logo := ui.Box(c).Size(56, 56).Radius(16).Background(vm.Pal.Card).Border(1, vm.Pal.Border).Center()
 			logo.Children(func() {
 				ui.Icon(c, IconSparkles).FontSize(26).TextColor(vm.Pal.Text)

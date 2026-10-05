@@ -66,9 +66,23 @@ type Actions interface {
 // approval mode, the model picker and send/stop. Enter sends, Shift+Enter
 // (via the box's ancestors) breaks the line — same behavior as the host's
 // own composer before it moved here.
+//
+// The horizontal inset is 24, not the 44 the message column uses, and the
+// box is allowed wider than that column: a prompt is a single line of text
+// you are about to write, while a reply is prose meant to be read, and
+// holding both to one measure made the composer the narrower of the two for
+// no reason. The cap keeps it a reading-width field on a wide display
+// rather than a full-bleed bar.
+//
+// FillWidth and MaxWidth together are what bound it: MaxWidth alone does
+// nothing, because a column with no width of its own is sized by its
+// contents, and a child at FillWidth resolves that cycle by taking the
+// parent — so the cap never applies. With FillWidth the column claims the
+// space, the cap trims it, and Auto margins centre what is left.
 func Composer(c *ui.Context, vm *ViewModel, acts Actions) {
 	t := c.Theme()
-	ui.Column(c).Padding(12, 44, 20).Children(func() {
+	ui.Column(c).FillWidth().Padding(12, 24, 20).
+		MaxWidth(composerMaxWidth).Margin(0, ui.Auto).Children(func() {
 		box := ui.Column(c).FillWidth().Padding(10, 14).Gap(8).Radius(16).
 			Background(vm.Pal.Card).Border(1, vm.Pal.Border)
 		if vm.Running {
@@ -91,6 +105,11 @@ func Composer(c *ui.Context, vm *ViewModel, acts Actions) {
 		}
 	})
 }
+
+// composerMaxWidth is how wide the composer may grow. It sits between the
+// message column's 880 and the window, so the input reads as the page's
+// widest element without becoming a banner across a wide display.
+const composerMaxWidth = 1080
 
 // composerRow is the bottom line: approval mode, model, send/stop.
 func composerRow(c *ui.Context, vm *ViewModel, acts Actions) {
