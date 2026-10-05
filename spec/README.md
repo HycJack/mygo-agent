@@ -9,7 +9,7 @@ state invariants; code and tests follow them.
 | [permissions.md](permissions.md) | The action catalog, permission modes, selector rules, and the tool gate |
 | [sandbox.md](sandbox.md) | The local execution boundary: grants, egress, platform backends |
 | [approvals.md](approvals.md) | The approval request/decision flow and its invariants |
-| [cli-backends.md](cli-backends.md) | The codex app-server and claude stream-json approval protocols |
+| [cli-backends.md](cli-backends.md) | The codex app-server, claude stream-json and pi json wire protocols and their approval paths |
 | [architecture.md](architecture.md) | The layer map: harness / providers / host / UI and their import rules |
 | [data.md](data.md) | The persistence formats: versioning, strict decode, load-failure handling |
 

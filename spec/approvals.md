@@ -30,7 +30,6 @@ type ApprovalRequest struct {
   bounded, single-line view of their arguments so the user is not
   approving blind. Credentials, bearer tokens and long payloads are
   redacted or bounded, never rendered wholesale.
-
 ## Decision
 
 ```go
@@ -48,15 +47,46 @@ type ApprovalDecision struct {
 
 ## Timing
 
-- The loop waits on `OnApproval` for at most `ApprovalTimeout` (default
-  10 minutes). Expiry is a denial with reason "approval timed out"; the
-  callback's context expires at the same instant with `ErrApprovalTimedOut`
-  as its cause, so the host settles its card instead of leaving it
-  pending.
+- **Every adapter shares one deadline.** `harness.ApprovalContext(ctx,
+  timeout)` (harness/approvals.go) derives the context an approval waits
+  under, and `harness.ApprovalReason(ctx)` names how it ended. The
+  builtin loop, codex and claude all go through it, so a card behaves the
+  same whichever backend asked — and the Host reads one cause instead of
+  reaching into an adapter package to recognise it. The deadline is
+  `harness.DefaultApprovalTimeout` (10 minutes) unless the host overrides
+  it. An adapter that passed the bare run context could leave a card
+  waiting forever while the run stayed alive; that is the bug this shared
+  helper exists to prevent. Every adapter routes its wait through it,
+  including codex.
+- Expiry is a denial with reason "approval timed out"; the callback's
+  context expires at the same instant with `ErrApprovalTimedOut` as its
+  cause, so the host settles its card instead of leaving it pending.
 - Run cancellation (stop button) denies any pending request with reason
   "cancelled"; it never leaves a request waiting on a dead run.
 - A host with no `OnApproval` handler denies `ask` calls up front with
-  "no approval handler" — `ask` never silently allows.
+  "no approval handler" — `ask` never silently allows. pi is the
+  documented exception: it runs its tools under its own permissions and
+  exposes no callback, so it has no host approval cards at all
+  (cli-backends.md).
+
+## Redaction
+
+`cli.Redact` masks credential-shaped text before it reaches a card, a
+transcript or a log. It matches a header or assignment whose key names a
+secret (`Authorization:`, `--api-key`, `API_KEY=`, …) plus the
+well-known literal token formats, and keeps the key so the ask stays
+readable.
+
+- **Redact before truncate, never after.** A cut can hide the tail of a
+  secret behind the ellipsis, and a card is persisted into the thread
+  file — not just drawn once.
+- The rules stay narrow on purpose. A "anything long" heuristic would
+  redact ordinary paths and hashes and make the ask unreadable, which is
+  its own safety problem: a user who cannot read the call cannot judge
+  it.
+- For a literal token format the vendor marker (`sk-`, `AKIA`, `xoxb-`)
+  is kept and the body masked — for these formats the "prefix" is the
+  credential, so keeping the match would defeat the point.
 
 ## Invariants
 
