@@ -14,22 +14,22 @@ type Colors struct {
 	TextMuted ui.Color
 	Border    ui.Color
 	Surface   ui.Color
-	Active    ui.Color // the dash of the message at the top of the viewport
+	Active    ui.Color // the dash of the message the reader is on
 }
 
 // RailItem is one entry of the message anchor rail.
 type RailItem struct {
 	ID      any    // stable identity across frames
 	Preview string // a few lines of the message, shown in the hover card
-	Active  bool   // the message at the top of the viewport right now
+	Active  bool   // the message the reader is on right now
 }
 
 // The wave, in DIPs: the dash under the pointer is the longest, and the
 // length falls off toward both sides — ZCode's message map.
 const (
-	dashMin  = 8.0  // the base length, left of the peak and far right
+	dashMin  = 8.0  // the base length, past the falloff on either side
 	dashMax  = 24.0 // the dash the wave centers on
-	dashFall = 4.0  // dashes to the peak's right over which it decays
+	dashFall = 4.0  // dashes to either side over which it decays
 	dashBar  = 3.0  // the visual bar's height
 	dashHit  = 14.0 // the clickable row's height
 	dashEase = 0.35 // per-frame easing toward the target width
@@ -48,8 +48,8 @@ type railLabel struct {
 // AnchorRail is the slim ruler of dashes beside a thread, in the style
 // of ZCode's message map: one dash per message; the dash under the
 // pointer is the longest and its neighbours fall off like a wave, the
-// wave centers on the message at the top of the viewport while the
-// pointer is elsewhere, hover opens a preview card above the
+// wave centers on the message the reader is on (the Active item) while
+// the pointer is elsewhere, hover opens a preview card above the
 // conversation, and a click calls onJump.
 //
 // Layout note for callers: place it in a row with AlignItems(Stretch)
@@ -79,20 +79,30 @@ func AnchorRail(c *ui.Context, items []RailItem, colors Colors, onJump func(item
 					lb.preview, lb.label = it.Preview, "Jump to: "+FirstLine(it.Preview)
 				}
 
-				// The wave leans right: left of the peak every dash
-				// keeps the base length; the peak is the longest and the
-				// lengths decay across the dashes to its right.
+				// The wave falls off toward both sides, as the type
+				// above the rail has always claimed: the centre dash is
+				// the longest and the lengths shrink with the distance
+				// from it either way. Left of the centre every dash used
+				// to keep the base length, so the dashes the reader had
+				// just scrolled past were all identical — a flat block
+				// with nothing in it to say how far back they went.
 				step := float64(i - *center)
 				target := dashMin
-				switch {
-				case step == 0:
-					target = dashMax
-				case step > 0:
-					target = dashMax - (dashMax-dashMin)*math.Min(step/dashFall, 1)
+				if *center >= 0 {
+					target = dashMax - (dashMax-dashMin)*math.Min(math.Abs(step)/dashFall, 1)
 				}
 
+				// Justify(Start), never Center: the bar is a ruler mark,
+				// and ButtonBase centres its children, so a centred bar
+				// slides sideways as the wave changes its length — the
+				// rail's left edge appeared to breathe even though
+				// nothing was moving. Anchored at the start, a dash only
+				// ever grows to the right, and every dash in the rail
+				// shares one left edge at every width.
 				dash := ui.ButtonBase(c).Label(lb.label).Tooltip(lb.label).
-					Size(26, dashHit).Radius(3).Center().Cursor(ui.CursorPointer)
+					Size(26, dashHit).Radius(3).
+					Justify(ui.Start).AlignItems(ui.Center).
+					Cursor(ui.CursorPointer)
 				if dash.Hovered() {
 					hovered = i
 				}
@@ -109,12 +119,13 @@ func AnchorRail(c *ui.Context, items []RailItem, colors Colors, onJump func(item
 				}
 
 				// Color: the wave's peak is bright, its neighbours step
-				// down; away from the rail the viewport-top dash leads.
+				// down on either side; away from the rail the viewport's
+				// message leads.
 				bar := colors.Border
 				switch {
 				case *center >= 0 && i == *center, hovered == -1 && it.Active:
 					bar = colors.Text
-				case step > 0 && step <= 1:
+				case step != 0 && math.Abs(step) <= 1:
 					bar = colors.TextMuted
 				}
 				dash.Children(func() {
