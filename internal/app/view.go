@@ -1,6 +1,8 @@
 package app
 
 import (
+	uipkg "mygo-agent/internal/ui"
+
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,7 +17,15 @@ import (
 // panel beside the thread of the chosen task — or the file viewer in its
 // place — with the composer below and the terminal docked at the bottom.
 func (a *app) view(c *ui.Context) {
+	// In production the window serializes frames against update() on the
+	// main thread; headless runs (tests) have no such discipline, so the
+	// app lock stands in for it.
+	if a.win == nil {
+		a.mu.Lock()
+		defer a.mu.Unlock()
+	}
 	c.SetTheme(a.theme)
+	a.uiCtx = c
 	tb := c.TitleBar()
 	top := max(tb.Height, 16)
 
@@ -47,7 +57,7 @@ func (a *app) view(c *ui.Context) {
 
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
 		if a.navOpen {
-			a.sidebar(c, top)
+			a.renderSidebar(c, top)
 		}
 		ui.Column(c).Grow(1).MinWidth(0).Background(a.pal.Bg).Children(func() {
 			a.header(c, tb)
@@ -66,7 +76,7 @@ func (a *app) view(c *ui.Context) {
 			}
 		})
 		if a.wsOpen {
-			a.workspace(c)
+			a.renderWorkspace(c)
 		}
 	})
 
@@ -182,16 +192,16 @@ func (a *app) header(c *ui.Context, tb ui.TitleBar) {
 			closeMenu := func() { a.threadMenu = false }
 			ui.Column(c).Width(210).Padding(4).Radius(10).Background(a.pal.Card).
 				Border(1, a.pal.Border).Shadow(0, 8, 24, 0, ui.RGBA(0, 0, 0, 0.4)).Children(func() {
-				if th != nil && a.menuItem(c, "Rename task", false) {
+				if th != nil && uipkg.MenuItem(c, "Rename task", false, a.pal) {
 					closeMenu()
 					a.renaming, a.renameID, a.renameDraft = true, th.ID, th.Title
 				}
-				if th != nil && a.menuItem(c, "Export as Markdown", false) {
+				if th != nil && uipkg.MenuItem(c, "Export as Markdown", false, a.pal) {
 					closeMenu()
 					a.exportMarkdown(c, th)
 				}
 				ui.Box(c).Height(1).Margin(4, 6).Background(a.pal.Border)
-				if th != nil && a.menuItem(c, "Delete task", false) {
+				if th != nil && uipkg.MenuItem(c, "Delete task", false, a.pal) {
 					closeMenu()
 					a.deleteThread(c, th.ID)
 				}
@@ -200,43 +210,14 @@ func (a *app) header(c *ui.Context, tb ui.TitleBar) {
 	})
 }
 
-// home is what a new task starts from: a greeting, the composer in the
-// middle, and a few suggested prompts.
+// home is what a new task starts from: the shared view in internal/ui
+// over a ViewModel snapshot, with the app's own suggestion chips.
 func (a *app) home(c *ui.Context) {
-	t := c.Theme()
-	ui.Scroll(c).Grow(1).MinHeight(0).Children(func() {
-		ui.Column(c).Fill().Justify(ui.Center).AlignItems(ui.Center).Gap(22).Padding(24).
-			MaxWidth(860).Margin(0, ui.Auto).Children(func() {
-			logo := ui.Box(c).Size(56, 56).Radius(16).Background(a.pal.Card).Border(1, a.pal.Border).Center()
-			logo.Children(func() {
-				ui.Icon(c, icSparkles).FontSize(26).TextColor(a.pal.Text)
-			})
-			ui.Text(c, "What are we coding next?").FontSize(25).Bold()
-			ui.Text(c, "Codex runs in the background while you keep working.").FontSize(13).TextColor(t.TextMuted)
-			a.composer(c)
-			chips := []string{
-				"Explain what this project does",
-				"Find and fix a failing test",
-				"Write a migration guide",
-				"Review the latest diff",
-			}
-			ui.Row(c).Gap(8).Wrap().Justify(ui.Center).Children(func() {
-				for _, prompt := range chips {
-					chip := ui.ButtonBase(c).Padding(6, 12).Radius(999).Border(1, a.pal.Border).
-						Cursor(ui.CursorPointer)
-					if chip.Hovered() {
-						chip.Background(a.pal.Hover)
-					}
-					if chip.Clicked() {
-						a.draft = prompt
-						a.focusComposer = true
-					}
-					chip.Children(func() {
-						ui.Text(c, prompt).FontSize(12).TextColor(t.TextMuted)
-					})
-				}
-			})
-		})
+	uipkg.Home(c, a.homeViewModel(), homeActions{a: a}, []string{
+		"Explain what this project does",
+		"Find and fix a failing test",
+		"Write a migration guide",
+		"Review the latest diff",
 	})
 }
 
@@ -262,49 +243,6 @@ func (a *app) newTask() {
 	a.current = ""
 	a.draft = ""
 	a.focusComposer = true
-}
-
-// menuItem is one row of the app's own popover menus.
-func (a *app) menuItem(c *ui.Context, label string, checked bool) bool {
-	t := c.Theme()
-	it := ui.Row(c).Padding(6, 10).Radius(6).Gap(8).Cursor(ui.CursorPointer)
-	if it.Hovered() {
-		it.Background(a.pal.CardHover)
-	}
-	chosen := it.Clicked()
-	it.Children(func() {
-		ui.Text(c, label).FontSize(12.5).Grow(1).MinWidth(0)
-		if checked {
-			ui.Icon(c, icCheck).FontSize(13).TextColor(t.Text)
-		}
-	})
-	return chosen
-}
-
-// menuItemDisabled is a menu row grayed out while its action is missing.
-func (a *app) menuItemDisabled(c *ui.Context, label string, checked, disabled bool) bool {
-	t := c.Theme()
-	it := ui.Row(c).Padding(6, 10).Radius(6).Gap(8)
-	if disabled {
-		it.Disabled(true)
-	} else {
-		it.Cursor(ui.CursorPointer)
-		if it.Hovered() {
-			it.Background(a.pal.CardHover)
-		}
-	}
-	chosen := it.Clicked()
-	it.Children(func() {
-		col := t.Text
-		if disabled {
-			col = t.TextMuted
-		}
-		ui.Text(c, label).FontSize(12.5).Grow(1).MinWidth(0).TextColor(col)
-		if checked {
-			ui.Icon(c, icCheck).FontSize(13).TextColor(t.Text)
-		}
-	})
-	return chosen && !disabled
 }
 
 func (a *app) backendLabel() string {
@@ -343,7 +281,7 @@ func (a *app) applyRename() {
 	if th := a.byID(a.renameID); th != nil {
 		th.Title = strings.TrimSpace(a.renameDraft)
 		th.Updated = time.Now()
-		a.save()
+		a.saveThread(th)
 	}
 	a.renaming = false
 }

@@ -2,7 +2,7 @@
 // compatible streaming client, the tool-calling loop, the built-in
 // tools, skill discovery (Agent Skills spec) and a stdio MCP client.
 // The design follows pi and pi-ai-go.
-package agent
+package harness
 
 import (
 	"bufio"

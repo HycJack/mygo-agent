@@ -5,7 +5,7 @@ import (
 	"slices"
 	"strings"
 
-	"mygo-agent/internal/agent"
+	"mygo-agent/internal/harness"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -18,10 +18,10 @@ var providerPresets = []struct {
 	wire    string
 	models  []string
 }{
-	{"OpenAI", "https://api.openai.com/v1", agent.WireResponses, []string{"gpt-5.2", "gpt-5.2-mini"}},
-	{"DeepSeek", "https://api.deepseek.com/v1", agent.WireChat, []string{"deepseek-chat", "deepseek-reasoner"}},
-	{"OpenRouter", "https://openrouter.ai/api/v1", agent.WireChat, []string{"openai/gpt-5.2"}},
-	{"Ollama (local)", "http://localhost:11434/v1", agent.WireChat, []string{"llama3.2"}},
+	{"OpenAI", "https://api.openai.com/v1", harness.WireResponses, []string{"gpt-5.2", "gpt-5.2-mini"}},
+	{"DeepSeek", "https://api.deepseek.com/v1", harness.WireChat, []string{"deepseek-chat", "deepseek-reasoner"}},
+	{"OpenRouter", "https://openrouter.ai/api/v1", harness.WireChat, []string{"openai/gpt-5.2"}},
+	{"Ollama (local)", "http://localhost:11434/v1", harness.WireChat, []string{"llama3.2"}},
 }
 
 // settingsModal is the manage-providers dialog: the providers on the
@@ -119,10 +119,10 @@ func (a *app) settingsModal(c *ui.Context) {
 								ui.Text(c, "API").FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
 								for _, w := range []struct {
 									id, label string
-								}{{agent.WireChat, "Chat Completions"}, {agent.WireResponses, "Responses"}} {
+								}{{harness.WireChat, "Chat Completions"}, {harness.WireResponses, "Responses"}} {
 									wire := a.providers[pi].Wire
 									if wire == "" {
-										wire = agent.WireChat
+										wire = harness.WireChat
 									}
 									b := ui.ButtonBase(c).Padding(4, 10).Radius(999).Gap(6)
 									if wire == w.id {
@@ -237,7 +237,7 @@ func (a *app) addMCPServer() {
 		return
 	}
 	fields := strings.Fields(line)
-	a.mcpServers = append(a.mcpServers, agent.MCPServer{
+	a.mcpServers = append(a.mcpServers, harness.MCPServer{
 		Name:    name,
 		Command: fields[0],
 		Args:    fields[1:],

@@ -1,4 +1,4 @@
-package agent
+package harness
 
 import (
 	"bytes"
@@ -19,11 +19,11 @@ import (
 // from the approval mode: agent mode sandboxes the shell and confines
 // writes to the workspace; full access does neither.
 type ToolOptions struct {
-	// Sandbox runs shell commands inside the workspace-scoped execution
-	// boundary (spec/sandbox.md). When true and the platform has no
-	// sandbox, the shell tool reports that as its error instead of
-	// running unsandboxed.
-	Sandbox bool
+	// Sandbox wraps shell commands in the workspace-scoped execution
+	// boundary (spec/sandbox.md). nil means no sandbox (full access);
+	// a provider whose platform has no backend reports that as the
+	// tool's error instead of running unsandboxed.
+	Sandbox Sandbox
 	// ConfineWrites rejects edit_file targets outside the workdir.
 	ConfineWrites bool
 }
@@ -87,8 +87,13 @@ func bashTool(workdir string, o ToolOptions) Tool {
 			out, err := cmd.CombinedOutput()
 			res := TrimOutput(string(out), 32<<10)
 			if err != nil {
-				if ctx.Err() != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				// Killed or timed out, the outcome is unknown
+				// (spec/sandbox.md): the result says so.
+				switch {
+				case errors.Is(ctx.Err(), context.DeadlineExceeded):
 					res += "\ncommand timed out; its outcome is unknown"
+				case ctx.Err() != nil:
+					res += "\ncommand was cancelled; its outcome is unknown"
 				}
 				return res, err
 			}

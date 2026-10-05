@@ -1,49 +1,60 @@
-package agent
+package harness
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
 )
 
-// boundary is the effective execution boundary for one sandboxed command
+// Boundary is the effective execution boundary for one sandboxed command
 // (spec/sandbox.md): the workdir read-write, a fresh scratch directory
-// read-write, system roots read-only, network denied.
-type boundary struct {
+// read-write (it becomes the child's HOME and TMPDIR), network denied.
+type Boundary struct {
 	Workdir string
 	Scratch string
 	Network string // "deny" — "inherit" is reserved for a future mode
 }
 
-// shellCommand builds the command for one shell tool invocation. In full
-// access it is a plain child process; with ToolOptions.Sandbox it runs
-// inside the boundary.
-//
-// The returned cleanup removes the scratch directory and must run after
-// the command finishes. A platform without a sandbox returns an error
-// that names the remedy — never a silently weaker boundary.
+// Sandbox wraps one command invocation in a boundary. A platform without
+// a backend returns an error naming the remedy — never a silently weaker
+// boundary (the honesty rule in spec/sandbox.md). Implementations live in
+// internal/providers/sandbox; the harness knows the protocol only.
+type Sandbox interface {
+	Command(ctx context.Context, b Boundary, name string, arg ...string) (*exec.Cmd, func(), error)
+}
+
+// shellCommand builds the command for one shell tool invocation. Without
+// a Sandbox (full access) it is a plain child process; with one, the
+// scratch directory is created here — the provider owns the boundary,
+// the harness owns the child's environment and the cleanup order.
 func shellCommand(ctx context.Context, o ToolOptions, workdir, name string, arg ...string) (*exec.Cmd, func(), error) {
-	if !o.Sandbox {
+	if o.Sandbox == nil {
 		cmd := exec.CommandContext(ctx, name, arg...)
 		cmd.Dir = workdir
 		return cmd, nil, nil
 	}
 	scratch, err := os.MkdirTemp("", "mygo-sandbox-")
 	if err != nil {
-		return nil, nil, fmt.Errorf("sandbox: scratch directory: %w", err)
+		return nil, nil, err
 	}
 	cleanup := func() { os.RemoveAll(scratch) }
 	if err := os.MkdirAll(filepath.Join(scratch, "tmp"), 0o700); err != nil {
 		cleanup()
 		return nil, nil, err
 	}
-	b := boundary{Workdir: canonical(workdir), Scratch: scratch, Network: "deny"}
-	cmd, err := sandboxedCommand(ctx, b, name, arg...)
+	cmd, wrapCleanup, err := o.Sandbox.Command(ctx, Boundary{
+		Workdir: canonical(workdir),
+		Scratch: scratch,
+		Network: "deny",
+	}, name, arg...)
 	if err != nil {
 		cleanup()
 		return nil, nil, err
+	}
+	if wrapCleanup != nil {
+		inner := cleanup
+		cleanup = func() { wrapCleanup(); inner() }
 	}
 	cmd.Dir = workdir
 	// The child sees a minimal environment pointing at the boundary's

@@ -15,7 +15,8 @@ import (
 func New(version string) *App {
 	a := newApp()
 	a.version = version
-	a.load()
+	a.importLegacyThreads() // the pre-directory threads.json, once
+	a.loadThreads()
 	return a
 }
 

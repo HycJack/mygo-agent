@@ -1,6 +1,8 @@
 package app
 
 import (
+	uipkg "mygo-agent/internal/ui"
+
 	"strings"
 
 	"mygo-agent/internal/components"
@@ -171,6 +173,8 @@ func (a *app) block(c *ui.Context, b *Block) {
 		a.blockDiff(c, b)
 	case "error":
 		a.blockError(c, b)
+	case "approval":
+		a.blockApproval(c, b)
 	case "reasoning":
 		a.blockReasoning(c, b)
 	}
@@ -246,7 +250,7 @@ func (a *app) blockDiff(c *ui.Context, b *Block) {
 			ui.Scroll(c).MaxHeight(320).Children(func() {
 				ui.Column(c).FillWidth().PaddingY(4).Children(func() {
 					for _, l := range b.Lines {
-						a.diffLineRow(c, l, false, false)
+						uipkg.DiffLineRow(c, l, false, false, a.pal)
 					}
 				})
 			})

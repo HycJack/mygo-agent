@@ -1,4 +1,4 @@
-package agent
+package harness
 
 import (
 	"fmt"
@@ -54,9 +54,32 @@ type Policy struct {
 // closed.
 func (p Policy) Resolve(toolName string, actions []Action) Permission {
 	if perm, ok := p.Rules.match(toolName); ok {
-		return perm
+		switch perm {
+		case PermAllow, PermDeny, PermAsk:
+			return perm
+		default:
+			// A malformed rule value never widens the gate.
+			return PermDeny
+		}
 	}
 	return p.modeDefault(actions)
+}
+
+// PermissionFromConfig validates a host-configured rule value. The
+// catalog is exactly allow, deny, ask (permissions.md); case and
+// surrounding space are tolerated, anything else fails closed to deny —
+// a typo like "alow" or "Deny" must not read as permission to run.
+func PermissionFromConfig(s string) Permission {
+	switch strings.ToLower(strings.TrimSpace(s)) {
+	case "allow":
+		return PermAllow
+	case "deny":
+		return PermDeny
+	case "ask":
+		return PermAsk
+	default:
+		return PermDeny
+	}
 }
 
 // modeDefault maps every declared action through the mode's defaults and

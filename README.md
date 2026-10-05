@@ -15,9 +15,12 @@
     `edit_file`、`list_files`、`grep`、`read_skill`），回复支持表格、
     链接与 diff 卡片的 Markdown 渲染，长任务自动压缩上下文，ChatLog
     随任务持久化、重启后可带完整上下文继续。
-  - *Codex CLI* —— 运行 `codex exec --json`，自动续接会话。
-  - *Claude Code* —— 运行 `claude -p --output-format stream-json`，
-    自动续接会话；Edit/Write 调用渲染为 diff。
+  - *Codex CLI* —— 通过 `codex app-server`（JSON-RPC）驱动，自动续接
+    会话；Agent 模式下命令/文件变更的原生审批请求直达本应用的审批卡
+    （协议契约见 spec/cli-backends.md）。
+  - *Claude Code* —— 通过 `claude -p` 双向 stream-json 控制协议驱动，
+    自动续接会话；`can_use_tool` 审批请求直达审批卡（只读模式自动拒绝），
+    Edit/Write 调用渲染为 diff。
   - *Demo agent* —— 无需任何账号。
 - **厂商级模型配置（ZCode 风格）** —— 每个厂商独立的 base URL、API key、
   模型列表与 wire API（chat completions 或 codex/OpenAI 模型所用的
@@ -32,6 +35,56 @@
   文件查看器（文本 / 图片 / Markdown / diff）、消息锚点轨（悬停预览、
   点击跳转）、消息操作（复制 / 重发 / 重新生成）、全宽输入框（审批模式
   + 模型选择）、内嵌 Ghostty 终端。
+
+## 安全模型
+
+规范先行：[spec/](spec/) 目录先写不变量再写代码 ——
+[permissions.md](spec/permissions.md)（权限门）、[sandbox.md](spec/sandbox.md)
+（执行边界）、[approvals.md](spec/approvals.md)（审批流）。
+
+- **三级审批模式**（输入框左下角）对每个后端都真实生效：
+  - *Read Only* —— 只读工具（`read_file` / `list_files` / `grep` /
+    `read_skill`）；shell、写文件、MCP 一律拒绝。
+  - *Agent* —— 可写文件（仅限项目目录）并可跑 shell；shell 在本地
+    沙箱中执行：全域可读（凭证目录 `~/.ssh`、`~/.aws`、`~/.gnupg`
+    等除外）、只有项目目录与临时目录可写、**网络一律拒绝**
+    （macOS 用 Seatbelt，Linux 用 bubblewrap）。
+  - *Full Access* —— 不套沙箱，完全访问。
+- **逐工具规则**（config.json `permissions.rules`）覆盖模式默认值，
+  选择器支持精确名、`前缀*` 与 `*`，值为 `allow` / `deny` / `ask`：
+
+  ```json
+  "permissions": { "rules": { "bash": "ask", "mcp_github_*": "allow" } }
+  ```
+
+- **审批卡** —— 规则为 `ask`（或 Agent 模式下的 MCP 工具）时，运行
+  挂起并在消息流中弹出审批卡：*Allow once* / *Deny*。批准只对这一次
+  调用生效（没有 "always allow"——持久授权只来自配置文件）；10 分钟
+  无响应自动拒绝；模型输出永远无法创造授权。
+- 平台没有沙箱时（如 Windows），Agent 模式会**明确报错**而不是静默
+  降级为无沙箱执行。
+
+## 架构
+
+规范先行:[spec/](spec/) 目录持有全部协议契约；`scripts/check-deps.sh`
+在 CI 中机器强制分层依赖。四个层次，每条边界一个接口：
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ UI（internal/ui）   ViewModel + Actions 渲染共享视图：      │
+│                     Home · Composer · Sidebar · Workspace │
+│                     Markdown · Diff 行 · 主题/图标          │
+│   ▲ 状态快照                │ Actions 回调                 │
+│ HOST（internal/app）状态、线程、dispatch、审批、持久化：    │
+│                     threads.json（版本化+隔离）·config.json │
+│   │ harness.Turn / Event（归一化事件流）                    │
+│ HARNESS（internal/harness）一个协议，四个可替换后端：       │
+│      builtin 循环 · codex app-server · claude 控制协议 · demo│
+│   │ Sandbox / Memory 协议                                  │
+│ PROVIDERS（internal/providers/sandbox）                     │
+│      macOS Seatbelt · Linux bubblewrap · 平台缺失时诚实报错 │
+└──────────────────────────────────────────────────────────┘
+```
 
 ## 目录结构
 

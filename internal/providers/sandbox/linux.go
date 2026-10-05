@@ -1,46 +1,78 @@
 //go:build linux
 
-package agent
+package sandbox
 
 import (
 	"context"
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
+
+	"mygo-agent/internal/harness"
 )
+
+// sensitivePaths are the credential stores a sandboxed command must not
+// read even though reads elsewhere are broad (the codex workspace-write
+// contract: read the disk, write the workspace, no network).
+func sensitivePaths() []string { //nolint:unused on other platforms
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil
+	}
+	var out []string
+	for _, sub := range []string{".ssh", ".aws", ".gnupg", ".kube", ".docker"} {
+		out = append(out, filepath.Join(home, sub))
+	}
+	return out
+}
 
 // sandboxedCommand wraps argv in bubblewrap mount namespaces, following
 // agent-foundation's envd recipe (spec/sandbox.md): unshared pid/ipc/uts,
-// a new session that dies with the parent, all capabilities dropped, a
-// cleared environment, read-only system roots, read-write grants for the
-// workdir and scratch, and the network namespace unshared (deny).
-func sandboxedCommand(ctx context.Context, b boundary, name string, arg ...string) (*exec.Cmd, error) {
+// a new session that dies with the parent, all capabilities dropped, the
+// host filesystem read-only with credential directories masked out,
+// read-write grants for the workdir and scratch, and the network
+// namespace unshared (deny).
+// canonical resolves a grant path: grants enter profiles as real paths,
+// never through a symlink the child could sway.
+func canonical(path string) string {
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return filepath.Clean(path)
+	}
+	if resolved, err := filepath.EvalSymlinks(abs); err == nil {
+		return resolved
+	}
+	return abs
+}
+
+func (sandbox) Command(ctx context.Context, b harness.Boundary, name string, arg ...string) (*exec.Cmd, func(), error) {
 	bwrap, err := exec.LookPath("bwrap")
 	if err != nil {
-		return nil, fmt.Errorf("sandboxed execution needs bubblewrap (bwrap) on PATH on Linux; install it, or switch the approval mode to Full Access to run unsandboxed")
+		return nil, nil, fmt.Errorf("sandboxed execution needs bubblewrap (bwrap) on PATH on Linux; install it, or switch the approval mode to Full Access to run unsandboxed")
+	}
+	b.Workdir, b.Scratch = canonical(b.Workdir), canonical(b.Scratch)
+	if _, err := os.Stat(b.Workdir); err != nil {
+		return nil, nil, fmt.Errorf("sandbox: the workdir grant %s does not exist", b.Workdir)
 	}
 	argv := []string{
 		bwrap,
 		"--unshare-pid", "--unshare-ipc", "--unshare-uts",
 		"--new-session", "--die-with-parent",
 		"--cap-drop", "ALL",
-		"--clearenv",
 		// Network deny: an empty network namespace with no interfaces.
 		"--unshare-net",
-	}
-	// Read-only system roots: the compiler toolchain and its data.
-	for _, ro := range []string{"/usr", "/bin", "/sbin", "/lib", "/lib64", "/etc/ssl", "/etc/passwd", "/etc/group", "/etc/localtime", "/etc/resolv.conf"} {
-		if pathExists(ro) {
-			argv = append(argv, "--ro-bind", ro, ro)
-		}
-	}
-	argv = append(argv,
+		// The whole host filesystem read-only, so toolchains work from
+		// wherever they are installed; grants below are mounted
+		// read-write over it.
+		"--ro-bind", "/", "/",
 		"--proc", "/proc",
 		"--dev", "/dev",
-		"--tmpfs", "/tmp",
-	)
-	// The grants, canonicalized by the caller: workdir and scratch
-	// read-write at their own paths.
+	}
+	// Mask the credential stores: an empty tmpfs over each one.
+	for _, p := range sensitivePaths() {
+		argv = append(argv, "--tmpfs", p)
+	}
 	for _, grant := range []string{b.Workdir, b.Scratch} {
 		if grant == "" {
 			continue
@@ -49,15 +81,13 @@ func sandboxedCommand(ctx context.Context, b boundary, name string, arg ...strin
 	}
 	argv = append(argv, "--", name)
 	argv = append(argv, arg...)
-	// --clearenv wiped everything; the child's HOME/TMPDIR/PATH arrive as
-	// the environment of the bwrap process itself, which passes them
-	// through to the payload below "--".
-	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...)
-	cmd.Env = []string{}
-	return cmd, nil
+	// The payload's environment comes from the command's Env
+	// (HOME/TMPDIR/PATH into the scratch dir), set by the caller.
+	return exec.CommandContext(ctx, argv[0], argv[1:]...), nil, nil
 }
 
-func pathExists(path string) bool {
-	st, err := os.Stat(path)
-	return err == nil && (st.IsDir() || st.Mode().IsRegular())
-}
+// sandbox is the bubblewrap-backed provider.
+type sandbox struct{}
+
+// New returns the platform's sandbox provider.
+func New() harness.Sandbox { return sandbox{} }

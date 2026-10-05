@@ -4,7 +4,7 @@ LDFLAGS := -s -w -X main.version=$(VERSION)
 
 TARGETS := darwin/amd64 darwin/arm64 linux/amd64 linux/arm64 windows/amd64 windows/arm64
 
-.PHONY: build run test vet fmt release clean
+.PHONY: build run test race vet fmt release clean
 
 ## build: compile a binary for this machine into ./
 build:
@@ -17,6 +17,10 @@ run:
 ## test: all packages
 test:
 	go test ./...
+
+## race: all packages under the race detector
+race:
+	go test -race ./...
 
 ## vet: go vet
 vet:

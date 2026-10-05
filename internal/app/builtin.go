@@ -2,21 +2,28 @@ package app
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
 	"time"
 
-	"mygo-agent/internal/agent"
+	"mygo-agent/internal/harness"
 )
 
 // runBuiltin drives the built-in agent loop against the selected
 // provider: streaming replies, tool calls as cards, skills and MCP
 // tools, all in-process.
-func (a *app) runBuiltin(th *Thread, prompt string, at int) {
-	ctx, cancel := context.WithCancel(context.Background())
-	a.cancel = cancel
+func (a *app) runBuiltin(ctx context.Context, th *Thread, turn harness.Turn, emit func(harness.Event)) {
+	prompt, at := turn.Prompt, -1
+	for i := range th.Messages {
+		if th.Messages[i].Running {
+			at = i
+		}
+	}
+	if at < 0 {
+		at = len(th.Messages) - 1
+	}
+	ctx, cancel := a.adoptCancel(ctx)
 	defer cancel()
 
 	p := a.provider()
@@ -25,8 +32,15 @@ func (a *app) runBuiltin(th *Thread, prompt string, at int) {
 		return
 	}
 
-	skills := agent.DiscoverSkills(a.workdir)
-	tools := agent.Tools(a.workdir, skills)
+	skills := harness.DiscoverSkills(turn.Workdir)
+	// The mode tunes how the tools execute (spec/permissions.md): agent
+	// mode runs the shell inside the sandbox and confines writes to the
+	// workspace; full access does neither; read-only denies both before
+	// execution.
+	tools := harness.Tools(turn.Workdir, skills, harness.ToolOptions{
+		Sandbox:       turn.Sandbox,
+		ConfineWrites: turn.Mode != harness.ModeFull,
+	})
 	mcpClients := a.connectMCP(ctx)
 	defer func() {
 		for _, c := range mcpClients {
@@ -61,6 +75,7 @@ func (a *app) runBuiltin(th *Thread, prompt string, at int) {
 			}
 		})
 	}
+	project := func(ev harness.Event) { a.applyEvent(th, at, "builtin", ev) }
 	go func() {
 		ticker := time.NewTicker(40 * time.Millisecond)
 		defer ticker.Stop()
@@ -76,131 +91,79 @@ func (a *app) runBuiltin(th *Thread, prompt string, at int) {
 
 	wire := p.Wire
 	if wire == "" {
-		wire = agent.WireChat
+		wire = harness.WireChat
 	}
-	cfg := agent.LoopConfig{
+	cfg := harness.LoopConfig{
 		BaseURL:         p.BaseURL,
 		APIKey:          p.APIKey,
-		Model:           a.model,
+		Model:           turn.Model,
 		Wire:            wire,
-		ReasoningEffort: []string{"low", "medium", "high"}[a.effort],
-		SystemPrompt:    builtinSystemPrompt(a.workdir, skills),
+		ReasoningEffort: []string{"low", "medium", "high"}[turn.Effort],
+		SystemPrompt:    builtinSystemPrompt(turn.Workdir, skills),
 		Tools:           tools,
-		Policy:          agent.Policy{Mode: agent.Mode(a.mode), Rules: a.permRules},
-		MaxTurns:        a.maxTurns,
-		MaxMessages:     a.maxTurns*6 + 12,
-		OnEvent: func(e agent.Event) {
+		Policy:          harness.Policy{Mode: turn.Mode, Rules: turn.Rules},
+		// Approvals surface as cards on the reply; the loop's timeout
+		// denies what the user never answers, and the context it hands
+		// the host settles the card when it does (spec/approvals.md).
+		OnApproval: func(actx context.Context, req harness.ApprovalRequest) harness.ApprovalDecision {
+			return a.waitForApproval(actx, th, at, req)
+		},
+		ApprovalTimeout: a.approvalTimeout,
+		MaxTurns:        turn.MaxTurns,
+		MaxMessages:     turn.MaxTurns*6 + 12,
+		OnEvent: func(e harness.Event) {
 			switch e.Kind {
-			case "text":
+			case harness.EventText:
 				mu.Lock()
 				pending.WriteString(e.TextDelta)
 				mu.Unlock()
-			case "tool_start":
+			case harness.EventToolStart, harness.EventToolEnd, harness.EventError, harness.EventNote:
+				// Tool cards and reports go through the shared projector;
+				// the text stays on its 40ms batching ticker above.
 				flush()
-				toolStarts[e.ToolCall.ID] = time.Now()
-				disp := toolDisplay(e.ToolCall)
-				isEdit := e.ToolCall.Function.Name == "edit_file"
-				a.update(func() {
-					if m := reply(th, at); m != nil {
-						if isEdit {
-							m.Blocks = append(m.Blocks, Block{Type: "command", Text: disp, Running: true, Exit: -1, Edit: true})
-						} else {
-							m.Blocks = append(m.Blocks, Block{Type: "command", Text: disp, Running: true, Exit: -1})
-						}
+				if e.Kind == harness.EventToolStart {
+					toolStarts[e.ToolCall.ID] = time.Now()
+					e.Text = toolDisplayFor(e.ToolCall)
+					if e.ToolCall.Function.Name == "edit_file" {
+						e.Edit = true
 					}
-				})
-			case "tool_end":
-				flush()
-				var ms int64
-				if started, ok := toolStarts[e.ToolCall.ID]; ok {
-					ms = time.Since(started).Milliseconds()
 				}
-				a.update(func() {
-					m := reply(th, at)
-					if m == nil {
-						return
+				if e.Kind == harness.EventToolEnd {
+					if started, ok := toolStarts[e.ToolCall.ID]; ok {
+						e.Ms = time.Since(started).Milliseconds()
 					}
-					bi := -1
-					for i := len(m.Blocks) - 1; i >= 0; i-- {
-						if m.Blocks[i].Type == "command" && m.Blocks[i].Running {
-							bi = i
-							break
-						}
+					e.Text = toolDisplayFor(e.ToolCall)
+					// An edit's tool result is its diff; hand the projector
+					// a preview so the card opens as one.
+					if e.ToolCall.Function.Name == "edit_file" && len(parseToolDiff(e.Output)) > 0 {
+						e.Edit = true
+						e.Diff = e.Output
 					}
-					if bi < 0 {
-						return
-					}
-					b := &m.Blocks[bi]
-					b.Running = false
-					b.Exit = e.Exit
-					b.Ms = ms
-					b.Output = agent.TrimOutput(e.Output, 16<<10)
-					// Collapsed by default; diffs stay open, they are the
-					// change itself.
-					b.Open = b.Edit
-					if b.Edit {
-						// An edit renders as a colored diff card.
-						lines := parseToolDiff(e.Output)
-						if len(lines) > 0 {
-							b.Type = "diff"
-							b.Text = ""
-							b.Lines = lines
-							b.Add, b.Del = 0, 0
-							for _, l := range lines {
-								switch l.Kind {
-								case '+':
-									b.Add++
-								case '-':
-									b.Del++
-								}
-							}
-							b.File = toolDisplayPath(e.ToolCall)
-						}
-					}
-				})
-			case "error":
-				flush()
-				a.update(func() {
-					if m := reply(th, at); m != nil {
-						m.Blocks = append(m.Blocks, Block{Type: "error", Text: e.Err})
-					}
-				})
-			case "notice":
-				flush()
-				a.update(func() {
-					if m := reply(th, at); m != nil {
-						m.Blocks = append(m.Blocks, Block{Type: "reasoning", Text: e.Err})
-					}
-				})
+				}
+				project(e)
 			}
 		},
 	}
 
-	// The ChatLog carries the full transcript across turns and app
-	// restarts. First builtin turn: seed it from the thread's visible
-	// messages; later turns: just add the new user prompt.
-	if th.ChatLog == nil {
-		th.ChatLog = a.seedChatLog(th, at, prompt)
-	} else if prompt != "" {
-		th.ChatLog = append(th.ChatLog, agent.ChatMessage{Role: "user", Content: prompt})
-	}
-	logAt := len(th.ChatLog)
+	// The transcript lives behind the Memory protocol
+	// (spec/architecture.md): load it, seed it from the thread's visible
+	// messages on the first turn, append this turn's prompt.
+	history := a.transcriptFor(turn, th, at, prompt)
+	logAt := len(history)
 	a.update(func() {
 		if m := reply(th, at); m != nil {
 			m.LogAt = logAt
 		}
 	})
 
-	transcript, err := agent.Run(ctx, cfg, th.ChatLog)
+	transcript, err := harness.Run(ctx, cfg, history)
 	close(done)
 	flush()
-	a.update(func() {
-		if m := reply(th, at); m != nil {
-			th.ChatLog = transcript
-		}
-	})
+	if turn.Memory != nil {
+		turn.Memory.StoreTranscript(turn.MemoryKey, transcript)
+	}
 	errText := ""
-	if err != nil && ctx.Err() == nil && !errors.Is(err, agent.ErrTurnLimit) {
+	if err != nil && ctx.Err() == nil && !errors.Is(err, harness.ErrTurnLimit) {
 		// The turn limit already announced itself as a notice.
 		errText = err.Error()
 	}
@@ -209,10 +172,10 @@ func (a *app) runBuiltin(th *Thread, prompt string, at int) {
 
 // connectMCP starts every configured server, skipping the ones that
 // fail (they would only produce tool errors).
-func (a *app) connectMCP(ctx context.Context) []*agent.ServerClient {
-	var clients []*agent.ServerClient
+func (a *app) connectMCP(ctx context.Context) []*harness.ServerClient {
+	var clients []*harness.ServerClient
 	for _, s := range a.effectiveMCPServers() {
-		if c, err := agent.StartServer(ctx, s); err == nil {
+		if c, err := harness.StartServer(ctx, s); err == nil {
 			clients = append(clients, c)
 		}
 	}
@@ -220,7 +183,7 @@ func (a *app) connectMCP(ctx context.Context) []*agent.ServerClient {
 }
 
 // builtinSystemPrompt describes the agent, its project and its skills.
-func builtinSystemPrompt(workdir string, skills *agent.SkillSet) string {
+func builtinSystemPrompt(workdir string, skills *harness.SkillSet) string {
 	var b strings.Builder
 	b.WriteString("You are Codex, a coding agent embedded in a desktop app. ")
 	b.WriteString("You work inside the project directory " + workdir + ". ")
@@ -229,53 +192,6 @@ func builtinSystemPrompt(workdir string, skills *agent.SkillSet) string {
 	b.WriteString("keep commands non-interactive and check your work with tests or builds when they exist.")
 	b.WriteString(skills.PromptSection())
 	return b.String()
-}
-
-// toolDisplay renders a tool call as the one-line summary of its card.
-func toolDisplay(call agent.ToolCall) string {
-	var in map[string]any
-	_ = json.Unmarshal([]byte(call.Function.Arguments), &in)
-	get := func(k string) string {
-		if s, ok := in[k].(string); ok {
-			return s
-		}
-		return ""
-	}
-	short := func(s string, n int) string {
-		if len(s) > n {
-			return s[:n] + "…"
-		}
-		return s
-	}
-	switch call.Function.Name {
-	case "bash":
-		return "$ " + short(get("command"), 200)
-	case "read_file":
-		return "read_file " + get("path")
-	case "edit_file":
-		return "edit_file " + get("path")
-	case "list_files":
-		return "list_files " + get("path")
-	case "grep":
-		return "grep " + short(get("pattern"), 120)
-	case "read_skill":
-		return "read_skill " + get("name")
-	default:
-		if rest, ok := strings.CutPrefix(call.Function.Name, "mcp_"); ok {
-			return rest + " " + short(call.Function.Arguments, 160)
-		}
-		return call.Function.Name + " " + short(call.Function.Arguments, 160)
-	}
-}
-
-// toolDisplayPath pulls the path argument of a file tool call.
-func toolDisplayPath(call agent.ToolCall) string {
-	var in map[string]any
-	_ = json.Unmarshal([]byte(call.Function.Arguments), &in)
-	if s, ok := in["path"].(string); ok {
-		return s
-	}
-	return ""
 }
 
 // parseToolDiff converts an edit_file result ("+ line" / "- line") into
@@ -298,10 +214,10 @@ func parseToolDiff(out string) []DiffLine {
 // messages plus the new prompt: system, prior user/assistant texts,
 // then the prompt. Tool round-trips from earlier app sessions are not
 // carried over.
-func (a *app) seedChatLog(th *Thread, at int, prompt string) []agent.ChatMessage {
-	msgs := []agent.ChatMessage{{
+func (a *app) seedChatLog(th *Thread, at int, prompt string) []harness.ChatMessage {
+	msgs := []harness.ChatMessage{{
 		Role: "system",
-		Content: builtinSystemPrompt(a.workdir, agent.DiscoverSkills(a.workdir)) +
+		Content: builtinSystemPrompt(a.workdir, harness.DiscoverSkills(a.workdir)) +
 			"\n\nAnswer in the user's language. When you have the result, summarise what you did and stop; do not call tools without a reason.",
 	}}
 	for i, m := range th.Messages {
@@ -310,15 +226,31 @@ func (a *app) seedChatLog(th *Thread, at int, prompt string) []agent.ChatMessage
 		}
 		switch m.Role {
 		case "user":
-			msgs = append(msgs, agent.ChatMessage{Role: "user", Content: m.Text})
+			msgs = append(msgs, harness.ChatMessage{Role: "user", Content: m.Text})
 		case "assistant":
 			if strings.TrimSpace(m.Text) != "" {
-				msgs = append(msgs, agent.ChatMessage{Role: "assistant", Content: m.Text})
+				msgs = append(msgs, harness.ChatMessage{Role: "assistant", Content: m.Text})
 			}
 		}
 	}
 	if prompt != "" {
-		msgs = append(msgs, agent.ChatMessage{Role: "user", Content: prompt})
+		msgs = append(msgs, harness.ChatMessage{Role: "user", Content: prompt})
 	}
 	return msgs
+}
+
+// transcriptFor resolves the turn's starting transcript through the
+// Memory protocol, seeding from the thread's visible messages when the
+// store is empty.
+func (a *app) transcriptFor(turn harness.Turn, th *Thread, at int, prompt string) []harness.ChatMessage {
+	history := []harness.ChatMessage(nil)
+	if turn.Memory != nil {
+		history = turn.Memory.LoadTranscript(turn.MemoryKey)
+	}
+	if history == nil {
+		history = a.seedChatLog(th, at, prompt)
+	} else if prompt != "" {
+		history = append(history, harness.ChatMessage{Role: "user", Content: prompt})
+	}
+	return history
 }

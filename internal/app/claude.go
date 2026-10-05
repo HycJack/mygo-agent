@@ -5,36 +5,57 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"maps"
 	"os"
 	"os/exec"
 	"slices"
 	"strings"
 
-	"mygo-agent/internal/agent"
+	"mygo-agent/internal/harness"
 )
 
-// runClaude drives the Claude Code CLI (`claude -p`) in the background:
-// its stream-json events become the thread's text, tool cards and
-// diffs, and the CLI's session id is kept so later turns resume it.
-func (a *app) runClaude(th *Thread, prompt string, at int) {
-	ctx, cancel := context.WithCancel(context.Background())
-	a.cancel = cancel
+// runClaude drives the Claude Code CLI over the bidirectional
+// stream-json protocol (spec/cli-backends.md): the prompt is one input
+// line, events become the thread's cards, and `can_use_tool` control
+// requests surface as approval cards whose decision is written back.
+// One fresh CLI per turn; session resume goes through --resume.
+func (a *app) runClaude(ctx context.Context, th *Thread, turn harness.Turn, emit func(harness.Event)) {
+	prompt, at := turn.Prompt, -1
+	for i := range th.Messages {
+		if th.Messages[i].Running {
+			at = i
+		}
+	}
+	if at < 0 {
+		at = len(th.Messages) - 1
+	}
+	ctx, cancel := a.adoptCancel(ctx)
 	defer cancel()
 
-	// The approval mode maps onto Claude Code's permission modes:
-	// read-only analyses, edits applied without asking, or full access.
-	perm := []string{"plan", "acceptEdits", "bypassPermissions"}[a.mode]
-	args := []string{"-p", "--output-format", "stream-json", "--verbose",
-		"--permission-mode", perm, "--model", a.model}
-	if th.ClaudeID != "" {
-		args = append(args, "--resume", th.ClaudeID)
+	// Mode mapping: read-only and agent run in default mode where the
+	// CLI asks before every mutating tool — the app denies, or forwards
+	// to a card, per mode. Full access bypasses asking entirely.
+	mode := turn.Mode
+	perm := "default"
+	if mode == harness.ModeFull {
+		perm = "bypassPermissions"
 	}
-	args = append(args, prompt)
+	args := []string{"-p", "--output-format", "stream-json", "--verbose",
+		"--input-format", "stream-json",
+		"--permission-mode", perm, "--model", turn.Model}
+	if turn.SessionID != "" {
+		args = append(args, "--resume", turn.SessionID)
+	}
 
 	cmd := exec.CommandContext(ctx, a.claudePath, args...)
 	cmd.Dir = a.workdir
 	procGroupAttr(cmd)
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		a.finish(th, at, "claude: "+err.Error())
+		return
+	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
 		a.finish(th, at, "claude: "+err.Error())
@@ -46,14 +67,37 @@ func (a *app) runClaude(th *Thread, prompt string, at int) {
 		a.finish(th, at, "claude: "+err.Error())
 		return
 	}
-	a.claudePid = cmd.Process.Pid
+	a.update(func() { a.claudePid = cmd.Process.Pid })
 
-	r := &claudeRun{a: a, th: th, at: at, cards: map[string]int{}}
+	// The prompt: one user message on the input stream.
+	msg, _ := json.Marshal(map[string]any{
+		"type": "user",
+		"message": map[string]any{
+			"role":    "user",
+			"content": []map[string]any{{"type": "text", "text": prompt}},
+		},
+	})
+	if _, err := stdin.Write(append(msg, '\n')); err != nil {
+		stdin.Close()
+		a.finish(th, at, "claude: "+err.Error())
+		return
+	}
+
+	e := emit
+	if e == nil {
+		e = func(harness.Event) {}
+	}
+	r := &claudeRun{a: a, th: th, at: at, cards: map[string]int{},
+		ctx: ctx, stdin: stdin, mode: mode, emit: e}
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 64*1024), 8<<20)
 	for sc.Scan() {
+		if r.sawResult {
+			break // the turn is done; closing stdin ends the CLI
+		}
 		r.handle(strings.TrimSpace(sc.Text()))
 	}
+	stdin.Close()
 	waitErr := cmd.Wait()
 
 	errText := ""
@@ -74,13 +118,98 @@ func (a *app) runClaude(th *Thread, prompt string, at int) {
 
 // claudeRun carries one Claude Code run's state between events.
 type claudeRun struct {
-	a        *app
-	th       *Thread
-	at       int
-	cards    map[string]int // tool_use id -> block index
-	sawEvent bool
+	a         *app
+	th        *Thread
+	at        int
+	cards     map[string]int // tool_use id -> block index
+	sawEvent  bool
+	sawResult bool
+
+	// Control-protocol state (spec/cli-backends.md).
+	ctx   context.Context
+	stdin io.WriteCloser
+	mode  harness.Mode
+	emit  func(harness.Event)
 
 	pending strings.Builder
+}
+
+// controlRequest answers one CLI control request (spec/cli-backends.md):
+// can_use_tool decisions ride the shared approval cards; every other
+// server-initiated subtype gets an error reply so the CLI never stalls
+// on an unanswered request.
+func (r *claudeRun) controlRequest(line string) {
+	var req struct {
+		RequestID string `json:"request_id"`
+		Request   struct {
+			Subtype  string          `json:"subtype"`
+			ToolName string          `json:"tool_name"`
+			Input    json.RawMessage `json:"input"`
+		} `json:"request"`
+	}
+	if json.Unmarshal([]byte(line), &req) != nil {
+		return
+	}
+	if req.Request.Subtype != "can_use_tool" {
+		r.writeControl(map[string]any{
+			"subtype": "error", "request_id": req.RequestID, "error": "unsupported by mygo",
+		})
+		return
+	}
+	// Read-only: the mode denies every mutating tool the CLI asks about;
+	// the denial names the mode so the model can stop trying.
+	if r.mode == harness.ModeReadOnly {
+		r.writeControl(map[string]any{
+			"subtype": "success", "request_id": req.RequestID,
+			"response": map[string]any{
+				"behavior": "deny",
+				"message":  "read-only mode: the " + req.Request.ToolName + " tool is not available; ask the user to change the approval mode",
+			},
+		})
+		return
+	}
+	call := harness.ToolCall{ID: req.RequestID}
+	call.Function.Name = req.Request.ToolName
+	call.Function.Arguments = string(req.Request.Input)
+	decision := r.a.waitForApproval(r.ctx, r.th, r.at, harness.ApprovalRequest{
+		Call:    call,
+		Summary: harness.ApprovalSummary(call),
+		Reason:  "claude asks to use this tool",
+	})
+	if decision.Approved {
+		var input any
+		_ = json.Unmarshal(req.Request.Input, &input)
+		if input == nil {
+			input = map[string]any{}
+		}
+		r.writeControl(map[string]any{
+			"subtype": "success", "request_id": req.RequestID,
+			"response": map[string]any{"behavior": "allow", "updatedInput": input},
+		})
+		return
+	}
+	reason := decision.Reason
+	if reason == "" {
+		reason = "the user denied this call"
+	}
+	r.writeControl(map[string]any{
+		"subtype": "success", "request_id": req.RequestID,
+		"response": map[string]any{"behavior": "deny", "message": reason},
+	})
+}
+
+// send routes one event to the projector; nil-safe for tests that build
+// a claudeRun by hand.
+func (r *claudeRun) send(ev harness.Event) {
+	if r.emit != nil {
+		r.emit(ev)
+	}
+}
+
+// writeControl writes one control_response line to the CLI's stdin.
+func (r *claudeRun) writeControl(response map[string]any) {
+	line, _ := json.Marshal(map[string]any{"type": "control_response", "response": response})
+	_, _ = r.stdin.Write(append(line, '\n'))
 }
 
 // flush pushes batched text deltas onto the thread.
@@ -90,11 +219,9 @@ func (r *claudeRun) flush() {
 	}
 	s := r.pending.String()
 	r.pending.Reset()
-	r.a.update(func() {
-		if m := reply(r.th, r.at); m != nil {
-			m.Text += s
-		}
-	})
+	if s != "" {
+		r.send(harness.Event{Kind: harness.EventText, TextDelta: s})
+	}
 }
 
 // handle applies one stream-json line.
@@ -122,10 +249,17 @@ func (r *claudeRun) handle(line string) {
 	}
 
 	switch ev.Type {
+	case "control_request":
+		r.controlRequest(line)
+		return
+	case "result":
+		r.sawResult = true
+	}
+
+	switch ev.Type {
 	case "system":
 		if ev.Subtype == "init" && ev.SessionID != "" {
-			id := ev.SessionID
-			r.a.update(func() { r.th.ClaudeID = id })
+			r.send(harness.Event{Kind: harness.EventSession, SessionID: ev.SessionID})
 		}
 
 	case "assistant":
@@ -139,11 +273,7 @@ func (r *claudeRun) handle(line string) {
 					continue
 				}
 				r.flush()
-				r.a.update(func() {
-					if m := reply(r.th, r.at); m != nil {
-						m.Text += blk.Text
-					}
-				})
+				r.send(harness.Event{Kind: harness.EventText, TextDelta: blk.Text})
 			case "tool_use":
 				r.flush()
 				r.toolUse(blk.ID, blk.Name, blk.RawInput)
@@ -166,17 +296,13 @@ func (r *claudeRun) handle(line string) {
 		if ev.IsError || ev.Subtype != "success" {
 			verb = "Stopped"
 		}
-		note := fmt.Sprintf("%s in %.1fs · $%.4f · session %s", verb, ev.Duration/1000, ev.Cost, shortSession(r.th.ClaudeID))
-		r.a.update(func() {
-			if m := reply(r.th, r.at); m != nil {
-				m.Blocks = append(m.Blocks, Block{Type: "reasoning", Text: note})
-			}
-		})
+		r.send(harness.Event{Kind: harness.EventNote, Text: fmt.Sprintf(
+			"%s in %.1fs · $%.4f · session %s", verb, ev.Duration/1000, ev.Cost, shortSession(r.th.ClaudeID))})
 	}
 }
 
-// toolUse adds a card for a tool the model invoked. Edits render as a
-// diff right away, computed from the call's own old/new strings.
+// toolUse emits the tool_start event for a tool the model invoked. Edits
+// carry a diff preview computed from the call's own old/new strings.
 func (r *claudeRun) toolUse(id, name string, rawInput json.RawMessage) {
 	var in struct {
 		Command  string `json:"command"`
@@ -185,28 +311,28 @@ func (r *claudeRun) toolUse(id, name string, rawInput json.RawMessage) {
 		Old      string `json:"old_string"`
 		New      string `json:"new_string"`
 		Content  string `json:"content"`
-		Query    string `json:"query"`
 	}
 	_ = json.Unmarshal(rawInput, &in)
 
 	disp := name
 	isEdit := false
-	var lines []DiffLine
+	var lines []harness.DiffLine
+	file := ""
 	switch name {
 	case "Bash":
 		disp = "$ " + truncTitle(in.Command, 200)
 	case "Read":
-		disp = "read " + in.FilePath
+		disp, file = "read "+in.FilePath, in.FilePath
 	case "Edit":
-		disp, isEdit = "edit "+in.FilePath, true
-		lines = agent.UnifiedDiff(in.Old, in.New)
+		disp, file, isEdit = "edit "+in.FilePath, in.FilePath, true
+		lines = harness.UnifiedDiff(in.Old, in.New)
 	case "Write":
-		disp, isEdit = "write "+in.FilePath, true
+		disp, file, isEdit = "write "+in.FilePath, in.FilePath, true
 		old := ""
 		if data, err := os.ReadFile(in.FilePath); err == nil {
 			old = string(data)
 		}
-		lines = agent.UnifiedDiff(old, in.Content)
+		lines = harness.UnifiedDiff(old, in.Content)
 	case "Grep":
 		disp = "grep " + truncTitle(in.Pattern, 120)
 	case "Glob":
@@ -215,55 +341,37 @@ func (r *claudeRun) toolUse(id, name string, rawInput json.RawMessage) {
 		disp = truncTitle(name+" "+shortArgs(rawInput), 160)
 	}
 
-	r.a.update(func() {
-		m := reply(r.th, r.at)
-		if m == nil {
-			return
+	ev := harness.Event{
+		Kind:     harness.EventToolStart,
+		ToolCall: harness.ToolCall{ID: id},
+		Text:     disp,
+		Edit:     isEdit,
+		File:     file,
+	}
+	if isEdit && len(lines) > 0 {
+		var b strings.Builder
+		for _, l := range lines {
+			b.WriteByte(l.Kind)
+			b.WriteByte(' ')
+			b.WriteString(l.Text)
+			b.WriteByte('\n')
 		}
-		b := Block{Type: "command", Text: disp, Running: true, Exit: -1}
-		if isEdit {
-			b.Edit = true
-			if len(lines) > 0 {
-				b.Type = "diff"
-				b.File = in.FilePath
-				b.Lines = lines
-				for _, l := range lines {
-					switch l.Kind {
-					case '+':
-						b.Add++
-					case '-':
-						b.Del++
-					}
-				}
-			}
-		}
-		m.Blocks = append(m.Blocks, b)
-		r.cards[id] = len(m.Blocks) - 1
-	})
+		ev.Diff = b.String()
+	}
+	r.send(ev)
 }
 
-// toolResult fills the matching card with the tool's output.
+// toolResult emits the tool_end event for a completed tool call.
 func (r *claudeRun) toolResult(toolUseID string, rawContent json.RawMessage, isError bool) {
-	r.a.update(func() {
-		m := reply(r.th, r.at)
-		if m == nil {
-			return
-		}
-		bi, ok := r.cards[toolUseID]
-		if !ok || bi >= len(m.Blocks) {
-			return
-		}
-		b := &m.Blocks[bi]
-		b.Running = false
-		b.Exit = 0
-		if isError {
-			b.Exit = 1
-		}
-		b.Output = agent.TrimOutput(claudeContentText(rawContent), 16<<10)
-		if b.Edit {
-			// The diff card already shows what changed.
-			b.Output = ""
-		}
+	exit := 0
+	if isError {
+		exit = 1
+	}
+	r.send(harness.Event{
+		Kind:     harness.EventToolEnd,
+		ToolCall: harness.ToolCall{ID: toolUseID},
+		Output:   harness.TrimOutput(claudeContentText(rawContent), 16<<10),
+		Exit:     exit,
 	})
 }
 

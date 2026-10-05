@@ -4,21 +4,24 @@ import (
 	"encoding/json"
 	"strings"
 
-	"mygo-agent/internal/agent"
+	"mygo-agent/internal/harness"
 )
 
-// codexRun carries one codex exec run's state between stream-json
-// events. handle applies one line; it is a method so tests can feed
-// recorded sessions and assert the thread state.
+// codexRun maps codex events (exec --json lines or app-server items) onto
+// the normalized harness.Event stream. It owns no thread state: the Host
+// projector turns events into cards (spec/architecture.md).
 type codexRun struct {
-	a        *app
-	th       *Thread
-	at       int
-	blocks   map[string]int // event item id -> block index
-	sawEvent bool
+	emit      func(harness.Event)
+	toolIDs   map[string]string           // exec item id -> tool-call id
+	reasoning map[string]*strings.Builder // app-server: itemId -> delta buffer
+	sawEvent  bool
 }
 
-// handle parses and applies one stream-json line.
+func newCodexRun(emit func(harness.Event)) *codexRun {
+	return &codexRun{emit: emit, toolIDs: map[string]string{}}
+}
+
+// handle parses and applies one exec --json stream-json line.
 func (r *codexRun) handle(line string) {
 	if line == "" {
 		return
@@ -27,133 +30,88 @@ func (r *codexRun) handle(line string) {
 	if json.Unmarshal([]byte(line), &ev) != nil {
 		return
 	}
+	r.handleEvent(ev)
+}
+
+// handleEvent maps one parsed codex event to a normalized Event.
+func (r *codexRun) handleEvent(ev codexEvent) {
 	r.sawEvent = true
 	switch {
 	case ev.Type == "thread.started" && ev.ThreadID != "":
-		id := ev.ThreadID
-		r.a.update(func() {
-			r.th.CodexID = id
-			r.a.save()
-		})
+		r.emit(harness.Event{Kind: harness.EventSession, SessionID: ev.ThreadID})
 	case strings.HasSuffix(ev.Type, ".delta") && ev.Delta != "":
-		delta := ev.Delta
-		r.a.update(func() {
-			if m := reply(r.th, r.at); m != nil {
-				m.Text += delta
-			}
-		})
+		r.emit(harness.Event{Kind: harness.EventText, TextDelta: ev.Delta})
 	case ev.Item != nil:
-		r.codexItem(ev)
+		r.item(*ev.Item)
 	case ev.Type == "error" || ev.Type == "turn.failed":
 		msg := ev.Message
 		if msg == "" {
 			msg = "The agent failed."
 		}
-		r.a.update(func() {
-			if m := reply(r.th, r.at); m != nil {
-				m.Blocks = append(m.Blocks, Block{Type: "error", Text: msg})
-			}
-		})
+		r.emit(harness.Event{Kind: harness.EventError, Err: msg})
 	case ev.Type == "turn.completed" || ev.Type == "thread.completed":
-		// The reply is complete; keep reading for more events.
+		// The reply is complete; the transport decides when reading ends.
 	}
 }
 
-// codexItem maps one item.started/updated/completed event to a card.
-func (r *codexRun) codexItem(ev codexEvent) {
-	id := ev.Item.ID
-	it := ev.Item
-	th, at := r.th, r.at
-	blocks := r.blocks
+// item maps one codex item (either wire's shape) onto events.
+func (r *codexRun) item(it codexItem) {
 	switch it.Type {
 	case "command_execution":
-		r.a.update(func() {
-			m := reply(th, at)
-			if m == nil {
-				return
-			}
-			bi, ok := blocks[id]
-			if !ok {
-				m.Blocks = append(m.Blocks, Block{Type: "command", Text: it.Command, Running: true, Exit: -1})
-				blocks[id] = len(m.Blocks) - 1
-				bi = blocks[id]
-			}
-			b := &m.Blocks[bi]
-			b.Text = it.Command
-			if it.AggregatedOutput != "" {
-				b.Output = it.AggregatedOutput
-			}
-			if it.ExitCode != nil {
-				b.Exit = *it.ExitCode
-			}
-			if it.Status != "in_progress" {
-				b.Running = false
-				if b.Exit == -1 {
-					b.Exit = 0
-				}
-				b.Open = strings.TrimSpace(b.Output) != ""
-			}
+		r.emit(harness.Event{
+			Kind:     harness.EventToolStart,
+			ToolCall: r.toolCall(it.ID, it.Command),
+			Text:     "$ " + it.Command,
 		})
+		if it.AggregatedOutput != "" || it.ExitCode != nil || it.Status != "in_progress" {
+			exit := 0
+			if it.ExitCode != nil {
+				exit = *it.ExitCode
+			}
+			r.emit(harness.Event{
+				Kind:     harness.EventToolEnd,
+				ToolCall: r.toolCall(it.ID, it.Command),
+				Text:     "$ " + it.Command,
+				Output:   it.AggregatedOutput,
+				Exit:     exit,
+			})
+		}
 	case "file_change":
-		r.a.update(func() {
-			m := reply(th, at)
-			if m == nil {
-				return
-			}
-			bi, ok := blocks[id]
-			if !ok {
-				m.Blocks = append(m.Blocks, Block{Type: "diff"})
-				blocks[id] = len(m.Blocks) - 1
-				bi = blocks[id]
-			}
-			b := &m.Blocks[bi]
-			b.Type = "diff"
-			b.Open = true
-			if len(it.Changes) > 0 {
-				var paths []string
-				for _, ch := range it.Changes {
-					paths = append(paths, ch.Path)
-				}
-				b.File = strings.Join(paths, ", ")
-			}
-			if it.Diff != "" {
-				b.Lines = agent.ParseUnifiedDiff(it.Diff)
-				for _, l := range b.Lines {
-					switch l.Kind {
-					case '+':
-						b.Add++
-					case '-':
-						b.Del++
-					}
-				}
-			}
+		var paths []string
+		for _, ch := range it.Changes {
+			paths = append(paths, ch.Path)
+		}
+		r.emit(harness.Event{
+			Kind:  harness.EventFileChange,
+			File:  strings.Join(paths, ", "),
+			Paths: paths,
+			Diff:  it.Diff,
 		})
 	case "agent_message":
-		text := it.Text
-		r.a.update(func() {
-			if m := reply(th, at); m != nil && text != "" {
-				m.Text = text
-			}
-		})
+		if it.Text != "" {
+			r.emit(harness.Event{Kind: harness.EventText, TextDelta: it.Text})
+		}
 	case "reasoning":
 		text := it.Text
 		if text == "" && len(it.Summary) > 0 {
 			text = strings.Join(it.Summary, " ")
 		}
-		if text == "" {
-			return
+		if text != "" {
+			r.emit(harness.Event{Kind: harness.EventReasoning, Text: text})
 		}
-		r.a.update(func() {
-			if m := reply(th, at); m != nil {
-				m.Blocks = append(m.Blocks, Block{Type: "reasoning", Text: text})
-			}
-		})
 	case "error":
-		text := it.Text
-		r.a.update(func() {
-			if m := reply(th, at); m != nil && text != "" {
-				m.Blocks = append(m.Blocks, Block{Type: "error", Text: text})
-			}
-		})
+		if it.Text != "" {
+			r.emit(harness.Event{Kind: harness.EventError, Err: it.Text})
+		}
 	}
+}
+
+// toolCall fabricates the stable identity the projector matches on: exec
+// items have no native tool-call id, so the item id is reused.
+func (r *codexRun) toolCall(itemID, command string) harness.ToolCall {
+	var call harness.ToolCall
+	call.ID = itemID
+	call.Function.Name = "codex"
+	call.Function.Arguments = command
+	return call
 }

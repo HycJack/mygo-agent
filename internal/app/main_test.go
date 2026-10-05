@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"mygo-agent/internal/agent"
+	"mygo-agent/internal/harness"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -85,7 +85,11 @@ func TestSendRunsDemoAgent(t *testing.T) {
 	if th.Title == "" {
 		t.Fatal("the thread was not titled from the prompt")
 	}
-	waitUntil(t, tt, func() bool { return !a.running })
+	waitUntil(t, tt, func() bool {
+		stopped := false
+		a.update(func() { stopped = !a.running })
+		return stopped
+	})
 	reply := th.Messages[1]
 	if !strings.Contains(reply.Text, "plan for") {
 		t.Fatalf("reply text %q", reply.Text)
@@ -225,11 +229,10 @@ func TestProjectSwitchFiltersThreads(t *testing.T) {
 	if a.activeProject != "pb" || a.workdir != "/tmp/b" {
 		t.Fatalf("switch failed: %q %q", a.activeProject, a.workdir)
 	}
-	for _, g := range a.visibleThreads() {
-		for _, th := range g.threads {
-			if th.ProjectID != "pb" {
-				t.Fatalf("thread from another project leaked: %s", th.ID)
-			}
+	// The rail's snapshot must not leak threads from other projects.
+	for _, th := range a.sidebarViewModel().Threads {
+		if th.ID == "t1" {
+			t.Fatal("thread from another project leaked into the sidebar")
 		}
 	}
 	if a.currentThread() != nil {
@@ -315,7 +318,7 @@ func TestMarkdownSpans(t *testing.T) {
 }
 
 func TestUnifiedDiffParsing(t *testing.T) {
-	lines := agent.ParseUnifiedDiff("diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n@@ -1,3 +1,3 @@\n context\n-removed\n+added")
+	lines := harness.ParseUnifiedDiff("diff --git a/x.go b/x.go\n--- a/x.go\n+++ b/x.go\n@@ -1,3 +1,3 @@\n context\n-removed\n+added")
 	if len(lines) != 4 || lines[0].Kind != '@' {
 		t.Fatalf("got %d lines: %v", len(lines), lines)
 	}
@@ -325,7 +328,7 @@ func TestUnifiedDiffParsing(t *testing.T) {
 	if lines[2].Text != "removed" || lines[3].Text != "added" {
 		t.Fatalf("texts: %q %q", lines[2].Text, lines[3].Text)
 	}
-	add, del := agent.DiffStats(lines)
+	add, del := harness.DiffStats(lines)
 	if add != 1 || del != 1 {
 		t.Fatalf("stats: +%d −%d", add, del)
 	}
@@ -333,7 +336,7 @@ func TestUnifiedDiffParsing(t *testing.T) {
 
 func TestWordDiffMarks(t *testing.T) {
 	// "return old value" → "return new value": the middle word changed.
-	lines := agent.ParseUnifiedDiff("-return oldValue\n+return newValue\n context")
+	lines := harness.ParseUnifiedDiff("-return oldValue\n+return newValue\n context")
 	del, add := lines[0], lines[1]
 	if del.MarkHi <= del.MarkLo || add.MarkHi <= add.MarkLo {
 		t.Fatalf("no word marks: %+v %+v", del, add)
@@ -349,7 +352,7 @@ func TestWordDiffMarks(t *testing.T) {
 		t.Fatalf("add mark %q", string(a[add.MarkLo:add.MarkHi]))
 	}
 	// Whole-line rewrites get no mark; the row tint is enough.
-	lines = agent.ParseUnifiedDiff("-completely different\n+totally other things")
+	lines = harness.ParseUnifiedDiff("-completely different\n+totally other things")
 	if lines[0].MarkHi > lines[0].MarkLo {
 		t.Fatalf("unexpected mark on a rewrite: %+v", lines[0])
 	}
@@ -357,7 +360,7 @@ func TestWordDiffMarks(t *testing.T) {
 
 func TestEffectiveMCPServersMergesDotMCPJSON(t *testing.T) {
 	a := newTestApp(t)
-	a.mcpServers = []agent.MCPServer{{Name: "configured", Command: "configured-cmd"}}
+	a.mcpServers = []harness.MCPServer{{Name: "configured", Command: "configured-cmd"}}
 	mcpJSON := `{"mcpServers":{"from-project":{"command":"npx","args":["-y","@modelcontextprotocol/server-everything"]}}}`
 	if err := os.WriteFile(filepath.Join(a.workdir, ".mcp.json"), []byte(mcpJSON), 0o644); err != nil {
 		t.Fatal(err)

@@ -19,12 +19,24 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: Layers
+        run: ./scripts/check-deps.sh
       - name: Vet
         run: go vet ./...
       - name: Test
         run: go test ./...
       - name: Build (this platform)
         run: go build -trimpath -o mygo-agent${{ runner.os == 'Windows' && '.exe' || '' }} .
+
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test (race detector)
+        run: go test -race ./...
 
   cross-compile:
     runs-on: ubuntu-latest

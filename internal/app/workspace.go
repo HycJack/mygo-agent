@@ -10,7 +10,9 @@ import (
 	"strings"
 	"time"
 
-	"mygo-agent/internal/agent"
+	uipkg "mygo-agent/internal/ui"
+
+	"mygo-agent/internal/harness"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -20,6 +22,54 @@ var skippedDirs = map[string]bool{
 	".git": true, "node_modules": true, "target": true, "dist": true,
 	".next": true, "__pycache__": true, ".venv": true, "venv": true,
 	".gradle": true, ".idea": true, ".cache": true, "build": true,
+}
+
+// The workspace panel renders in internal/ui over a ViewModel snapshot
+// (spec/architecture.md); this file is the bridge: the snapshot, the
+// Actions implementation, and the host-side data work (lazy dir listing
+// with its cache, git status, git diffs for the viewer).
+
+// workspaceViewModel snapshots the panel's render input. Expanded
+// aliases the host's dir map, so the view's toggles land in host state.
+func (a *app) workspaceViewModel() *uipkg.WorkspaceVM {
+	vm := &uipkg.WorkspaceVM{
+		Workdir:  a.workdir,
+		GitErr:   a.gitErr,
+		Expanded: a.dirs,
+		Pal:      a.pal,
+	}
+	for _, ch := range a.gitFiles {
+		vm.GitFiles = append(vm.GitFiles, uipkg.ChangeVM{Code: ch.Code, Path: ch.Path})
+	}
+	return vm
+}
+
+// workspaceActions adapts *app to ui.WorkspaceActions.
+type workspaceActions struct{ a *app }
+
+func (h workspaceActions) Refresh() {
+	h.a.dirCache = map[string][]fsNode{}
+	h.a.refreshGit()
+}
+
+func (h workspaceActions) Hide()                { h.a.wsOpen = false }
+func (h workspaceActions) OpenFile(path string) { h.a.openFile(path) }
+func (h workspaceActions) OpenChange(ch uipkg.ChangeVM) {
+	h.a.openGitDiff(gitChange{Code: ch.Code, Path: ch.Path})
+}
+
+func (h workspaceActions) ListDir(dir string) []uipkg.FileNode {
+	nodes := h.a.listDir(dir)
+	out := make([]uipkg.FileNode, len(nodes))
+	for i, n := range nodes {
+		out[i] = uipkg.FileNode{Name: n.Name, Path: n.Path, Dir: n.Dir}
+	}
+	return out
+}
+
+// renderWorkspace assembles the snapshot and renders the panel.
+func (a *app) renderWorkspace(c *ui.Context) {
+	uipkg.Workspace(c, a.workspaceViewModel(), workspaceActions{a: a})
 }
 
 // listDir lists dir's entries for the tree, directories first, cached
@@ -55,144 +105,6 @@ func (a *app) listDir(dir string) []fsNode {
 	})
 	a.dirCache[dir] = nodes
 	return nodes
-}
-
-// workspace is the panel on the right of the window: the file tree of
-// the workdir, and the git working tree's changes.
-func (a *app) workspace(c *ui.Context) {
-	t := c.Theme()
-	ui.Column(c).Width(240).Shrink(0).Background(a.pal.SidebarBG).
-		BorderWidth(0, 0, 0, 1).BorderColor(a.pal.Border).Children(func() {
-		// The strip that drags the window.
-		ui.Row(c).Height(max(c.TitleBar().Height, 40)).PaddingX(12).DragWindow().AlignItems(ui.Center).Gap(6).Children(func() {
-			ui.Icon(c, icFolder).FontSize(13).TextColor(a.pal.TextMuted)
-			ui.Text(c, filepath.Base(a.workdir)).SingleLine().FontSize(12).FontWeight(600).TextColor(t.Text).Grow(1)
-			rb := ui.ButtonBase(c).Label("Refresh workspace").Tooltip("Refresh").Size(22, 22).Radius(6).Center()
-			if rb.Hovered() {
-				rb.Background(a.pal.Hover)
-			}
-			if rb.Clicked() {
-				a.dirCache = map[string][]fsNode{}
-				a.refreshGit()
-			}
-			rb.Children(func() { ui.Icon(c, icRefresh).FontSize(12).TextColor(a.pal.TextMuted) })
-			a.iconToggle(c, "Hide workspace (⌘E)", true, icPanelRight, func() { a.wsOpen = false })
-		})
-		ui.Scroll(c).Grow(1).Padding(2, 6, 12).Children(func() {
-			a.treeSection(c)
-			ui.Box(c).Height(10)
-			a.changesSection(c)
-		})
-	})
-}
-
-// treeSection is the file tree of the workspace.
-func (a *app) treeSection(c *ui.Context) {
-	ui.Text(c, "FILES").FontSize(10.5).FontWeight(600).TextColor(a.pal.TextMuted).
-		Padding(8, 8, 4).LetterSpacing(0.6)
-	ui.Tree(c, func() {
-		a.treeItems(c, a.workdir, 0)
-	})
-}
-
-// treeItems builds one directory level of the tree, recursing into the
-// directories the user opened.
-func (a *app) treeItems(c *ui.Context, dir string, depth int) {
-	for _, node := range a.listDir(dir) {
-		node := node
-		if node.Dir {
-			open := a.dirs[node.Path]
-			openPtr := &open
-			ui.TreeItem(c, node.Name, openPtr, func() {
-				a.treeItems(c, node.Path, depth+1)
-			}).Clicked()
-			a.dirs[node.Path] = open
-			continue
-		}
-		if ui.TreeItem(c, node.Name, nil, nil).Clicked() {
-			a.openFile(node.Path)
-		}
-	}
-}
-
-// changesSection lists the working tree's changes from git status.
-func (a *app) changesSection(c *ui.Context) {
-	t := c.Theme()
-	n := len(a.gitFiles)
-	ui.Row(c).Padding(8, 8, 4).Gap(6).AlignItems(ui.Center).Children(func() {
-		ui.Text(c, "CHANGES").FontSize(10.5).FontWeight(600).TextColor(a.pal.TextMuted).LetterSpacing(0.6)
-		if n > 0 {
-			ui.Textf(c, "%d", n).FontSize(10).Padding(1, 5).Radius(8).
-				Background(a.pal.Card).TextColor(t.TextMuted)
-		}
-		ui.Spacer(c)
-		if a.gitErr != "" {
-			ui.Icon(c, icAlert).FontSize(11).TextColor(a.pal.Warning).Tooltip(a.gitErr)
-		}
-	})
-	if n == 0 {
-		msg := "Clean working tree."
-		if a.gitErr != "" {
-			msg = "Not a git repository."
-		}
-		ui.Text(c, msg).FontSize(11.5).TextColor(a.pal.TextMuted).Padding(2, 8, 6)
-		return
-	}
-	for _, ch := range a.gitFiles {
-		ch := ch
-		row := ui.ButtonBase(c).Padding(3, 8).Radius(6).Gap(7).Cursor(ui.CursorPointer)
-		if row.Hovered() {
-			row.Background(a.pal.Hover)
-		}
-		if row.Clicked() {
-			a.openGitDiff(ch)
-		}
-		row.Children(func() {
-			ui.Text(c, ch.Code).Font("monospace").FontSize(10.5).FontWeight(600).Width(18).TextColor(a.changeColor(ch.Code))
-			ui.Text(c, ch.Path).SingleLine().FontSize(12).Grow(1).MinWidth(0)
-		})
-	}
-}
-
-// changeLabel maps the porcelain code to the letter shown in the list;
-// "??" (untracked) would read as a question mark, so it becomes "A".
-func changeLabel(code string) string {
-	if strings.HasPrefix(code, "?") {
-		return "A"
-	}
-	return code
-}
-
-// changeMeaning names a porcelain code, for the hover tooltip.
-func changeMeaning(code string) string {
-	switch {
-	case strings.HasPrefix(code, "?"):
-		return "untracked (new file)"
-	case strings.Contains(code, "A"):
-		return "added"
-	case strings.Contains(code, "D"):
-		return "deleted"
-	case strings.Contains(code, "R"):
-		return "renamed"
-	case strings.Contains(code, "M"):
-		return "modified"
-	default:
-		return code
-	}
-}
-
-// changeColor colors the porcelain code of a change.
-func (a *app) changeColor(code string) ui.Color {
-	switch {
-	case strings.HasPrefix(code, "?"):
-		return a.pal.TextMuted
-	case strings.Contains(code, "D"):
-		return a.pal.Danger
-	case strings.Contains(code, "A"):
-		return a.pal.Success
-	default:
-		return a.pal.Warning
-	}
 }
 
 // refreshGit re-reads `git status --porcelain` in the background, scoped
@@ -315,8 +227,8 @@ func (a *app) openGitDiff(ch gitChange) {
 				text = "@@ no unstaged or staged diff for " + ch.Path + "\n"
 			}
 		}
-		lines := agent.ParseUnifiedDiff(text)
-		add, del := agent.DiffStats(lines)
+		lines := harness.ParseUnifiedDiff(text)
+		add, del := harness.DiffStats(lines)
 		a.update(func() {
 			a.viewer.Lines = lines
 			a.viewer.Raw = text

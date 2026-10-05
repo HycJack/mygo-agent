@@ -1,16 +1,16 @@
 package app
 
 import (
-	"bufio"
 	"context"
+
 	"fmt"
-	"os"
+	"mygo-agent/internal/harness"
 	"os/exec"
 	"strings"
 	"time"
 )
 
-// send takes the draft, appends it to the thread, and starts the agent.
+// send takes the draft, appends it to the thread, and starts the harness.
 func (a *app) send() {
 	prompt := strings.TrimSpace(a.draft)
 	if prompt == "" || a.running {
@@ -58,11 +58,11 @@ func (a *app) regenerate(th *Thread) {
 	now := time.Now()
 	th.Messages = append(th.Messages, Message{ID: uid(), Role: "assistant", Running: true, At: now, LogAt: logAt})
 	a.running = true
-	a.save()
+	a.saveThread(th)
 	at := len(th.Messages) - 1
 	if a.backend == "builtin" {
 		// No new user turn: the transcript already holds it.
-		go a.runBuiltin(th, "", at)
+		go a.runBuiltinLegacy(th, "", at)
 		return
 	}
 	a.dispatch(th, prompt, at)
@@ -81,25 +81,11 @@ func (a *app) startTurn(th *Thread, prompt string) {
 	a.running = true
 	a.focusComposer = true
 	at := len(th.Messages) - 1
-	a.save()
+	a.saveThread(th)
 	if a.win != nil {
 		a.win.SetTitle("Codex — " + th.Title)
 	}
 	a.dispatch(th, prompt, at)
-}
-
-// dispatch hands a turn to the selected backend in the background.
-func (a *app) dispatch(th *Thread, prompt string, at int) {
-	switch {
-	case a.backend == "builtin":
-		go a.runBuiltin(th, prompt, at)
-	case a.backend == "claude" && a.claudePath != "":
-		go a.runClaude(th, prompt, at)
-	case a.backend == "codex" && a.codexPath != "":
-		go a.runCodex(th, prompt, at)
-	default:
-		go a.runDemo(th, prompt, at)
-	}
 }
 
 // stop cancels the run; what the agent said so far stays.
@@ -128,11 +114,30 @@ func (a *app) finish(th *Thread, at int, errText string) {
 		th.Updated = time.Now()
 		a.running = false
 		a.cancel = nil
-		a.save()
+		a.saveThread(th)
 		if a.wsOpen {
 			a.refreshGit() // the agent may have changed files
 		}
 	})
+}
+
+// runBuiltinLegacy is the test shim: a background context, a fresh turn.
+func (a *app) runBuiltinLegacy(th *Thread, prompt string, at int) {
+	go func() {
+		turn := a.turnFor(th, prompt)
+		h := builtinHarness{a: a, th: th, at: at}
+		_ = h.Run(context.Background(), turn, func(ev harness.Event) {
+			a.applyEvent(th, at, h.Kind(), ev)
+		})
+	}()
+}
+
+// adoptCancel wires a parent context into the app's stop path: the
+// returned cancel runs on stop and at turn end.
+func (a *app) adoptCancel(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	a.cancel = cancel
+	return ctx, cancel
 }
 
 // reply ensures the running message exists at at and returns it.
@@ -145,9 +150,17 @@ func reply(th *Thread, at int) *Message {
 
 // runDemo is the built-in agent: it thinks, runs one real command,
 // writes a plan with code and a sample patch, streaming as it goes.
-func (a *app) runDemo(th *Thread, prompt string, at int) {
-	ctx, cancel := context.WithCancel(context.Background())
-	a.cancel = cancel
+func (a *app) runDemo(ctx context.Context, th *Thread, turn harness.Turn, emit func(harness.Event)) {
+	prompt, at := turn.Prompt, -1
+	for i := range th.Messages {
+		if th.Messages[i].Running {
+			at = i
+		}
+	}
+	if at < 0 {
+		at = len(th.Messages) - 1
+	}
+	ctx, cancel := a.adoptCancel(ctx)
 	defer cancel()
 
 	a.update(func() {
@@ -211,82 +224,9 @@ func (a *app) runDemo(th *Thread, prompt string, at int) {
 	a.finish(th, at, "")
 }
 
-// runCodex runs the real codex binary over exec --json, mapping its
-// events to the thread's cards, and resumes the session on later turns.
-func (a *app) runCodex(th *Thread, prompt string, at int) {
-	ctx, cancel := context.WithCancel(context.Background())
-	a.cancel = cancel
-	defer cancel()
-
-	sandbox := []string{"read-only", "workspace-write", "danger-full-access"}[a.mode]
-	args := []string{"exec", "--json", "--skip-git-repo-check", "-s", sandbox, "-m", a.model,
-		"-c", "model_reasoning_effort=" + []string{"low", "medium", "high"}[a.effort],
-		"-C", a.workdir}
-	cmdEnv := os.Environ()
-	// A custom provider is wired in as a codex model_providers entry: an
-	// OpenAI-compatible endpoint whose key arrives through an env var.
-	if p := a.provider(); p != nil && p.ID != "codex" && p.BaseURL != "" {
-		id := p.ID
-		args = append(args,
-			"-c", fmt.Sprintf("model_provider=%q", id),
-			"-c", fmt.Sprintf("model_providers.%s.name=%q", id, p.Name),
-			"-c", fmt.Sprintf("model_providers.%s.base_url=%q", id, p.BaseURL),
-			"-c", fmt.Sprintf("model_providers.%s.wire_api=%q", id, "chat"),
-			"-c", fmt.Sprintf("model_providers.%s.env_key=%q", id, envKeyFor(id)),
-		)
-		cmdEnv = append(cmdEnv, envKeyFor(id)+"="+p.APIKey)
-	}
-	if th.CodexID != "" {
-		args = append([]string{"exec", "resume", th.CodexID}, args[1:]...)
-	}
-	args = append(args, prompt)
-
-	cmd := exec.CommandContext(ctx, a.codexPath, args...)
-	cmd.Dir = a.workdir
-	procGroupAttr(cmd)
-	cmd.Env = cmdEnv
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		a.finish(th, at, "codex: "+err.Error())
-		return
-	}
-	var stderrTail strings.Builder
-	cmd.Stderr = &stderrTail
-	if err := cmd.Start(); err != nil {
-		a.finish(th, at, "codex: "+err.Error())
-		return
-	}
-	a.codexPid = cmd.Process.Pid
-
-	run := &codexRun{a: a, th: th, at: at, blocks: map[string]int{}}
-	sc := bufio.NewScanner(stdout)
-	sc.Buffer(make([]byte, 64*1024), 4*1024*1024)
-	for sc.Scan() {
-		line := strings.TrimSpace(sc.Text())
-		if line == "" {
-			continue
-		}
-		run.handle(line)
-	}
-	sawEvent := run.sawEvent
-	waitErr := cmd.Wait()
-	errText := ""
-	if ctx.Err() != nil {
-		// Stopped by the user; keep what arrived.
-	} else if !sawEvent || waitErr != nil {
-		tail := strings.TrimSpace(stderrTail.String())
-		if tail == "" && waitErr != nil {
-			tail = waitErr.Error()
-		}
-		if tail != "" {
-			errText = truncTitle("codex: "+tail, 400)
-		}
-	}
-	a.finish(th, at, errText)
-}
-
-// codexEvent is one JSONL line of codex exec --json; only the fields the
-// app maps are declared, everything else is ignored.
+// codexEvent is one JSONL line of codex exec --json or one app-server
+// item; only the fields the app maps are declared, everything else is
+// ignored.
 type codexEvent struct {
 	Type     string     `json:"type"`
 	ThreadID string     `json:"thread_id"`

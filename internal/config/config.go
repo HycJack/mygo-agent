@@ -5,7 +5,10 @@
 package config
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 )
@@ -40,8 +43,13 @@ type MCPServer struct {
 	Env     []string `json:"env,omitempty"`
 }
 
+// Version is the config.json schema version this binary writes
+// (spec/data.md). Load refuses files from newer schemas.
+const Version = 1
+
 // Config is the on-disk shape of config.json.
 type Config struct {
+	Version       int         `json:"version"`
 	Projects      []Project   `json:"projects"`
 	ActiveProject string      `json:"active_project"`
 	Providers     []Provider  `json:"providers"`
@@ -61,21 +69,35 @@ type Permissions struct {
 	Rules map[string]string `json:"rules,omitempty"`
 }
 
-// Load reads and parses the config file. A missing or broken file is
-// not an error: the zero Config is returned and defaults apply.
+// ErrUnsupportedVersion reports a file written by a newer schema. The
+// caller must not overwrite it (spec/data.md).
+var ErrUnsupportedVersion = errors.New("file was written by a newer version")
+
+// Load reads and parses the config file strictly: unknown fields are
+// errors, so a typo in a hand-edited file cannot silently zero a
+// setting. A file from a newer schema returns ErrUnsupportedVersion.
 func Load(path string) (Config, error) {
 	var cfg Config
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return cfg, err
 	}
-	err = json.Unmarshal(data, &cfg)
-	return cfg, err
+	dec := json.NewDecoder(bytes.NewReader(data))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&cfg); err != nil {
+		return Config{}, err
+	}
+	if cfg.Version > Version {
+		return Config{}, fmt.Errorf("%w (%d > %d)", ErrUnsupportedVersion, cfg.Version, Version)
+	}
+	return cfg, nil
 }
 
 // Save writes the config atomically (temp file + rename) with 0600 —
-// provider API keys live here.
+// provider API keys live here. The schema version is stamped here so a
+// caller cannot forget it.
 func Save(path string, cfg Config) error {
+	cfg.Version = Version
 	data, err := json.MarshalIndent(cfg, "", "  ")
 	if err != nil {
 		return err

@@ -1,4 +1,4 @@
-package agent
+package harness
 
 import (
 	"bufio"
@@ -211,6 +211,7 @@ func (c *mcpClient) listTools(ctx context.Context) ([]Tool, error) {
 		tools = append(tools, Tool{
 			Name:        mcpToolName(c.name, tool.Name),
 			Description: "MCP " + c.name + ": " + tool.Description,
+			Actions:     []Action{ActionMCP},
 			Parameters:  schema,
 			Execute: func(ctx context.Context, args string) (string, error) {
 				return c.callTool(ctx, tool.Name, args)

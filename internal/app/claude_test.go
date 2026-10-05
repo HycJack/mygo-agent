@@ -1,6 +1,7 @@
 package app
 
 import (
+	"mygo-agent/internal/harness"
 	"strings"
 	"testing"
 )
@@ -11,7 +12,8 @@ func TestClaudeLineHandling(t *testing.T) {
 	th.Messages = []Message{{ID: "m0", Role: "assistant", Running: true}}
 	a.threads = append(a.threads, th)
 
-	r := &claudeRun{a: a, th: th, at: 0, cards: map[string]int{}}
+	r := &claudeRun{a: a, th: th, at: 0, cards: map[string]int{},
+		emit: func(ev harness.Event) { a.applyEvent(th, 0, "claude", ev) }}
 
 	r.handle(`{"type":"system","subtype":"init","session_id":"sess-abc123"}`)
 	if th.ClaudeID != "sess-abc123" {
@@ -44,7 +46,8 @@ func TestClaudeResultNote(t *testing.T) {
 	th.Messages = []Message{{ID: "m0", Role: "assistant", Running: true}}
 	a.threads = append(a.threads, th)
 
-	r := &claudeRun{a: a, th: th, at: 0, cards: map[string]int{}}
+	r := &claudeRun{a: a, th: th, at: 0, cards: map[string]int{},
+		emit: func(ev harness.Event) { a.applyEvent(th, 0, "claude", ev) }}
 	r.handle(`{"type":"result","subtype":"success","is_error":false,"duration_ms":12000,"total_cost_usd":0.0042,"result":"done"}`)
 
 	m := &th.Messages[0]

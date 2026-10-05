@@ -70,17 +70,23 @@ done
 	}
 
 	a := newTestApp(t)
+	a.backend = "claude"
 	a.claudePath = script
 	th := &Thread{ID: "t1", ProjectID: "default"}
 	th.Messages = []Message{{ID: "m0", Role: "assistant", Running: true}}
 	a.threads = append(a.threads, th)
 
-	go a.runClaude(th, "hello", 0)
+	go runBackend(a, th, "hello", 0)
 
 	// The fake claude is streaming.
-	waitFor(t, 10*time.Second, func() bool { return strings.Contains(th.Messages[0].Text, "tick") })
+	waitFor(t, 10*time.Second, func() bool {
+		ticked := false
+		a.update(func() { ticked = strings.Contains(th.Messages[0].Text, "tick") })
+		return ticked
+	})
 
-	claudePid := a.claudePid
+	claudePid := 0
+	a.update(func() { claudePid = a.claudePid })
 	if claudePid == 0 || !alive(claudePid) {
 		t.Fatalf("claude process %d is not running", claudePid)
 	}
@@ -92,14 +98,20 @@ done
 	// The stop button.
 	a.stop()
 
-	waitFor(t, 8*time.Second, func() bool { return !a.running && !alive(claudePid) })
+	waitFor(t, 8*time.Second, func() bool {
+		stopped := false
+		a.update(func() { stopped = !a.running })
+		return stopped && !alive(claudePid)
+	})
 	if alive(claudePid) {
 		t.Fatal("claude survived the stop")
 	}
 	if alive(childPid) {
 		t.Fatal("the tool process spawned by claude survived the stop")
 	}
-	if th.Messages[0].Running {
+	stillRunning := false
+	a.update(func() { stillRunning = th.Messages[0].Running })
+	if stillRunning {
 		t.Fatal("the reply is still marked running")
 	}
 }

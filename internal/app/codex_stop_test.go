@@ -33,20 +33,22 @@ done
 	}
 
 	a := newTestApp(t)
+	a.backend = "codex"
 	a.codexPath = script
 	th := &Thread{ID: "t1", ProjectID: "default"}
 	th.Messages = []Message{{ID: "m0", Role: "assistant", Running: true}}
 	a.threads = append(a.threads, th)
 
-	go a.runCodex(th, "hello", 0)
+	go runBackend(a, th, "hello", 0)
 
 	waitFor(t, 10*time.Second, func() bool {
-
-		return a.codexPid != 0 && !th.Messages[0].Running == false
+		started := false
+		a.update(func() { started = a.codexPid != 0 && th.Messages[0].Running })
+		return started
 	})
-	_ = th
 
-	claudePid := a.codexPid
+	claudePid := 0
+	a.update(func() { claudePid = a.codexPid })
 	if claudePid == 0 || !alive(claudePid) {
 		t.Fatalf("codex process %d is not running", claudePid)
 	}
@@ -57,14 +59,20 @@ done
 
 	a.stop()
 
-	waitFor(t, 8*time.Second, func() bool { return !a.running && !alive(claudePid) })
+	waitFor(t, 8*time.Second, func() bool {
+		stopped := false
+		a.update(func() { stopped = !a.running })
+		return stopped && !alive(claudePid)
+	})
 	if alive(claudePid) {
 		t.Fatal("codex survived the stop")
 	}
 	if alive(childPid) {
 		t.Fatal("the tool process spawned by codex survived the stop")
 	}
-	if th.Messages[0].Running {
+	stillRunning := false
+	a.update(func() { stillRunning = th.Messages[0].Running })
+	if stillRunning {
 		t.Fatal("the reply is still marked running")
 	}
 }

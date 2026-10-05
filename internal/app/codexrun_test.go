@@ -1,6 +1,7 @@
 package app
 
 import (
+	"mygo-agent/internal/harness"
 	"strings"
 	"testing"
 )
@@ -13,7 +14,7 @@ func TestCodexRunFeed(t *testing.T) {
 	th.Messages = []Message{{ID: "m0", Role: "assistant", Running: true}}
 	a.threads = append(a.threads, th)
 
-	r := &codexRun{a: a, th: th, at: 0, blocks: map[string]int{}}
+	r := newCodexRun(func(ev harness.Event) { a.applyEvent(th, 0, "codex", ev) })
 	r.handle(`{"type":"thread.started","thread_id":"sess-42"}`)
 	r.handle(`{"type":"assistant","message":{"content":[{"type":"text","text":"ignored legacy shape"}]}}`)
 	r.handle(`{"type":"item.started","item":{"id":"item_0","type":"command_execution","command":"go test ./...","status":"in_progress"}}`)
@@ -39,7 +40,7 @@ func TestCodexRunFeed(t *testing.T) {
 			diff = &m.Blocks[i]
 		}
 	}
-	if cmd == nil || cmd.Text != "go test ./..." || cmd.Output != "ok" || cmd.Exit != 0 || cmd.Running {
+	if cmd == nil || cmd.Text != "$ go test ./..." || cmd.Output != "ok" || cmd.Exit != 0 || cmd.Running {
 		t.Fatalf("command card: %+v", cmd)
 	}
 	if diff == nil || diff.File != "main.go" || diff.Add != 1 || diff.Del != 1 {
@@ -53,7 +54,7 @@ func TestCodexRunErrors(t *testing.T) {
 	th.Messages = []Message{{ID: "m0", Role: "assistant", Running: true}}
 	a.threads = append(a.threads, th)
 
-	r := &codexRun{a: a, th: th, at: 0, blocks: map[string]int{}}
+	r := newCodexRun(func(ev harness.Event) { a.applyEvent(th, 0, "codex", ev) })
 	r.handle(`{"type":"error","message":"quota exhausted"}`)
 	if len(th.Messages[0].Blocks) != 1 || th.Messages[0].Blocks[0].Type != "error" ||
 		!strings.Contains(th.Messages[0].Blocks[0].Text, "quota") {

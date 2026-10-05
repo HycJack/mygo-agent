@@ -1,4 +1,4 @@
-package agent
+package harness
 
 import (
 	"context"
@@ -9,16 +9,6 @@ import (
 	"strings"
 	"time"
 )
-
-// Event is one thing the loop reports to the UI while running.
-type Event struct {
-	Kind      string // "text" | "tool_start" | "tool_end" | "approval" | "error" | "done"
-	TextDelta string // for "text"
-	ToolCall  ToolCall
-	Output    string // for "tool_end"
-	Exit      int    // for "tool_end": 0 ok, 1 failed
-	Err       string // for "error"
-}
 
 // ApprovalRequest is the loop asking the host to decide one prepared tool
 // call whose permission resolved to ask (spec/approvals.md). Summary is a
@@ -40,6 +30,11 @@ type ApprovalDecision struct {
 // defaultApprovalTimeout bounds every wait on the host: expiry denies.
 const defaultApprovalTimeout = 10 * time.Minute
 
+// ErrApprovalTimedOut is the cause an approval's context carries when
+// ApprovalTimeout expires. The host reads it to settle what it is showing
+// for the request — the denial itself spells the same reason.
+var ErrApprovalTimedOut = errors.New("approval timed out")
+
 // LoopConfig configures one run of the agent loop. The zero Policy is
 // read-only: a caller that sets no policy fails closed.
 type LoopConfig struct {
@@ -58,10 +53,11 @@ type LoopConfig struct {
 	// read-only (the strictest mode).
 	Policy Policy
 
-	// OnApproval decides calls whose permission resolves to ask. It is
-	// called from the loop goroutine and may block up to
-	// ApprovalTimeout; a nil handler denies ask calls up front.
-	OnApproval      func(ApprovalRequest) ApprovalDecision
+	// OnApproval decides calls whose permission resolves to ask. The loop
+	// calls it with a context that expires when the loop stops waiting —
+	// the ApprovalTimeout deadline or run cancellation — and may block
+	// until that context is done; a nil handler denies ask calls up front.
+	OnApproval      func(ctx context.Context, req ApprovalRequest) ApprovalDecision
 	ApprovalTimeout time.Duration // default 10 minutes; expiry denies
 }
 
@@ -178,16 +174,21 @@ func runGatedTool(ctx context.Context, cfg LoopConfig, call ToolCall) (string, e
 		case PermDeny:
 			return "", &DenialError{Tool: t.Name}
 		case PermAsk:
-			return "", askApproval(ctx, cfg, t, call)
+			if err := askApproval(ctx, cfg, t, call); err != nil {
+				return "", err
+			}
 		}
 		return t.Execute(ctx, args)
 	}
 	return "", errors.New("unknown tool " + call.Function.Name)
 }
 
-// askApproval waits for the host's decision on one prepared call. Timeout,
-// cancellation and a missing handler all land in the same place: a settled
-// denial (spec/approvals.md).
+// askApproval waits for the host's decision on one prepared call. The
+// host sees the same context the loop waits on: when the loop stops
+// waiting — timeout or run cancellation — that context expires on the
+// host's side too, so it settles whatever it is showing for the request
+// instead of leaving it pending. Timeout, cancellation and a missing
+// handler all land in the same place: a settled denial (spec/approvals.md).
 func askApproval(ctx context.Context, cfg LoopConfig, t Tool, call ToolCall) error {
 	req := ApprovalRequest{
 		Call:    call,
@@ -197,22 +198,27 @@ func askApproval(ctx context.Context, cfg LoopConfig, t Tool, call ToolCall) err
 	if cfg.OnApproval == nil {
 		return &DenialError{Tool: t.Name, Reason: "no approval handler is configured"}
 	}
-	type answer struct{ d ApprovalDecision }
-	ch := make(chan answer, 1)
-	go func() { ch <- answer{cfg.OnApproval(req)} }()
 	timeout := cfg.ApprovalTimeout
 	if timeout <= 0 {
 		timeout = defaultApprovalTimeout
 	}
+	// Expiry sets the cause, so the host can tell "approval timed out"
+	// from a cancelled run when the context fires there as well.
+	actx, cancel := context.WithTimeoutCause(ctx, timeout, ErrApprovalTimedOut)
+	defer cancel()
+	type answer struct{ d ApprovalDecision }
+	ch := make(chan answer, 1)
+	go func() { ch <- answer{cfg.OnApproval(actx, req)} }()
 	select {
 	case a := <-ch:
 		if a.d.Approved {
 			return nil
 		}
 		return &DenialError{Tool: t.Name, Reason: a.d.Reason}
-	case <-time.After(timeout):
-		return &DenialError{Tool: t.Name, Reason: "approval timed out"}
-	case <-ctx.Done():
+	case <-actx.Done():
+		if errors.Is(context.Cause(actx), ErrApprovalTimedOut) {
+			return &DenialError{Tool: t.Name, Reason: ErrApprovalTimedOut.Error()}
+		}
 		return &DenialError{Tool: t.Name, Reason: "cancelled before approval"}
 	}
 }
@@ -240,6 +246,13 @@ func ApprovalSummary(call ToolCall) string {
 	case get("name") != "":
 		return name + " " + trunc(get("name"), 120)
 	default:
+		if _, ok := strings.CutPrefix(name, "mcp_"); ok {
+			// MCP arguments are free-form: a bounded, flattened view so
+			// the ask is not a blind yes (spec/approvals.md).
+			if args := trunc(strings.Join(strings.Fields(call.Function.Arguments), " "), 160); args != "" {
+				return name + " " + args
+			}
+		}
 		return name
 	}
 }
