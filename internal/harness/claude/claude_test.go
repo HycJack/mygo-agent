@@ -272,3 +272,85 @@ sleep 300
 		t.Fatalf("what arrived was lost: %q", text)
 	}
 }
+
+// The CLI's path boundary is decided inside the CLI, below the layer
+// where can_use_tool lives, so a read outside the workspace never reaches
+// the approval card — the model is simply told the permission was not
+// granted and moves on. These pin that the run asks instead, once, and
+// only when the answer is yes does the grant reach the command line.
+
+func TestOutsideDirArgsAsksOnceAndGrantsWhatIsApproved(t *testing.T) {
+	ws := t.TempDir()
+	// Three files in two directories is one decision, not three.
+	prompt := "compare /tmp/a/one.txt with /tmp/a/two.txt and /tmp/b/three.txt"
+
+	var asked harness.OutsideDirRequest
+	calls := 0
+	turn := harness.Turn{
+		Workdir: ws, Prompt: prompt,
+		OnOutsideDir: func(_ context.Context, req harness.OutsideDirRequest) bool {
+			calls++
+			asked = req
+			return true
+		},
+	}
+	args := outsideDirArgs(context.Background(), turn)
+	if calls != 1 {
+		t.Fatalf("asked %d times, want once for the whole prompt", calls)
+	}
+	if len(asked.Dirs) != 2 {
+		t.Fatalf("asked about %v, want two directories", asked.Dirs)
+	}
+	if asked.Workdir != ws {
+		t.Fatalf("the ask did not name the workspace: %q", asked.Workdir)
+	}
+	// The grant has to be on the command line, as a directory, or the
+	// CLI refuses the read exactly as it did before.
+	joined := strings.Join(args, " ")
+	if n := strings.Count(joined, "--add-dir"); n != 2 {
+		t.Fatalf("args carry %d --add-dir flags, want 2: %v", n, args)
+	}
+	for _, d := range asked.Dirs {
+		if !strings.Contains(joined, d) {
+			t.Fatalf("%q was approved but is not on the command line: %v", d, args)
+		}
+	}
+}
+
+func TestOutsideDirArgsGrantsNothingOnRefusal(t *testing.T) {
+	ws := t.TempDir()
+	turn := harness.Turn{
+		Workdir: ws, Prompt: "read /etc/hosts",
+		OnOutsideDir: func(context.Context, harness.OutsideDirRequest) bool { return false },
+	}
+	if args := outsideDirArgs(context.Background(), turn); len(args) != 0 {
+		t.Fatalf("a refused directory reached the command line: %v", args)
+	}
+}
+
+func TestOutsideDirArgsStaysQuietForAPromptInsideTheWorkspace(t *testing.T) {
+	ws := t.TempDir()
+	asked := false
+	turn := harness.Turn{
+		Workdir: ws, Prompt: "read " + filepath.Join(ws, "main.go") + " and fix it",
+		OnOutsideDir: func(context.Context, harness.OutsideDirRequest) bool {
+			asked = true
+			return true
+		},
+	}
+	if args := outsideDirArgs(context.Background(), turn); len(args) != 0 {
+		t.Fatalf("a prompt that stayed in the workspace produced %v", args)
+	}
+	if asked {
+		t.Fatal("the user was asked about a path inside the workspace they are already in")
+	}
+}
+
+// A run with nowhere to ask runs confined. That is the safe reading of a
+// boundary it cannot raise, and it is what a nil callback has to mean.
+func TestOutsideDirArgsWithNoHandlerGrantsNothing(t *testing.T) {
+	turn := harness.Turn{Workdir: t.TempDir(), Prompt: "read /etc/hosts"}
+	if args := outsideDirArgs(context.Background(), turn); len(args) != 0 {
+		t.Fatalf("a run with no handler was granted %v", args)
+	}
+}

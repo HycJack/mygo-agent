@@ -53,6 +53,16 @@ func (h *Harness) Run(ctx context.Context, turn harness.Turn, emit func(harness.
 	if turn.SessionID != "" {
 		args = append(args, "--resume", turn.SessionID)
 	}
+	// A prompt that names a path outside the workspace asks for it here,
+	// once, and the answer goes on the command line as --add-dir. It has
+	// to be asked before the spawn: the grant is the CLI's allow list,
+	// not a decision it can be told about midway. Read-only mode is left
+	// alone — with nothing to write, a run that cannot reach the file
+	// cannot damage anything, and the card would be one more thing to
+	// answer for no change in the outcome.
+	if perm == "default" {
+		args = append(args, outsideDirArgs(ctx, turn)...)
+	}
 
 	cmd := exec.CommandContext(ctx, h.Bin, args...)
 	cmd.Dir = turn.Workdir
@@ -446,4 +456,38 @@ func contentText(raw json.RawMessage) string {
 		return strings.TrimRight(b.String(), "\n")
 	}
 	return string(raw)
+}
+
+// outsideDirArgs asks once about every directory the prompt pointed at
+// outside the workspace, and returns the --add-dir flags for the ones
+// that were granted.
+//
+// One question for the whole prompt, not one per path: a prompt naming
+// five files in three directories is a single decision, and asking five
+// times trains the user to click through without reading. A refusal is
+// final and silent — the run stays confined, and the CLI's own message
+// ("you haven't granted it yet") is what the model sees, which is the
+// same thing it would have said unasked.
+func outsideDirArgs(ctx context.Context, turn harness.Turn) []string {
+	// A run with nowhere to ask runs confined. That is the safe reading
+	// of a boundary it cannot raise, and it keeps this function safe to
+	// call on any turn rather than only where Run has already checked.
+	if turn.OnOutsideDir == nil {
+		return nil
+	}
+	dirs := harness.DirsOutsideWorkdir(turn.Prompt, turn.Workdir)
+	if len(dirs) == 0 {
+		return nil
+	}
+	if !turn.OnOutsideDir(ctx, harness.OutsideDirRequest{Workdir: turn.Workdir, Dirs: dirs}) {
+		return nil
+	}
+	// --add-dir takes directories only and repeats per directory, so a
+	// grant that is a file path is useless on its own. The scan already
+	// narrows to directories, which is what makes this list well-formed.
+	args := make([]string, 0, len(dirs)*2)
+	for _, d := range dirs {
+		args = append(args, "--add-dir", d)
+	}
+	return args
 }

@@ -11,7 +11,7 @@ reference implementations are OpenAgentCore's codex adapter
 | Mode | codex (app-server) | claude CLI | pi CLI |
 | --- | --- | --- | --- |
 | read-only | `sandbox: "read-only"`, `approvalPolicy: "never"` | `--permission-mode default`; the app **denies every** `can_use_tool` | `--tools read` (allowlist keeps the read tool only) |
-| agent | `sandbox: "workspace-write"`, `approvalPolicy: "on-request"` | `--permission-mode default`; every `can_use_tool` forwards to an approval card | pi defaults |
+| agent | `sandbox: "workspace-write"`, `approvalPolicy: "on-request"` | `--permission-mode default`; every `can_use_tool` forwards to an approval card, and directories the prompt names outside the workspace are asked about once and passed as `--add-dir` (approvals.md) | pi defaults |
 | full | `sandbox: "danger-full-access"`, `approvalPolicy: "never"` | `--permission-mode bypassPermissions` | pi defaults |
 
 In codex agent mode the sandbox is the boundary; codex sends approval
@@ -47,8 +47,7 @@ over NDJSON. Sequence: `initialize` (clientInfo, `capabilities.experimentalApi=t
   `item/agentMessage/delta`, `item/reasoning/textDelta`,
   `item/reasoning/summaryTextDelta`, `item/commandExecution/outputDelta`,
   `thread/tokenUsage/updated`, `error`. Item shapes match the exec `--json`
-  item model and map to the same cards.
-- Approval server-requests (method, has `id`):
+  item model and map to the same cards.- Approval server-requests (method, has `id`):
   - `item/commandExecution/requestApproval` — params carry `command`, `cwd`,
     `reason`, `itemId`. Reply `{"decision": "accept"|"decline"}`.
   - `item/fileChange/requestApproval` — params carry `grantRoot`, `reason`.
@@ -73,8 +72,7 @@ process. The prompt is written as one input line:
 stdin stays open until the `result` event (or an error) arrives, then closes.
 
 - The session id arrives in the `system`/`init` event (`session_id`), as
-  today.
-- Permission requests arrive as control requests:
+  today.- Permission requests arrive as control requests:
   `{"type":"control_request","request_id":…,"request":{"subtype":
   "can_use_tool","tool_name":…,"input":{…}}}`. The app replies on stdin:
   - allow: `{"type":"control_response","response":{"subtype":"success",
@@ -118,7 +116,6 @@ one fresh process per turn; JSONL events on stdout.
 - **Approvals**: pi executes its tools with its own permissions; the
   app's approval cards do not cover pi. Read-only mode therefore maps to
   a tool allowlist, the only lever pi exposes.
-
 ## Invariants (extending approvals.md)
 
 1. The approval mode decides the CLI launch flags **and** the app's

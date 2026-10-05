@@ -2,6 +2,8 @@ package app
 
 import (
 	"context"
+	"fmt"
+	"strings"
 
 	"mygo-agent/internal/harness"
 )
@@ -72,4 +74,40 @@ func (a *app) resolveApproval(callID string, d harness.ApprovalDecision) {
 		delete(a.approvals, callID)
 		ch <- d
 	}
+}
+
+// waitForOutsideDirs answers the one question a turn raises about the
+// directories its prompt reached for outside the workspace
+// (spec/approvals.md). It rides the ordinary approval card, because it
+// is the same decision with the same consequences: the user either
+// lets this run reach a directory or it does not.
+//
+// The card names every directory at once. One prompt naming five files
+// in three directories is one thing to decide, and a card per path would
+// be five clicks that teach the user to stop reading them. A refusal is
+// not a partial grant — the run stays exactly as confined as it was,
+// which is what "no" has to mean when the grant is on a command line.
+func (a *app) waitForOutsideDirs(ctx context.Context, th *Thread, at int, req harness.OutsideDirRequest) bool {
+	dirs := append([]string(nil), req.Dirs...)
+	call := harness.ToolCall{ID: "outside-dirs"}
+	call.Function.Name = "access"
+	call.Function.Arguments = `{"path":"` + strings.Join(dirs, ", ") + `"}`
+	decision := a.waitForApproval(ctx, th, at, harness.ApprovalRequest{
+		Call: call,
+		Summary: "read outside the workspace: " +
+			strings.Join(shortenAll(dirs, 3), ", "),
+		Reason: "this prompt refers to paths outside the workspace",
+	})
+	return decision.Approved
+}
+
+// shortenAll names at most n directories and counts the rest, so a
+// prompt pointing at a dozen trees does not produce a card nobody reads
+// — the count is the honest signal that the ask is larger than usual.
+func shortenAll(dirs []string, n int) []string {
+	if len(dirs) <= n {
+		return dirs
+	}
+	out := append([]string(nil), dirs[:n]...)
+	return append(out, fmt.Sprintf("and %d more", len(dirs)-n))
 }
