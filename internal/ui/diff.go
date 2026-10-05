@@ -8,12 +8,9 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
-// diffLineRow renders one line of a diff or of a viewed text file: the
-// row tinted by its kind, the line number for plain text, and the
-// word-level change highlighted, as godiff does.
 // DiffLineRow renders one line of a diff or of a viewed text file: the
 // row tinted by its kind, the line number for plain text, and the
-// word-level change highlighted.
+// word-level change highlighted, as godiff does.
 func DiffLineRow(c *ui.Context, l harness.DiffLine, nums, wrap bool, pal Palette) {
 	t := c.Theme()
 	row := ui.Row(c).MinHeight(19).Padding(0, 12).AlignItems(ui.Start)

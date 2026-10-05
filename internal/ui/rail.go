@@ -27,12 +27,12 @@ type RailItem struct {
 // The wave, in DIPs: the dash under the pointer is the longest, and the
 // length falls off toward both sides — ZCode's message map.
 const (
-	dashMin   = 8.0  // the far ends of the wave
-	dashMax   = 24.0 // the dash the wave centers on
-	dashDecay = 0.5  // length falloff per step of distance
-	dashBar   = 3.0  // the visual bar's height
-	dashHit   = 14.0 // the clickable row's height
-	dashEase  = 0.35 // per-frame easing toward the target width
+	dashMin  = 8.0  // the base length, left of the peak and far right
+	dashMax  = 24.0 // the dash the wave centers on
+	dashFall = 4.0  // dashes to the peak's right over which it decays
+	dashBar  = 3.0  // the visual bar's height
+	dashHit  = 14.0 // the clickable row's height
+	dashEase = 0.35 // per-frame easing toward the target width
 )
 
 // railLabel is one dash's "Jump to: …" text, cached beside the dash.
@@ -59,7 +59,7 @@ func AnchorRail(c *ui.Context, items []RailItem, colors Colors, onJump func(item
 		ui.Spacer(c).Width(24)
 		return
 	}
-	rail := ui.Column(c).Width(30).PaddingY(18).AlignItems(ui.Center)
+	rail := ui.Column(c).Width(30).Justify(ui.Center).AlignItems(ui.Center)
 
 	// The wave centers on the dash the pointer is on, else on the
 	// viewport-top message. Hover is only known while a dash builds, so
@@ -79,8 +79,17 @@ func AnchorRail(c *ui.Context, items []RailItem, colors Colors, onJump func(item
 					lb.preview, lb.label = it.Preview, "Jump to: "+FirstLine(it.Preview)
 				}
 
-				d := math.Abs(float64(i - *center))
-				target := dashMin + (dashMax-dashMin)*math.Pow(dashDecay, d)
+				// The wave leans right: left of the peak every dash
+				// keeps the base length; the peak is the longest and the
+				// lengths decay across the dashes to its right.
+				step := float64(i - *center)
+				target := dashMin
+				switch {
+				case step == 0:
+					target = dashMax
+				case step > 0:
+					target = dashMax - (dashMax-dashMin)*math.Min(step/dashFall, 1)
+				}
 
 				dash := ui.ButtonBase(c).Label(lb.label).Tooltip(lb.label).
 					Size(26, dashHit).Radius(3).Center().Cursor(ui.CursorPointer)
@@ -105,7 +114,7 @@ func AnchorRail(c *ui.Context, items []RailItem, colors Colors, onJump func(item
 				switch {
 				case *center >= 0 && i == *center, hovered == -1 && it.Active:
 					bar = colors.Text
-				case math.Abs(d-1) < 0.5:
+				case step > 0 && step <= 1:
 					bar = colors.TextMuted
 				}
 				dash.Children(func() {

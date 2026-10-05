@@ -24,6 +24,7 @@ type SidebarVM struct {
 	Current string
 
 	Backend     string // builtin | codex | claude | pi
+	Width       float32
 	BackendName string
 	CodexFound  bool
 	PiFound     bool
@@ -146,8 +147,7 @@ func RelTime(t time.Time) string {
 // this draws the whole column contents.
 func Sidebar(c *ui.Context, vm *SidebarVM, acts SidebarActions, top float32) {
 	t := c.Theme()
-	ui.Column(c).Width(264).Shrink(0).Background(vm.Pal.SidebarBG).
-		BorderWidth(0, 1, 0, 0).BorderColor(vm.Pal.Border).Children(func() {
+	ui.Column(c).Width(vm.Width).Shrink(0).Background(vm.Pal.SidebarBG).Children(func() {
 		// The strip the window controls sit over, which drags the
 		// window. No branding here: the macOS traffic lights own this
 		// corner.
@@ -212,7 +212,6 @@ func threadRow(c *ui.Context, vm *SidebarVM, acts SidebarActions, th ThreadVM) {
 		row.Background(vm.Pal.Hover)
 	}
 	if row.Clicked() {
-		println("DBG row clicked", th.ID)
 		acts.OpenThread(th.ID)
 	}
 	row.ContextMenu(func(m *ui.Menu) {
@@ -252,7 +251,6 @@ func threadRow(c *ui.Context, vm *SidebarVM, acts SidebarActions, th ThreadVM) {
 				vm.HoverRow = ""
 			}
 			if del.Clicked() {
-				println("DBG del clicked", th.ID)
 				acts.DeleteThread(th.ID)
 			}
 			del.Children(func() { ui.Icon(c, IconTrash).FontSize(13).TextColor(vm.Pal.TextMuted) })

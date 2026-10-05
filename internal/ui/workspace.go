@@ -2,7 +2,6 @@ package ui
 
 import (
 	"path/filepath"
-	"sort"
 	"strings"
 
 	"github.com/egoist/mygo/ui"
@@ -11,10 +10,12 @@ import (
 // WorkspaceVM is the render input for the right panel: the file tree of
 // the workdir and the git working tree's changes. The tree is lazy — the
 // view asks the host for one directory level at a time through
-// WorkspaceActions.ListDir — and Expanded is transient view state the
-// host syncs back.
+// WorkspaceActions.ListDir — and Expanded is a plain snapshot of which
+// directories are open; the view never writes it, it reports the toggle
+// through WorkspaceActions.ToggleDir.
 type WorkspaceVM struct {
 	Workdir string
+	Width   float32
 
 	GitFiles []ChangeVM
 	GitErr   string
@@ -47,6 +48,10 @@ type WorkspaceActions interface {
 	OpenChange(ch ChangeVM)
 	// ListDir returns one directory level, directories first.
 	ListDir(dir string) []FileNode
+	// ToggleDir opens a closed directory or closes an open one. The tree
+	// reports the toggle here instead of writing the snapshot's Expanded
+	// map, so the host stays the one home for it (spec/architecture.md).
+	ToggleDir(path string)
 }
 
 // skippedDirs never help when browsing a workspace.
@@ -60,8 +65,7 @@ var skippedDirs = map[string]bool{
 // the git changes. Width and placement stay with the host.
 func Workspace(c *ui.Context, vm *WorkspaceVM, acts WorkspaceActions) {
 	t := c.Theme()
-	ui.Column(c).Width(240).Shrink(0).Background(vm.Pal.SidebarBG).
-		BorderWidth(0, 0, 0, 1).BorderColor(vm.Pal.Border).Children(func() {
+	ui.Column(c).Width(vm.Width).Shrink(0).Background(vm.Pal.SidebarBG).Children(func() {
 		// The strip that drags the window.
 		ui.Row(c).Height(max(c.TitleBar().Height, 40)).PaddingX(12).DragWindow().AlignItems(ui.Center).Gap(6).Children(func() {
 			ui.Icon(c, IconFolder).FontSize(13).TextColor(vm.Pal.TextMuted)
@@ -105,14 +109,19 @@ func treeSection(c *ui.Context, vm *WorkspaceVM, acts WorkspaceActions) {
 func treeItems(c *ui.Context, vm *WorkspaceVM, acts WorkspaceActions, dir string) {
 	nodes := acts.ListDir(dir)
 	for _, node := range nodes {
-		node := node
 		if node.Dir {
+			// The tree item binds a local copy so the disclosure arrow
+			// can flip it mid-frame; the change is reported, not
+			// written back, so a zero-value VM with no Expanded map is
+			// safe.
 			open := vm.Expanded[node.Path]
 			openPtr := &open
 			ui.TreeItem(c, node.Name, openPtr, func() {
 				treeItems(c, vm, acts, node.Path)
 			}).Clicked()
-			vm.Expanded[node.Path] = open
+			if *openPtr != vm.Expanded[node.Path] {
+				acts.ToggleDir(node.Path)
+			}
 			continue
 		}
 		if ui.TreeItem(c, node.Name, nil, nil).Clicked() {
@@ -172,15 +181,4 @@ func changeColor(ch ChangeVM, pal Palette) ui.Color {
 	default:
 		return pal.Warning
 	}
-}
-
-// SortNodes orders a directory listing: directories first, then
-// case-insensitive by name. Hosts use it before handing levels over.
-func SortNodes(nodes []FileNode) {
-	sort.Slice(nodes, func(i, j int) bool {
-		if nodes[i].Dir != nodes[j].Dir {
-			return nodes[i].Dir
-		}
-		return strings.ToLower(nodes[i].Name) < strings.ToLower(nodes[j].Name)
-	})
 }
