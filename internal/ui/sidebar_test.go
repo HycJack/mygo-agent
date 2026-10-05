@@ -30,7 +30,12 @@ func ago(d time.Duration) time.Time { return time.Now().Add(-d) }
 func TestGroupThreadsPutsEachTaskInOneSection(t *testing.T) {
 	now := today()
 	threads := []ThreadVM{
-		{ID: "a", Title: "Today one", Updated: ago(time.Minute)},
+		// Every stamp comes off the noon anchor rather than off now: the
+		// Today bucket is the current calendar day, so "a minute ago" is
+		// yesterday for the first minute after midnight, and the suite
+		// fails once a day in that minute. Noon is inside today at every
+		// hour, which is the whole point of the anchor.
+		{ID: "a", Title: "Today one", Updated: now},
 		{ID: "b", Title: "Yesterday one", Updated: now.AddDate(0, 0, -1)},
 		{ID: "c", Title: "Last week", Updated: now.AddDate(0, 0, -3)},
 		{ID: "d", Title: "Last month", Updated: now.AddDate(0, 0, -20)},

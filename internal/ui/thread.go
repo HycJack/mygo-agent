@@ -110,8 +110,10 @@ func Transcript(c *ui.Context, vm *TranscriptVM, acts TranscriptActions) {
 	// The anchor rail hugs the sidebar divider, vertically centered by
 	// the row's stretch; the messages keep a centered reading measure.
 	// A click glides to the target instead of teleporting, ZCode-style,
-	// and the last messages settle at the list's end — clicking the last
-	// anchor shows the earlier messages above it.
+	// and the last messages settle at the list's end — so what a jump
+	// puts at the top of the viewport is not always the message it
+	// jumped to, which is why the rail tracks the reader's place rather
+	// than the top row.
 	root := ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch)
 	glide := ui.Local(root, "glide", func() railGlide { return railGlide{} })
 	// A glide in progress advances a few rows per frame; the last two
@@ -142,10 +144,21 @@ func Transcript(c *ui.Context, vm *TranscriptVM, acts TranscriptActions) {
 		// The anchor rail: one dash per message, hover previews it,
 		// click glides to it.
 		items := make([]RailItem, len(vm.Messages))
-		first, _ := st.Visible()
+		first, last := st.Visible()
+		// Where the reader is. Mid-transcript that is the top of the
+		// viewport, but at the end it is the last row: the list settles
+		// its tail End-aligned, so a jump to the last message leaves the
+		// rows above it at the top of the viewport — and lighting the
+		// top row would leave the rail pointing at an earlier message
+		// than the one just jumped to, which is the one message the
+		// reader is sure they are on.
+		at := first
+		if st.AtEnd() && last >= first {
+			at = last
+		}
 		for i := range vm.Messages {
 			m := &vm.Messages[i]
-			items[i] = RailItem{ID: m.ID, Preview: railPreview(m), Active: i == first}
+			items[i] = RailItem{ID: m.ID, Preview: railPreview(m), Active: i == at}
 		}
 		AnchorRail(c, items, Colors{
 			Active:    vm.Pal.Text,
@@ -154,7 +167,7 @@ func Transcript(c *ui.Context, vm *TranscriptVM, acts TranscriptActions) {
 			Surface:   vm.Pal.Card,
 			Text:      vm.Pal.Text,
 		}, func(it RailItem, index int) {
-			*glide = railGlide{target: index, pos: first, active: true}
+			*glide = railGlide{target: index, pos: at, active: true}
 			c.AnimationFrame()
 		})
 		// AlignItems(Stretch) is load-bearing, not decoration: a Row
