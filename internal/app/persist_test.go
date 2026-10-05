@@ -5,6 +5,7 @@ import (
 
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -147,8 +148,13 @@ func TestDeleteRemovesOnlyItsFile(t *testing.T) {
 }
 
 // TestThreadFilesAre0600 proves the permission rule: thread content
-// includes code snippets, so the files stay private.
+// includes code snippets, so the files stay private. Windows has no
+// permission bits — the rule cannot hold there, and asserting it would
+// only prove that Go maps them to 0666.
 func TestThreadFilesAre0600(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Windows has no permission bits")
+	}
 	a, store := threadStore(t)
 	a.saveThread(&Thread{ID: "perm1", ProjectID: "p1", Title: "P", Created: time.Now(), Updated: time.Now()})
 	st, err := os.Stat(filepath.Join(store, "p1", "perm1.json"))
