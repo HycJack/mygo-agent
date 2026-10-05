@@ -12,6 +12,17 @@ for d in $(deps ./internal/harness); do
   esac
 done
 
+# The harness adapters (subpackages) import the harness root and cli,
+# never the host or the providers.
+for d in internal/harness/*/; do
+  d="${d%/}"
+  for dep in $(deps "./$d"); do
+    case "$dep" in
+      mygo-agent/internal/app|mygo-agent/internal/providers/*) fail "$dep imported by $d" ;;
+    esac
+  done
+done
+
 # internal/ui imports the harness types and the toolkit, never the host.
 for d in $(deps ./internal/ui); do
   case "$d" in
