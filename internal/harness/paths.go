@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
 )
@@ -56,6 +57,17 @@ func DirsOutsideWorkdir(text, workdir string) []string {
 // over-reach this scan exists to prevent.
 func dirsOutsideWorkdir(text, workdir string) []string {
 	if text == "" {
+		return nil
+	}
+	// A Windows path is a different language: it carries a drive letter and
+	// is written with backslashes, and pathInText understands neither.
+	// Worse, the POSIX paths it *does* match are then placed by filepath.Abs
+	// onto whatever drive the process happens to be on — measured on CI,
+	// "/etc/hosts" became "D:\etc", a real grant for a directory nobody
+	// named. Asking about the wrong directory is worse than not asking, so
+	// this stays off until the pattern learns drives and separators. A
+	// Windows run simply behaves as it did before this feature existed.
+	if runtime.GOOS == "windows" {
 		return nil
 	}
 	// The workspace in the form the prompt is likely to name it, and in

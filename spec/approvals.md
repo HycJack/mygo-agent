@@ -77,6 +77,15 @@ type OnOutsideDir func(ctx context.Context, req OutsideDirRequest) bool
   command against a granted directory, and shell redirection into one
   stays blocked outright. Reaching a directory is not permission to
   change it.
+- The scan is **POSIX-only**. On Windows it returns nothing and the run
+  behaves as if this feature did not exist. Not an oversight: a Windows
+  path carries a drive letter and is written with backslashes, which the
+  matcher does not understand, and running a POSIX path through
+  `filepath.Abs` there lands it on whatever drive the process is on.
+  Measured on Windows CI, `/etc/hosts` became `D:\etc` — a grant for a
+  directory the prompt never named. Silence is recoverable; a wrong
+  grant is not. Re-enabling this needs a matcher that knows drives and
+  separators, plus a real Windows run to measure it against.
 
 ## Decision
 
