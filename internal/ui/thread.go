@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"strconv"
 	"strings"
 	"time"
 
@@ -26,12 +27,45 @@ type BlockVM struct {
 	ToolID, ApprovalID       string
 }
 
+// Item kinds: the two shapes an ordered piece of a turn can take.
+const (
+	// ItemText is the agent's prose at the point it was said.
+	ItemText = "text"
+	// ItemBlock is a single card, drawn as itself.
+	ItemBlock = "block"
+	// ItemGroup is a folded run of two or more alike cards, drawn as one
+	// row that expands into them.
+	ItemGroup = "group"
+)
+
+// ItemVM is one piece of an assistant turn, in arrival order. The Host
+// builds the sequence: prose, a tool call, more prose, another tool call.
+// Order is the whole point — a turn has to read the way it happened, not
+// as all the cards and then all the prose.
+type ItemVM struct {
+	Kind   string // ItemText | ItemBlock | ItemGroup
+	Type   string // ItemBlock/ItemGroup: the card kind
+	Text   string // ItemText
+	Blocks []BlockVM
+	At     int  // index of the first block in the message, for ToggleBlock
+	Open   bool // ItemGroup: expanded
+	Ms     int64
+	Failed int // ItemGroup: members that failed
+}
+
 // MessageVM is one turn of the conversation.
 type MessageVM struct {
 	ID, Role, Text string
 	At             time.Time
 	Running        bool
-	Blocks         []BlockVM
+	// Items is the ordered sequence the transcript draws. Text stays on
+	// the message too: it is the aggregate the copy button, the rail
+	// preview and the built-in transcript seeding all read.
+	Items []ItemVM
+	// Blocks is Items' card members, flattened, for callers that index by
+	// block position. Deprecated in favour of Items; kept because the
+	// approval and fold actions address blocks by that index.
+	Blocks []BlockVM
 }
 
 // TranscriptVM is the render input of the conversation view. List and
@@ -63,56 +97,133 @@ type TranscriptActions interface {
 // virtualized list that follows its end as the agent replies.
 func Transcript(c *ui.Context, vm *TranscriptVM, acts TranscriptActions) {
 	st := vm.List
-	st.Key = func(i int) any { return vm.Messages[i].ID }
+	st.Key = func(i int) any {
+		// The list can ask for a row this frame's snapshot does not
+		// have, when the messages changed under it; answer with the
+		// index instead of panicking.
+		if i < 0 || i >= len(vm.Messages) {
+			return i
+		}
+		return vm.Messages[i].ID
+	}
 	st.FollowEnd = true
-	// The conversation column, centered the way ZCode's is: the anchor
-	// rail rides its left edge and the messages keep a comfortable
-	// reading measure.
-	ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
-		col := ui.Row(c).FillWidth().MaxWidth(880).Margin(0, ui.Auto)
-		col.Children(func() {
-			// The anchor rail: one dash per message, hover previews it,
-			// click jumps to it.
-			items := make([]RailItem, len(vm.Messages))
-			first, _ := st.Visible()
-			for i := range vm.Messages {
-				m := &vm.Messages[i]
-				items[i] = RailItem{ID: m.ID, Preview: railPreview(m), Active: i == first}
+	// The anchor rail hugs the sidebar divider, vertically centered by
+	// the row's stretch; the messages keep a centered reading measure.
+	// A click glides to the target instead of teleporting, ZCode-style,
+	// and the last messages settle at the list's end — clicking the last
+	// anchor shows the earlier messages above it.
+	root := ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch)
+	glide := ui.Local(root, "glide", func() railGlide { return railGlide{} })
+	// A glide in progress advances a few rows per frame; the last two
+	// messages settle End-aligned, everything else Start-aligned.
+	if glide.active {
+		dist := glide.target - glide.pos
+		step := dist / 4
+		if dist < 0 && step > -2 {
+			step = dist
+		}
+		if dist > 0 && step < 2 {
+			step = dist
+		}
+		if dist == 0 {
+			glide.active = false
+			align := ui.Start
+			if glide.target >= len(vm.Messages)-2 {
+				align = ui.End
 			}
-			AnchorRail(c, items, Colors{
-				Active:    vm.Pal.Text,
-				TextMuted: vm.Pal.TextMuted,
-				Border:    vm.Pal.Border,
-				Surface:   vm.Pal.Card,
-				Text:      vm.Pal.Text,
-			}, func(it RailItem, index int) {
-				st.ScrollTo(index, ui.Start)
-			})
+			st.ScrollTo(glide.target, align)
+		} else {
+			glide.pos += step
+			st.ScrollTo(glide.pos, ui.Start)
+			c.AnimationFrame()
+		}
+	}
+	root.Children(func() {
+		// The anchor rail: one dash per message, hover previews it,
+		// click glides to it.
+		items := make([]RailItem, len(vm.Messages))
+		first, _ := st.Visible()
+		for i := range vm.Messages {
+			m := &vm.Messages[i]
+			items[i] = RailItem{ID: m.ID, Preview: railPreview(m), Active: i == first}
+		}
+		AnchorRail(c, items, Colors{
+			Active:    vm.Pal.Text,
+			TextMuted: vm.Pal.TextMuted,
+			Border:    vm.Pal.Border,
+			Surface:   vm.Pal.Card,
+			Text:      vm.Pal.Text,
+		}, func(it RailItem, index int) {
+			*glide = railGlide{target: index, pos: first, active: true}
+			c.AnimationFrame()
+		})
+		// AlignItems(Stretch) is load-bearing, not decoration: a Row
+		// centers its children across its main axis by default, and a
+		// list that is not stretched keeps its own measured height —
+		// here the whole window — instead of the column's. Its viewport
+		// then holds the entire transcript, so every row reads as
+		// visible, atEnd stays true whatever it is scrolled to, and a
+		// rail jump has no state left to take effect on.
+		col := ui.Row(c).FillWidth().MaxWidth(880).Margin(0, ui.Auto).AlignItems(ui.Stretch)
+		col.Children(func() {
 			ui.List(c, st, len(vm.Messages), func(i int) {
-				messageRow(c, vm, acts, i)
+				col := ui.Column(c).FillWidth().MaxWidth(860).Margin(0, ui.Auto)
+				col.Children(func() {
+					messageRow(c, vm, acts, i)
+				})
 			}).Grow(1).MinHeight(0).Justify(ui.End).Gap(20).Padding(24, 18, 16)
 		})
 	})
 }
 
-// railPreview boils a message down to a short preview for the rail.
+// railGlide is one jump's animated scroll: the row steps toward the
+// target a few rows per frame and settles on it.
+type railGlide struct {
+	target int
+	pos    int
+	active bool
+}
+
+// railPreview boils a message down to a short preview for the rail. It
+// reads the first thing the turn actually said rather than the aggregate:
+// a turn that talked, ran a tool, then talked again has a prose aggregate
+// of both halves, and the rail should name the turn, not concatenate it.
 func railPreview(m *MessageVM) string {
-	if s := strings.TrimSpace(m.Text); s != "" {
-		return s
-	}
-	for _, b := range m.Blocks {
-		switch b.Type {
-		case "command":
-			return "$ " + b.Text
-		case "diff":
-			return "edited " + b.File
-		case "error":
-			return b.Text
-		case "reasoning":
-			return b.Text
+	for i := range m.Items {
+		it := &m.Items[i]
+		if it.Kind == ItemText {
+			if s := strings.TrimSpace(it.Text); s != "" {
+				return firstLine(s)
+			}
+			continue
+		}
+		for _, b := range it.Blocks {
+			switch b.Type {
+			case "command":
+				return "$ " + b.Text
+			case "diff":
+				return "edited " + b.File
+			case "error":
+				return b.Text
+			case "reasoning":
+				return b.Text
+			}
 		}
 	}
+	if s := strings.TrimSpace(m.Text); s != "" {
+		return firstLine(s)
+	}
 	return "message"
+}
+
+// firstLine is the preview's one line: markdown headings and list markers
+// are noise in a 40-pixel gutter.
+func firstLine(s string) string {
+	if i := strings.IndexByte(s, '\n'); i >= 0 {
+		s = s[:i]
+	}
+	s = strings.TrimLeft(s, "#>-* \t")
+	return strings.TrimSpace(s)
 }
 
 // actionRowHeight is the reserved height of every message's action row:
@@ -155,18 +266,13 @@ func messageRow(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, i int) 
 		avatar := ui.Box(c).Size(26, 26).Radius(7).Background(vm.Pal.Card).Border(1, vm.Pal.Border).Center()
 		avatar.Children(func() { ui.Icon(c, IconSparkles).FontSize(14).TextColor(t.Text) })
 		ui.Column(c).Grow(1).MinWidth(0).Gap(6).Children(func() {
-			// Tool calls sit in a tight group, one quiet row each.
-			if len(m.Blocks) > 0 {
-				ui.Column(c).Gap(2).Children(func() {
-					for bi := range m.Blocks {
-						block(c, vm, acts, m, bi)
-					}
-				})
+			// The turn in arrival order. Prose renders at the point it was
+			// said, so a tool call the agent ran mid-sentence stays between
+			// the two halves of what it said.
+			for ii := range m.Items {
+				item(c, vm, acts, m, &m.Items[ii])
 			}
-			if m.Text != "" {
-				Markdown(c, vm.Md, "msg:"+m.ID, m.Text, !m.Running, vm.Pal)
-			}
-			if m.Running && m.Text == "" && len(m.Blocks) == 0 {
+			if m.Running && len(m.Items) == 0 {
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 					ui.Spinner(c)
 					ui.Text(c, "Working…").FontSize(12).TextColor(t.TextMuted)
@@ -178,6 +284,108 @@ func messageRow(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, i int) 
 			})
 		})
 	})
+}
+
+// item draws one ordered piece of a turn: the prose, a single card, or a
+// folded run of alike cards.
+func item(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, m *MessageVM, it *ItemVM) {
+	switch it.Kind {
+	case ItemText:
+		Markdown(c, vm.Md, "msg:"+m.ID+":"+strconv.Itoa(it.At), it.Text, !m.Running, vm.Pal)
+	case ItemBlock:
+		block(c, vm, acts, m, it.Blocks[0], it.At)
+	case ItemGroup:
+		itemGroup(c, vm, acts, m, it)
+	}
+}
+
+// groupHeader is the summary a folded run shows: what it did, how many,
+// how long, and whether anything failed. The count and the duration are
+// the reason a run is worth folding — twenty rows of `$ go test` is
+// noise, "20 commands · 4.1s" is the fact.
+func groupHeader(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, m *MessageVM, it *ItemVM) {
+	t := c.Theme()
+	head := ui.Row(c).MinHeight(22).Padding(0, 8).Gap(8).AlignItems(ui.Center).
+		Radius(6).Cursor(ui.CursorPointer)
+	if head.Hovered() || it.Open {
+		head.Background(vm.Pal.Hover)
+	}
+	if head.Clicked() {
+		acts.ToggleBlock(m.ID, it.At)
+	}
+	label := ""
+	icon := IconChevDown
+	switch it.Type {
+	case "command":
+		icon = IconTerminal
+		label = plural(len(it.Blocks), "command", "commands")
+		if it.Failed > 0 {
+			// Spelled out rather than plural()'d: "1 failed" has to keep
+			// its number, and plural(n, "failed", "failed") drops it.
+			label += " · " + strconv.Itoa(it.Failed) + " failed"
+		}
+	case "diff":
+		icon = IconFileCode
+		var add, del int
+		if len(it.Blocks) > 0 {
+			label = it.Blocks[0].File
+		}
+		for _, b := range it.Blocks {
+			add += b.Add
+			del += b.Del
+		}
+		if add > 0 {
+			label += "  +" + strconv.Itoa(add)
+		}
+		if del > 0 {
+			label += "  −" + strconv.Itoa(del)
+		}
+	case "reasoning":
+		icon = IconSparkles
+		label = "Thinking"
+	case "note":
+		icon = IconDot
+		label = plural(len(it.Blocks), "note", "notes")
+	}
+	head.Children(func() {
+		chev := ui.Icon(c, icon).FontSize(12).TextColor(vm.Pal.TextMuted)
+		if it.Type == "command" || it.Type == "diff" {
+			// A run with a failure earns attention even folded.
+			if it.Failed > 0 {
+				chev.TextColor(vm.Pal.Danger)
+			}
+		}
+		ui.Text(c, label).FontSize(12).TextColor(t.Text).Grow(1).MinWidth(0).SingleLine()
+		if it.Ms > 0 {
+			ui.Text(c, Duration(it.Ms)).FontSize(10.5).TextColor(vm.Pal.TextMuted)
+		}
+		mark := ui.Icon(c, IconChevDown).FontSize(12).TextColor(vm.Pal.TextMuted)
+		if it.Open {
+			mark.Rotate(180)
+		}
+	})
+}
+
+// itemGroup is a folded run: one summary row that expands into its cards.
+func itemGroup(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, m *MessageVM, it *ItemVM) {
+	groupHeader(c, vm, acts, m, it)
+	if !it.Open {
+		return
+	}
+	// The members keep their own indent so an expanded run reads as the
+	// same cards it was folded from.
+	ui.Column(c).Gap(2).Padding(0, 0, 4, 12).Children(func() {
+		for bi := range it.Blocks {
+			block(c, vm, acts, m, it.Blocks[bi], it.At+bi)
+		}
+	})
+}
+
+func plural(n int, one, many string) string {
+	if n == 1 {
+		return one
+	}
+	return strconv.Itoa(n) + " " + many
 }
 
 // fadeIn is the ZCode-style motion: a message that was just created
@@ -249,28 +457,30 @@ func msgAction(c *ui.Context, pal Palette, tip string, ic *ui.SVG, visible bool,
 	b.Children(func() { ui.Icon(c, ic).FontSize(12).TextColor(pal.TextMuted) })
 }
 
-// block draws one card of an assistant message.
-func block(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, m *MessageVM, bi int) {
-	b := &m.Blocks[bi]
+// block draws one card of an assistant message. bi is its index in the
+// HOST's block sequence, which is what ToggleBlock addresses — a card
+// inside a folded group is at its own position, not the group's.
+func block(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, m *MessageVM, b BlockVM, bi int) {
 	switch b.Type {
 	case "command":
-		blockCommand(c, vm, acts, m, bi)
+		blockCommand(c, vm, acts, m, b, bi)
 	case "diff":
-		blockDiff(c, vm, acts, m, bi)
+		blockDiff(c, vm, acts, m, b, bi)
 	case "error":
-		blockError(c, b, vm.Pal)
+		blockError(c, &b, vm.Pal)
 	case "approval":
-		blockApproval(c, vm, acts, b)
+		blockApproval(c, vm, acts, &b)
 	case "reasoning":
-		blockReasoning(c, b, vm.Pal)
+		blockReasoning(c, &b, vm.Pal)
+	case "note":
+		blockNote(c, &b, vm.Pal)
 	}
 }
 
 // blockCommand is one tool call as a quiet row: status, the command,
 // its duration, and its output folded away until clicked — many rows
 // stack tightly, the way ZCode lays tool calls out.
-func blockCommand(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, m *MessageVM, bi int) {
-	b := &m.Blocks[bi]
+func blockCommand(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, m *MessageVM, b BlockVM, bi int) {
 	t := c.Theme()
 	head := ui.Row(c).MinHeight(22).Padding(0, 8).Gap(8).AlignItems(ui.Center).Radius(6).Cursor(ui.CursorPointer)
 	if head.Hovered() || b.Open {
@@ -313,8 +523,7 @@ func blockCommand(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, m *Me
 
 // blockDiff is a card for a file the agent changed: the path, the counts,
 // and the unified diff colored by line.
-func blockDiff(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, m *MessageVM, bi int) {
-	b := &m.Blocks[bi]
+func blockDiff(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, m *MessageVM, b BlockVM, bi int) {
 	ui.Column(c).Radius(8).Background(vm.Pal.CodeBG).Border(1, vm.Pal.Border).Clip().Children(func() {
 		head := ui.Row(c).Padding(7, 10).Gap(8).AlignItems(ui.Center).Cursor(ui.CursorPointer)
 		if head.Clicked() {
@@ -362,6 +571,17 @@ func blockReasoning(c *ui.Context, b *BlockVM, pal Palette) {
 	ui.Row(c).Padding(2, 0).Gap(8).Children(func() {
 		ui.Box(c).Width(2).MinHeight(16).Radius(1).Background(pal.Border)
 		ui.Text(c, b.Text).Italic().FontSize(12).TextColor(t.TextMuted).Grow(1).MinWidth(0)
+	})
+}
+
+// blockNote is what the harness said about the turn itself: a turn-limit
+// notice, a declined permission escalation. It is a card, not the agent's
+// thinking, so it reads as a quiet system line rather than a thought.
+func blockNote(c *ui.Context, b *BlockVM, pal Palette) {
+	t := c.Theme()
+	ui.Row(c).Padding(2, 0).Gap(8).Children(func() {
+		ui.Box(c).Width(2).MinHeight(16).Radius(1).Background(pal.Warning.Alpha(0.6))
+		ui.Text(c, b.Text).FontSize(12).TextColor(t.TextMuted).Grow(1).MinWidth(0)
 	})
 }
 
