@@ -12,11 +12,26 @@ import (
 // disagrees with the group it sits in, a tool that "ran for 1500ms". They
 // are pure, so they are cheap to pin exactly.
 
+// today is an instant inside the current calendar day, used for the
+// grouping cases that are stated in days rather than hours. Anchoring
+// there keeps "yesterday" and "three days ago" on the side of midnight
+// they were meant to be on, whatever hour the suite happens to run at.
+func today() time.Time {
+	n := time.Now()
+	return time.Date(n.Year(), n.Month(), n.Day(), 12, 0, 0, 0, n.Location())
+}
+
+// ago is a duration before now. RelTime and the grouping both compare
+// against time.Now(), so an age has to be expressed relative to it; a
+// timestamp computed from a fixed anchor would not describe the same age
+// by the time the assertion runs.
+func ago(d time.Duration) time.Time { return time.Now().Add(-d) }
+
 func TestGroupThreadsPutsEachTaskInOneSection(t *testing.T) {
-	now := time.Now()
+	now := today()
 	threads := []ThreadVM{
-		{ID: "a", Title: "Today one", Updated: now.Add(-2 * time.Hour)},
-		{ID: "b", Title: "Yesterday one", Updated: now.AddDate(0, 0, -1).Add(-time.Hour)},
+		{ID: "a", Title: "Today one", Updated: ago(time.Minute)},
+		{ID: "b", Title: "Yesterday one", Updated: now.AddDate(0, 0, -1)},
 		{ID: "c", Title: "Last week", Updated: now.AddDate(0, 0, -3)},
 		{ID: "d", Title: "Last month", Updated: now.AddDate(0, 0, -20)},
 		{ID: "e", Title: "Ancient", Updated: now.AddDate(-1, 0, 0)},
@@ -83,28 +98,35 @@ func TestGroupThreadsSearchFiltersBeforeGrouping(t *testing.T) {
 }
 
 func TestRelTimeReadsTheAgeATaskIsFiledUnder(t *testing.T) {
-	now := time.Now()
-	cases := []struct {
-		at   time.Time
+	// RelTime counts the elapsed time, not the calendar day, so these
+	// hold at any hour — three hours ago reads "3h" at 01:00 as well as
+	// at 13:00. That is the contract worth pinning, and it is why this
+	// test needs no guard for midnight.
+	for _, c := range []struct {
+		d    time.Duration
 		want string
 	}{
-		{now.Add(-30 * time.Second), "now"},
-		{now.Add(-5 * time.Minute), "5m"},
-		{now.Add(-3 * time.Hour), "3h"},
-		// Days old: a weekday name, which reads better than "2d".
-		{now.AddDate(0, 0, -2), now.AddDate(0, 0, -2).Format("Mon")},
-	}
-	for _, c := range cases {
-		if got := RelTime(c.at); got != c.want {
-			t.Errorf("RelTime(%s) = %q, want %q", c.at.Format(time.Kitchen), got, c.want)
+		{time.Second, "now"},
+		{30 * time.Second, "now"},
+		{5 * time.Minute, "5m"},
+		{3 * time.Hour, "3h"},
+	} {
+		if got := RelTime(ago(c.d)); got != c.want {
+			t.Errorf("RelTime(%s ago) = %q, want %q", c.d, got, c.want)
 		}
 	}
-	// Past a week the label becomes a date; this year omits the year.
-	old := now.AddDate(0, 0, -30)
+
+	// Past a day the label becomes a date rather than a count, and the
+	// year is dropped only while it is the current one.
+	twoDays := time.Now().AddDate(0, 0, -2)
+	if got, want := RelTime(twoDays), twoDays.Format("Mon"); got != want {
+		t.Errorf("RelTime(2 days ago) = %q, want %q", got, want)
+	}
+	old := time.Now().AddDate(0, 0, -30)
 	if got, want := RelTime(old), old.Format("1/2"); got != want {
 		t.Errorf("RelTime(30 days ago) = %q, want %q", got, want)
 	}
-	lastYear := now.AddDate(-1, 0, 0)
+	lastYear := time.Now().AddDate(-1, 0, 0)
 	if got, want := RelTime(lastYear), lastYear.Format("1/2/06"); got != want {
 		t.Errorf("RelTime(last year) = %q, want %q", got, want)
 	}
