@@ -271,16 +271,20 @@ func TestMarkdownTableAndBlocks(t *testing.T) {
 	tt := ui.NewTester(func(c *ui.Context) {
 		a := &app{theme: codexTheme(), pal: codexPalette()}
 		c.SetTheme(a.theme)
-		a.markdown(c, src)
-	}, 600, 400)
+		a.markdown(c, "test", src, true)
+	}, 900, 1200)
 	for _, want := range []string{"Field", "Type", "attempts", "deadline", "time.Time",
 		"quoted note", "first item", "second item"} {
 		if !tt.HasText(want) {
+			t.Logf("text: %q", want)
 			t.Fatalf("missing %q in %v", want, tt.Texts())
 		}
 	}
 	for _, gone := range []string{"| Field |", "|---|", "> quoted"} {
 		if tt.HasText(gone) {
+			for _, s := range tt.Texts() {
+				t.Logf("text: %q", s)
+			}
 			t.Fatalf("raw markdown leaked: %q", gone)
 		}
 	}
@@ -290,7 +294,7 @@ func TestMarkdownSpans(t *testing.T) {
 	tt := ui.NewTester(func(c *ui.Context) {
 		a := &app{theme: codexTheme(), pal: codexPalette()}
 		c.SetTheme(a.theme)
-		a.markdown(c, "Plain **bold** and `code` and ~~gone~~ and [a link](https://example.com).\n\n```go\nx := 1\n```")
+		a.markdown(c, "test", "Plain **bold** and `code` and ~~gone~~ and [a link](https://example.com).\n\n```go\nx := 1\n```", true)
 	}, 400, 300)
 	// The marks are gone, the words stay (inline runs are separate text
 	// nodes).

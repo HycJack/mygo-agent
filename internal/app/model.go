@@ -178,9 +178,13 @@ type app struct {
 	gitErr   string
 
 	mcpServers []agent.MCPServer
+	permRules  agent.Rules // tool-name selector overrides from config.json
 
 	mcpDraftName    string
 	mcpDraftCommand string
+
+	// Incremental markdown parse states, keyed by message id.
+	mdStates map[string]*mdState
 
 	// The file viewer that takes the main area while open.
 	viewer     viewerState
@@ -198,6 +202,7 @@ func newApp() *app {
 		theme:         codexTheme(),
 		pal:           codexPalette(),
 		lists:         map[string]*ui.ListState{},
+		mdStates:      map[string]*mdState{},
 		sections:      map[string]bool{},
 		dirs:          map[string]bool{},
 		dirCache:      map[string][]fsNode{},
@@ -256,6 +261,13 @@ func (a *app) loadConfig() {
 		a.backend = cfg.Backend
 	}
 	a.mcpServers = toAgentServers(cfg.MCPServers)
+	if len(cfg.Permissions.Rules) > 0 {
+		rules := make(agent.Rules, len(cfg.Permissions.Rules))
+		for sel, perm := range cfg.Permissions.Rules {
+			rules[sel] = agent.Permission(perm)
+		}
+		a.permRules = rules
+	}
 	if cfg.MaxTurns > 0 {
 		a.maxTurns = cfg.MaxTurns
 	}
@@ -287,6 +299,7 @@ func (a *app) saveConfig() {
 		Effort:        a.effort,
 		Backend:       a.backend,
 		MCPServers:    fromAgentServers(a.mcpServers),
+		Permissions:   config.Permissions{Rules: permRulesToConfig(a.permRules)},
 		MaxTurns:      a.maxTurns,
 	})
 }
@@ -337,6 +350,19 @@ func toAgentServers(in []config.MCPServer) []agent.MCPServer {
 	out := make([]agent.MCPServer, len(in))
 	for i, s := range in {
 		out[i] = agent.MCPServer{Name: s.Name, Command: s.Command, Args: s.Args, Env: s.Env}
+	}
+	return out
+}
+
+// permRulesToConfig copies the agent rules into plain strings for the
+// config file.
+func permRulesToConfig(in agent.Rules) map[string]string {
+	if in == nil {
+		return nil
+	}
+	out := make(map[string]string, len(in))
+	for sel, perm := range in {
+		out[sel] = string(perm)
 	}
 	return out
 }

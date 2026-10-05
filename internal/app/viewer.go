@@ -200,7 +200,7 @@ func (a *app) viewerPane(c *ui.Context) {
 		case v.Kind == "markdown":
 			ui.Scroll(c).Grow(1).Children(func() {
 				ui.Column(c).FillWidth().Padding(24).Gap(6).MaxWidth(860).Margin(0, ui.Auto).Children(func() {
-					a.markdown(c, v.Text)
+					a.markdown(c, "viewer:"+v.Path, v.Text, true)
 				})
 			})
 		case v.Kind == "diff" || v.Kind == "text":

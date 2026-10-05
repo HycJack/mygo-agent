@@ -46,11 +46,14 @@ type chatFunc struct {
 	Parameters  json.RawMessage `json:"parameters"`
 }
 
-// Tool is a tool the agent may call.
+// Tool is a tool the agent may call. Actions is what the tool does, from
+// the closed catalog in permissions.go; the permission gate decides by
+// action, not by name.
 type Tool struct {
 	Name        string
 	Description string
 	Parameters  json.RawMessage // JSON schema, object type
+	Actions     []Action
 	Execute     func(ctx context.Context, args string) (string, error)
 }
 

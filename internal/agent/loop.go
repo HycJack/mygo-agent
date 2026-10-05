@@ -7,11 +7,12 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // Event is one thing the loop reports to the UI while running.
 type Event struct {
-	Kind      string // "text" | "tool_start" | "tool_end" | "error" | "done"
+	Kind      string // "text" | "tool_start" | "tool_end" | "approval" | "error" | "done"
 	TextDelta string // for "text"
 	ToolCall  ToolCall
 	Output    string // for "tool_end"
@@ -19,7 +20,28 @@ type Event struct {
 	Err       string // for "error"
 }
 
-// LoopConfig configures one run of the agent loop.
+// ApprovalRequest is the loop asking the host to decide one prepared tool
+// call whose permission resolved to ask (spec/approvals.md). Summary is a
+// bounded, redacted presentation built by host code.
+type ApprovalRequest struct {
+	Call    ToolCall
+	Summary string
+	Reason  string // why policy asked, from a fixed vocabulary
+}
+
+// ApprovalDecision is the host's answer. Approved covers exactly the one
+// call; there is no "always allow" decision — durable authority lives in
+// permission rules.
+type ApprovalDecision struct {
+	Approved bool
+	Reason   string // the denial reason shown to the model; empty when approved
+}
+
+// defaultApprovalTimeout bounds every wait on the host: expiry denies.
+const defaultApprovalTimeout = 10 * time.Minute
+
+// LoopConfig configures one run of the agent loop. The zero Policy is
+// read-only: a caller that sets no policy fails closed.
 type LoopConfig struct {
 	BaseURL         string
 	APIKey          string
@@ -31,6 +53,16 @@ type LoopConfig struct {
 	MaxTurns        int
 	MaxMessages     int // compact the transcript past this many messages
 	OnEvent         func(Event)
+
+	// Policy gates every tool call before execution. The zero value is
+	// read-only (the strictest mode).
+	Policy Policy
+
+	// OnApproval decides calls whose permission resolves to ask. It is
+	// called from the loop goroutine and may block up to
+	// ApprovalTimeout; a nil handler denies ask calls up front.
+	OnApproval      func(ApprovalRequest) ApprovalDecision
+	ApprovalTimeout time.Duration // default 10 minutes; expiry denies
 }
 
 // ToolCallResult is what executing one tool call produced.
@@ -106,7 +138,7 @@ func Run(ctx context.Context, cfg LoopConfig, history []ChatMessage) ([]ChatMess
 				return messages, ctx.Err()
 			}
 			emit(Event{Kind: "tool_start", ToolCall: call})
-			out, execErr := executeTool(ctx, cfg.Tools, call)
+			out, execErr := runGatedTool(ctx, cfg, call)
 			exit := 0
 			if execErr != nil {
 				exit = 1
@@ -130,10 +162,93 @@ func Run(ctx context.Context, cfg LoopConfig, history []ChatMessage) ([]ChatMess
 	return messages, ErrTurnLimit
 }
 
+// runGatedTool resolves the call's permission (spec/permissions.md) and
+// executes only allowed calls; denied and unanswered calls settle as a
+// DenialError the model can read.
+func runGatedTool(ctx context.Context, cfg LoopConfig, call ToolCall) (string, error) {
+	for _, t := range cfg.Tools {
+		if t.Name != call.Function.Name {
+			continue
+		}
+		args, err := parseToolArgs(call.Function.Arguments)
+		if err != nil {
+			return "", err
+		}
+		switch cfg.Policy.Resolve(t.Name, t.Actions) {
+		case PermDeny:
+			return "", &DenialError{Tool: t.Name}
+		case PermAsk:
+			return "", askApproval(ctx, cfg, t, call)
+		}
+		return t.Execute(ctx, args)
+	}
+	return "", errors.New("unknown tool " + call.Function.Name)
+}
+
+// askApproval waits for the host's decision on one prepared call. Timeout,
+// cancellation and a missing handler all land in the same place: a settled
+// denial (spec/approvals.md).
+func askApproval(ctx context.Context, cfg LoopConfig, t Tool, call ToolCall) error {
+	req := ApprovalRequest{
+		Call:    call,
+		Summary: ApprovalSummary(call),
+		Reason:  "the permission policy asks for this tool",
+	}
+	if cfg.OnApproval == nil {
+		return &DenialError{Tool: t.Name, Reason: "no approval handler is configured"}
+	}
+	type answer struct{ d ApprovalDecision }
+	ch := make(chan answer, 1)
+	go func() { ch <- answer{cfg.OnApproval(req)} }()
+	timeout := cfg.ApprovalTimeout
+	if timeout <= 0 {
+		timeout = defaultApprovalTimeout
+	}
+	select {
+	case a := <-ch:
+		if a.d.Approved {
+			return nil
+		}
+		return &DenialError{Tool: t.Name, Reason: a.d.Reason}
+	case <-time.After(timeout):
+		return &DenialError{Tool: t.Name, Reason: "approval timed out"}
+	case <-ctx.Done():
+		return &DenialError{Tool: t.Name, Reason: "cancelled before approval"}
+	}
+}
+
+// ApprovalSummary renders the bounded, redacted one-line presentation of a
+// call for an approval prompt: command text, path, or server/tool name —
+// never credentials or wholesale argument dumps.
+func ApprovalSummary(call ToolCall) string {
+	var in map[string]any
+	_ = json.Unmarshal([]byte(call.Function.Arguments), &in)
+	get := func(k string) string {
+		if s, ok := in[k].(string); ok {
+			return s
+		}
+		return ""
+	}
+	name := call.Function.Name
+	switch {
+	case name == "bash":
+		return "$ " + trunc(strings.Join(strings.Fields(get("command")), " "), 160)
+	case get("path") != "":
+		return name + " " + trunc(get("path"), 160)
+	case get("pattern") != "":
+		return name + " " + trunc(get("pattern"), 120)
+	case get("name") != "":
+		return name + " " + trunc(get("name"), 120)
+	default:
+		return name
+	}
+}
+
 // executeTool finds the tool by name and runs it with its JSON args.
 // Weak models often emit near-JSON (code fences, trailing commas,
 // single quotes, smart quotes), so the arguments go through a repair
-// pass before the tool sees them.
+// pass before the tool sees them. It performs no permission check; the
+// loop gates through runGatedTool.
 func executeTool(ctx context.Context, tools []Tool, call ToolCall) (string, error) {
 	for _, t := range tools {
 		if t.Name != call.Function.Name {

@@ -86,6 +86,7 @@ func (a *app) runBuiltin(th *Thread, prompt string, at int) {
 		ReasoningEffort: []string{"low", "medium", "high"}[a.effort],
 		SystemPrompt:    builtinSystemPrompt(a.workdir, skills),
 		Tools:           tools,
+		Policy:          agent.Policy{Mode: agent.Mode(a.mode), Rules: a.permRules},
 		MaxTurns:        a.maxTurns,
 		MaxMessages:     a.maxTurns*6 + 12,
 		OnEvent: func(e agent.Event) {

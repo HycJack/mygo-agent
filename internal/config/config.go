@@ -50,9 +50,15 @@ type Config struct {
 	Effort        int         `json:"effort"`
 	Backend       string      `json:"backend"`
 	MCPServers    []MCPServer `json:"mcp_servers,omitempty"`
-	MaxTurns      int         `json:"max_turns,omitempty"`
+	Permissions   Permissions `json:"permissions,omitempty"`
+	MaxTurns      int         `json:"max_turns,omitzero"`
 	// CustomModels is the pre-providers field, read only to migrate it.
 	CustomModels []string `json:"custom_models,omitempty"`
+}
+
+// Permissions is the host-configured selector override block.
+type Permissions struct {
+	Rules map[string]string `json:"rules,omitempty"`
 }
 
 // Load reads and parses the config file. A missing or broken file is

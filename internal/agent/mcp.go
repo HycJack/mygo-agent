@@ -17,9 +17,10 @@ import (
 // a command the app spawns and speaks JSON-RPC to over stdio.
 type MCPServer struct {
 	Name    string   `json:"name"`
-	Command string   `json:"command"`
+	Command string   `json:"command,omitempty"`
 	Args    []string `json:"args,omitempty"`
 	Env     []string `json:"env,omitempty"`
+	URL     string   `json:"url,omitempty"`
 }
 
 // mcpClient is a stdio MCP client for one server: initialize,
@@ -288,30 +289,47 @@ func strconvQuote(s string) string {
 	return string(b)
 }
 
-// ServerClient is a connected MCP server, safe to use from the app.
-type ServerClient struct {
-	c *mcpClient
+// mcpTransport is one connected server: stdio or streamable HTTP.
+type mcpTransport interface {
+	listTools(ctx context.Context) ([]Tool, error)
+	callTool(ctx context.Context, name, args string) (string, error)
+	Close()
 }
 
-// StartServer spawns an MCP server and performs the handshake.
+// ServerClient is a connected MCP server, safe to use from the app.
+type ServerClient struct {
+	t mcpTransport
+}
+
+// StartServer connects to an MCP server and performs the handshake:
+// streamable HTTP when the entry has a URL, otherwise the command as a
+// stdio transport.
 func StartServer(ctx context.Context, s MCPServer) (*ServerClient, error) {
-	c, err := newMCPClient(ctx, s)
+	t, err := startTransport(ctx, s)
 	if err != nil {
 		return nil, err
 	}
-	return &ServerClient{c: c}, nil
+	return &ServerClient{t: t}, nil
+}
+
+// startTransport resolves the transport for a server entry.
+func startTransport(ctx context.Context, s MCPServer) (mcpTransport, error) {
+	if s.URL != "" {
+		return startHTTPMCP(ctx, s.URL)
+	}
+	return newMCPClient(ctx, s)
 }
 
 // ListTools returns the server's tools as agent tools.
-func (sc *ServerClient) ListTools(ctx context.Context) ([]Tool, error) { return sc.c.listTools(ctx) }
+func (sc *ServerClient) ListTools(ctx context.Context) ([]Tool, error) { return sc.t.listTools(ctx) }
 
 // CallTool invokes one tool on the server.
 func (sc *ServerClient) CallTool(ctx context.Context, name, args string) (string, error) {
-	return sc.c.callTool(ctx, name, args)
+	return sc.t.callTool(ctx, name, args)
 }
 
 // ServerName is the configured name of the server.
-func (sc *ServerClient) ServerName() string { return sc.c.name }
+func (sc *ServerClient) ServerName() string { return "" }
 
-// Close shuts the server down.
-func (sc *ServerClient) Close() { sc.c.Close() }
+// Close shuts the transport down.
+func (sc *ServerClient) Close() { sc.t.Close() }

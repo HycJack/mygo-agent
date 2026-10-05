@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -15,12 +15,29 @@ import (
 	"time"
 )
 
+// ToolOptions tunes how the built-in tools execute. The host derives them
+// from the approval mode: agent mode sandboxes the shell and confines
+// writes to the workspace; full access does neither.
+type ToolOptions struct {
+	// Sandbox runs shell commands inside the workspace-scoped execution
+	// boundary (spec/sandbox.md). When true and the platform has no
+	// sandbox, the shell tool reports that as its error instead of
+	// running unsandboxed.
+	Sandbox bool
+	// ConfineWrites rejects edit_file targets outside the workdir.
+	ConfineWrites bool
+}
+
 // Tools builds the built-in tool set, bound to a working directory.
-func Tools(workdir string, skills *SkillSet) []Tool {
+func Tools(workdir string, skills *SkillSet, opts ...ToolOptions) []Tool {
+	var o ToolOptions
+	if len(opts) > 0 {
+		o = opts[0]
+	}
 	return []Tool{
-		bashTool(workdir),
+		bashTool(workdir, o),
 		readFileTool(workdir),
-		editFileTool(workdir),
+		editFileTool(workdir, o),
 		listFilesTool(workdir),
 		grepTool(workdir),
 		readSkillTool(workdir, skills),
@@ -31,10 +48,11 @@ func obj(properties string) json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":` + properties + `}`)
 }
 
-func bashTool(workdir string) Tool {
+func bashTool(workdir string, o ToolOptions) Tool {
 	return Tool{
 		Name:        "bash",
 		Description: "Run a shell command in the project directory and return its combined output. Use for builds, tests, git and anything else.",
+		Actions:     []Action{ActionShell},
 		Parameters: obj(`{"command":{"type":"string","description":"The shell command to run."},
 			"timeout_seconds":{"type":"integer","description":"Optional timeout, 120 by default."}}`),
 		Execute: func(ctx context.Context, args string) (string, error) {
@@ -59,11 +77,19 @@ func bashTool(workdir string) Tool {
 				shell, flag = "powershell", "-NoProfile -Command"
 			}
 			argv := append(strings.Fields(flag), in.Command)
-			cmd := exec.CommandContext(ctx, shell, argv...)
-			cmd.Dir = workdir
+			cmd, cleanup, err := shellCommand(ctx, o, workdir, shell, argv...)
+			if cleanup != nil {
+				defer cleanup()
+			}
+			if err != nil {
+				return "", err
+			}
 			out, err := cmd.CombinedOutput()
 			res := TrimOutput(string(out), 32<<10)
 			if err != nil {
+				if ctx.Err() != nil && errors.Is(ctx.Err(), context.DeadlineExceeded) {
+					res += "\ncommand timed out; its outcome is unknown"
+				}
 				return res, err
 			}
 			if res == "" {
@@ -78,6 +104,7 @@ func readFileTool(workdir string) Tool {
 	return Tool{
 		Name:        "read_file",
 		Description: "Read a text file relative to the project directory, optionally a range of lines. Returns the file with line numbers.",
+		Actions:     []Action{ActionFileRead},
 		Parameters: obj(`{"path":{"type":"string","description":"File path, relative to the project directory."},
 			"offset":{"type":"integer","description":"First line to read, 1-based."},
 			"limit":{"type":"integer","description":"How many lines to read, 400 by default."}}`),
@@ -117,10 +144,11 @@ func readFileTool(workdir string) Tool {
 	}
 }
 
-func editFileTool(workdir string) Tool {
+func editFileTool(workdir string, o ToolOptions) Tool {
 	return Tool{
 		Name:        "edit_file",
 		Description: "Replace an exact string inside a file. The old text must appear exactly once. Returns a unified diff of the change.",
+		Actions:     []Action{ActionFileWrite},
 		Parameters: obj(`{"path":{"type":"string","description":"File path, relative to the project directory."},
 			"old_text":{"type":"string","description":"The exact text to replace."},
 			"new_text":{"type":"string","description":"The replacement text."}}`),
@@ -134,6 +162,9 @@ func editFileTool(workdir string) Tool {
 				return "", err
 			}
 			full := safeJoin(workdir, in.Path)
+			if o.ConfineWrites && !underDir(workdir, full) {
+				return "", fmt.Errorf("in the current mode edit_file only writes inside the project directory: %s is outside", in.Path)
+			}
 			data, err := os.ReadFile(full)
 			if err != nil {
 				return "", err
@@ -147,7 +178,11 @@ func editFileTool(workdir string) Tool {
 				return "", fmt.Errorf("old_text appears %d times in %s; include more context", n, in.Path)
 			}
 			next := strings.Replace(src, in.OldText, in.NewText, 1)
-			if err := os.WriteFile(full, []byte(next), 0o644); err != nil {
+			mode := os.FileMode(0o644)
+			if st, serr := os.Stat(full); serr == nil {
+				mode = st.Mode().Perm() // an edit keeps the file's mode
+			}
+			if err := os.WriteFile(full, []byte(next), mode); err != nil {
 				return "", err
 			}
 			var b strings.Builder
@@ -166,6 +201,7 @@ func listFilesTool(workdir string) Tool {
 	return Tool{
 		Name:        "list_files",
 		Description: "List a directory of the project, one entry per line, directories with a trailing slash.",
+		Actions:     []Action{ActionFileRead},
 		Parameters:  obj(`{"path":{"type":"string","description":"Directory path, relative to the project directory; empty means the project root."}}`),
 		Execute: func(ctx context.Context, args string) (string, error) {
 			var in struct {
@@ -197,6 +233,7 @@ func grepTool(workdir string) Tool {
 	return Tool{
 		Name:        "grep",
 		Description: "Search file contents under a directory with a regular expression. Returns file:line: match lines, at most 200.",
+		Actions:     []Action{ActionFileRead},
 		Parameters: obj(`{"pattern":{"type":"string","description":"Go regular expression."},
 			"path":{"type":"string","description":"Directory to search, relative to the project directory; empty means the project root."}}`),
 		Execute: func(ctx context.Context, args string) (string, error) {
@@ -254,6 +291,7 @@ func readSkillTool(workdir string, skills *SkillSet) Tool {
 	return Tool{
 		Name:        "read_skill",
 		Description: "Load the full instructions of a skill by name. The available skills are listed in the system prompt.",
+		Actions:     []Action{ActionSkill},
 		Parameters:  obj(`{"name":{"type":"string","description":"The skill's name from the system prompt."}}`),
 		Execute: func(ctx context.Context, args string) (string, error) {
 			var in struct {
@@ -279,13 +317,25 @@ func cmdEnv() []string {
 	return os.Environ()
 }
 
-// safeJoin resolves path under root and refuses escapes.
+// safeJoin resolves path under root and refuses escapes. An absolute path
+// passes through unchanged: reading anywhere on disk is a read action and
+// the permission gate governs it; write confinement is the caller's
+// (see ToolOptions.ConfineWrites).
 func safeJoin(root, path string) string {
 	if path == "" {
 		return root
 	}
 	if filepath.IsAbs(path) {
-		return path
+		return filepath.Clean(path)
 	}
 	return filepath.Join(root, filepath.Clean("/"+path))
+}
+
+// underDir reports whether path is root itself or inside it.
+func underDir(root, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
