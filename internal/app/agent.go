@@ -16,7 +16,7 @@ func (a *app) send() {
 	if prompt == "" || a.running {
 		return
 	}
-	a.draft = ""
+	a.setDraft("")
 	th := a.currentThread()
 	if th == nil {
 		th = a.createThread()

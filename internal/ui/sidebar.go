@@ -211,6 +211,7 @@ func threadRow(c *ui.Context, vm *SidebarVM, acts SidebarActions, th ThreadVM) {
 		row.Background(vm.Pal.Hover)
 	}
 	if row.Clicked() {
+		println("DBG row clicked", th.ID)
 		acts.OpenThread(th.ID)
 	}
 	row.ContextMenu(func(m *ui.Menu) {
@@ -250,6 +251,7 @@ func threadRow(c *ui.Context, vm *SidebarVM, acts SidebarActions, th ThreadVM) {
 				vm.HoverRow = ""
 			}
 			if del.Clicked() {
+				println("DBG del clicked", th.ID)
 				acts.DeleteThread(th.ID)
 			}
 			del.Children(func() { ui.Icon(c, IconTrash).FontSize(13).TextColor(vm.Pal.TextMuted) })

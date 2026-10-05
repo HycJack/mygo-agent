@@ -228,9 +228,12 @@ type app struct {
 	// persistence (tests).
 	threadsDir threadsLayout
 
-	// vm is the last shared-view snapshot published to internal/ui
-	// (spec/architecture.md); syncVM reads its transient bits back.
-	vm *uipkg.ViewModel
+	// vm / sidebarVM are the persistent shared-view models published to
+	// internal/ui (spec/architecture.md): host-owned fields refresh in
+	// place each frame, view-owned fields (draft, search, menus) survive
+	// across frames so keystrokes are not dropped.
+	vm        *uipkg.ViewModel
+	sidebarVM *uipkg.SidebarVM
 
 	// uiCtx is the frame's context, stashed at the top of view() so
 	// deferred actions (undo toasts) can reach it.

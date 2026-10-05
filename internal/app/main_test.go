@@ -70,7 +70,7 @@ func TestChipFillsDraft(t *testing.T) {
 func TestSendRunsDemoAgent(t *testing.T) {
 	a := newTestApp(t)
 	tt := ui.NewTester(a.view, 1240, 800)
-	a.draft = "Explain the layout system"
+	a.homeViewModel().Draft = "Explain the layout system"
 	tt.Frame()
 	if err := tt.Click("Send"); err != nil {
 		t.Fatal(err)
@@ -247,8 +247,10 @@ func TestSearchFiltersTasks(t *testing.T) {
 		{ID: "t1", ProjectID: "default", Title: "Fix the parser", Updated: now},
 		{ID: "t2", ProjectID: "default", Title: "Write the docs", Updated: now.Add(-time.Hour)},
 	}
-	a.search = "parser"
 	tt := ui.NewTester(a.view, 1240, 800)
+	tt.Frame() // build the rail's persistent view model
+	a.sidebarVM.Search = "parser"
+	tt.Frame()
 	if tt.HasText("Write the docs") {
 		t.Fatal("the filter did not hide the unrelated task")
 	}

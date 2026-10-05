@@ -11,26 +11,32 @@ import (
 // (spec/architecture.md); this file is the bridge: snapshot assembly,
 // the Actions implementation, and the sync of transient view state.
 
-// sidebarViewModel snapshots the rail's render input.
+// sidebarViewModel returns the persistent rail ViewModel, refreshing
+// the host-owned fields in place. vm.Search is the single binding
+// target — the search field writes keystrokes into it and syncSidebar
+// mirrors it into a.search at frame end.
 func (a *app) sidebarViewModel() *uipkg.SidebarVM {
-	vm := &uipkg.SidebarVM{
-		Version:       a.version,
-		Workdir:       a.workdir,
-		ActiveProject: a.activeProject,
-		Search:        a.search,
-		Current:       a.current,
-		Backend:       a.backend,
-		BackendName:   a.backendLabel(),
-		CodexFound:    a.codexPath != "",
-		BackendMenu:   a.backendMenu,
-		ProjectMenu:   a.projectMenu,
-		HoverRow:      a.hoverRow,
-		Pal:           a.pal,
+	if a.sidebarVM == nil {
+		a.sidebarVM = &uipkg.SidebarVM{}
 	}
+	vm := a.sidebarVM
+	vm.Version = a.version
+	vm.Workdir = a.workdir
+	vm.ActiveProject = a.activeProject
+	vm.Current = a.current
+	vm.Backend = a.backend
+	vm.BackendName = a.backendLabel()
+	vm.CodexFound = a.codexPath != ""
+	vm.BackendMenu = a.backendMenu
+	vm.ProjectMenu = a.projectMenu
+	vm.HoverRow = a.hoverRow
+	vm.Pal = a.pal
+	vm.Projects = vm.Projects[:0]
 	for i := range a.projects {
 		p := &a.projects[i]
 		vm.Projects = append(vm.Projects, uipkg.ProjectVM{ID: p.ID, Path: p.Path})
 	}
+	vm.Threads = vm.Threads[:0]
 	for _, th := range a.threads {
 		if th.ProjectID != a.activeProject {
 			continue
@@ -62,6 +68,7 @@ func (h sidebarActions) NewTask() {
 }
 
 func (h sidebarActions) OpenThread(id string) {
+	println("DBG OpenThread", id, "cur->", id)
 	h.a.current = id
 	h.a.focusComposer = true
 	h.a.winTitle()

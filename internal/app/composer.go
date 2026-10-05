@@ -3,39 +3,18 @@ package app
 import (
 	"strings"
 
+	uipkg "mygo-agent/internal/ui"
+
 	"github.com/egoist/mygo/ui"
 )
 
 var modeNames = []string{"Read Only", "Agent", "Full Access"}
 
-// composer is the input box at the bottom, spanning the full content
-// width like ZCode's: the draft, and a row with the approval mode, the
-// model, and the send button. Enter sends, Shift+Enter breaks the line.
+// composer renders the input box through the shared view in
+// internal/ui — the same composer the home screen uses, bound to the
+// same persistent draft (spec/architecture.md).
 func (a *app) composer(c *ui.Context) {
-	t := c.Theme()
-	ui.Column(c).Padding(12, 44, 20).Children(func() {
-		box := ui.Column(c).FillWidth().Padding(10, 14).Gap(8).Radius(16).
-			Background(a.pal.Card).Border(1, a.pal.Border)
-		if a.running {
-			box.Border(1, t.Accent.Alpha(0.5))
-		}
-		box.Children(func() {
-			ta := ui.TextAreaBase(c, &a.draft).Placeholder("Plan, code, edit anything").FontSize(14).MinHeight(44)
-			if a.focusComposer {
-				ta.AutoFocus()
-				a.focusComposer = false
-			}
-			a.composerRow(c)
-		})
-		// Enter sends while the composer has the focus; the ancestors'
-		// shortcuts come first, so the text area never sees the key.
-		if box.Shortcut(0, ui.KeyEnter) {
-			a.send()
-		}
-		if c.Shortcut(ui.Cmd, ui.KeyEnter) {
-			a.send()
-		}
-	})
+	uipkg.Composer(c, a.homeViewModel(), homeActions{a: a})
 }
 
 // iconButton is a square icon-only button: ButtonBase has no built-in

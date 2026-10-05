@@ -213,12 +213,14 @@ func (a *app) header(c *ui.Context, tb ui.TitleBar) {
 // home is what a new task starts from: the shared view in internal/ui
 // over a ViewModel snapshot, with the app's own suggestion chips.
 func (a *app) home(c *ui.Context) {
-	uipkg.Home(c, a.homeViewModel(), homeActions{a: a}, []string{
+	vm := a.homeViewModel()
+	uipkg.Home(c, vm, homeActions{a: a}, []string{
 		"Explain what this project does",
 		"Find and fix a failing test",
 		"Write a migration guide",
 		"Review the latest diff",
 	})
+	a.syncVM() // keystrokes and consumed focus flag land in host state
 }
 
 // termDock is the embedded terminal at the bottom of the window, a real
@@ -241,7 +243,7 @@ func (a *app) toggleTerminal(c *ui.Context) {
 
 func (a *app) newTask() {
 	a.current = ""
-	a.draft = ""
+	a.setDraft("")
 	a.focusComposer = true
 }
 
