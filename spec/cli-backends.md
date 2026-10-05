@@ -11,7 +11,7 @@ reference implementations are OpenAgentCore's codex adapter
 | Mode | codex (app-server) | claude CLI | pi CLI |
 | --- | --- | --- | --- |
 | read-only | `sandbox: "read-only"`, `approvalPolicy: "never"` | `--permission-mode default`; the app **denies every** `can_use_tool` | `--tools read` (allowlist keeps the read tool only) |
-| agent | `sandbox: "workspace-write"`, `approvalPolicy: "on-request"` | `--permission-mode default`; every `can_use_tool` forwards to an approval card | pi defaults |
+| agent | `sandbox: "workspace-write"`, `approvalPolicy: "on-request"` | `--permission-mode default`; every `can_use_tool` forwards to an approval card, and directories the prompt names outside the workspace are asked about once and passed as `--add-dir` (approvals.md) | pi defaults |
 | full | `sandbox: "danger-full-access"`, `approvalPolicy: "never"` | `--permission-mode bypassPermissions` | pi defaults |
 
 In codex agent mode the sandbox is the boundary; codex sends approval
@@ -48,6 +48,13 @@ over NDJSON. Sequence: `initialize` (clientInfo, `capabilities.experimentalApi=t
   `item/reasoning/summaryTextDelta`, `item/commandExecution/outputDelta`,
   `thread/tokenUsage/updated`, `error`. Item shapes match the exec `--json`
   item model and map to the same cards.
+- A context compaction arrives as an **item** of type `contextCompaction`,
+  announced twice (`item/started`, `item/completed`), and is reported as a
+  note on the completed frame only. The codex binary also contains a
+  `thread/compacted` method name, but the app-server does not send it —
+  measured against 0.153.4, a `thread/compact/start` at 420k tokens
+  returns `{}` and no such frame ever arrives. Do not bind to the
+  notification; the item type is what fires.
 - Approval server-requests (method, has `id`):
   - `item/commandExecution/requestApproval` — params carry `command`, `cwd`,
     `reason`, `itemId`. Reply `{"decision": "accept"|"decline"}`.
@@ -74,6 +81,13 @@ stdin stays open until the `result` event (or an error) arrives, then closes.
 
 - The session id arrives in the `system`/`init` event (`session_id`), as
   today.
+- A context compaction arrives as a `system` frame with
+  `subtype: "compact_boundary"`, carrying `compact_metadata`:
+  `{"trigger":"manual"|…, "pre_tokens":N, "post_tokens":N,
+  "cumulative_dropped_tokens":N, "duration_ms":N}`. The metadata is
+  **snake_case** — reading it as `compactMetadata` decodes to nothing and
+  silently drops the counts. A boundary frame with no metadata still means
+  the context was folded and is still reported.
 - Permission requests arrive as control requests:
   `{"type":"control_request","request_id":…,"request":{"subtype":
   "can_use_tool","tool_name":…,"input":{…}}}`. The app replies on stdin:
@@ -118,6 +132,19 @@ one fresh process per turn; JSONL events on stdout.
 - **Approvals**: pi executes its tools with its own permissions; the
   app's approval cards do not cover pi. Read-only mode therefore maps to
   a tool allowlist, the only lever pi exposes.
+- **Context compaction is not observable on this wire** (measured against
+  pi 1.0.3). The full `--mode json` vocabulary is `session`, `agent_start`,
+  `turn_start`, `message_start`, `message_update`, `message_end`,
+  `turn_end`, `agent_end`, `agent_settled` — no compaction event. pi does
+  have `session_compact` / `session_before_compact` /
+  `session_compact_failed`, but they are emitted through the extension
+  runner and only reach a subscriber when an extension handler is
+  registered; this app runs `-ne`, so nothing subscribes. `compaction_start`
+  / `compaction_end` exist as internal agent events but are consumed by
+  pi's TUI, not by the print-mode JSON writer. `/compact` in `-p` mode is
+  passed to the model as literal text, not handled as a command. Reaching
+  it would mean switching pi to `--mode rpc` (a full event transport, not
+  a note), which is future work.
 
 ## Invariants (extending approvals.md)
 

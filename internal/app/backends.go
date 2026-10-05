@@ -53,6 +53,13 @@ func (a *app) dispatch(th *Thread, prompt string, at int) {
 	turn.OnApproval = func(ctx context.Context, req harness.ApprovalRequest) harness.ApprovalDecision {
 		return a.waitForApproval(ctx, th, at, req)
 	}
+	// A prompt naming a path outside the workspace asks on the same card
+	// every other permission does: a CLI's path boundary is decided below
+	// the tool-permission layer, so without this the user never sees the
+	// question and the model just hears that nothing was granted.
+	turn.OnOutsideDir = func(ctx context.Context, req harness.OutsideDirRequest) bool {
+		return a.waitForOutsideDirs(ctx, th, at, req)
+	}
 	h := a.newHarness(th, turn)
 	ctx, cancel := context.WithCancel(context.Background())
 	a.setCancel(cancel)

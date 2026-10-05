@@ -30,6 +30,63 @@ type ApprovalRequest struct {
   bounded, single-line view of their arguments so the user is not
   approving blind. Credentials, bearer tokens and long payloads are
   redacted or bounded, never rendered wholesale.
+
+## Reaching outside the workspace
+
+A second question rides the same card, and it exists because of where the
+CLI decides it. Claude Code enforces its directory boundary *below* the
+tool-permission layer: a `Read` of a file outside the session's working
+directories never arrives as a `can_use_tool` request. The model is told
+the permission was not granted, retries, reaches for the shell, is
+blocked again, and gives up — with no card anywhere and nothing the user
+could have answered. A prompt referring to a path in another project
+therefore failed silently, which is the one failure mode an approval
+system exists to prevent.
+
+So the question is asked before the process starts, through
+`OnOutsideDir`:
+
+```go
+type OutsideDirRequest struct {
+    Workdir string   // the workspace the run is confined to
+    Dirs    []string // the roots outside it that the prompt named
+}
+
+type OnOutsideDir func(ctx context.Context, req OutsideDirRequest) bool
+```
+
+- It is asked **once per turn, with every directory at once**. A prompt
+  naming five files in three directories is one decision, and a card per
+  path would be five clicks that teach the user to stop reading them.
+- The directories come from the prompt text, narrowed to the shallowest
+  root that still covers what was named — `~/src/project/main.go` asks
+  for `~/src/project`, not `~/src` and certainly not `$HOME`. `--add-dir`
+  takes directories only, so a file reference is granted as its
+  directory.
+- It is asked **before the spawn**, because granting means putting the
+  directories on the command line. A refusal is final and total: the run
+  stays exactly as confined as it was. It is never a partial grant, since
+  the grant cannot be revised once the process is running.
+- Read-only mode is not asked. With nothing to write, a run that cannot
+  reach the file cannot damage anything, and the card would be one more
+  thing to answer for no change in the outcome.
+- A run with no `OnOutsideDir` is confined. That is the safe reading of a
+  boundary it has no way to raise.
+- The grant opens **reads only**. Claude Code still asks — through
+  `OnApproval`, where the user can see it — for any write or shell
+  command against a granted directory, and shell redirection into one
+  stays blocked outright. Reaching a directory is not permission to
+  change it.
+- The scan is **POSIX-only**. On Windows it returns nothing and the run
+  behaves as if this feature did not exist. Not an oversight: a Windows
+  path carries a drive letter and is written with backslashes, which the
+  matcher does not understand, and running a POSIX path through
+  `filepath.Abs` there lands it on whatever drive the process is on.
+  Measured on Windows CI, `/etc/hosts` became `D:\etc` — a grant for a
+  directory the prompt never named. Silence is recoverable; a wrong
+  grant is not. Re-enabling this needs a matcher that knows drives and
+  separators, plus a real Windows run to measure it against.
+
 ## Decision
 
 ```go

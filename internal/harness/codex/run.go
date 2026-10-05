@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"mygo-agent/internal/harness"
+	"mygo-agent/internal/harness/cli"
 )
 
 // run maps codex events (exec --json lines or app-server items) onto the
@@ -164,6 +165,8 @@ func normalizeItemType(t string) string {
 		return "agent_message"
 	case "tokenCount", "token_count":
 		return "token_count"
+	case "contextCompaction":
+		return "context_compaction"
 	default:
 		return t
 	}
@@ -232,6 +235,19 @@ func (r *run) item(it codexItem, completed bool) {
 		}
 		if text != "" {
 			r.send(harness.Event{Kind: harness.EventReasoning, Text: text})
+		}
+	case "context_compaction":
+		// codex folds its own context when the thread outgrows the window.
+		// It announces this as an item — not as a thread/compacted
+		// notification, which is why reading the binary's string table is
+		// not enough and the item type is what has to be matched. The item
+		// is announced twice (started, completed); the note belongs to the
+		// completed frame, or one compaction would be reported twice.
+		if completed {
+			r.send(harness.Event{
+				Kind: harness.EventNote,
+				Text: cli.CompactedNotice("codex", 0, 0),
+			})
 		}
 	case "error":
 		if it.Text != "" {

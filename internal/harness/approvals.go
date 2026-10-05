@@ -42,3 +42,32 @@ func ApprovalReason(ctx context.Context) string {
 	}
 	return "cancelled"
 }
+
+// OutsideDirRequest is one question about reaching past the workspace.
+//
+// It is not a tool approval. A CLI's own path boundary is decided inside
+// the CLI, below its tool-permission layer, so the usual can_use_tool
+// channel never sees it: the CLI refuses the call and the model hears
+// about it second-hand. Asking the user is the Host's job, and it is
+// asked once per turn with every directory the prompt pointed at, so a
+// prompt naming five paths is one card and not five.
+//
+// The dirs are the roots the adapter is being asked to add, already
+// narrowed to what the prompt actually mentioned and not already inside
+// the workspace.
+type OutsideDirRequest struct {
+	// Workdir is the workspace the run is confined to.
+	Workdir string
+	// Dirs are the roots outside it that the prompt referred to.
+	Dirs []string
+}
+
+// OnOutsideDir decides whether a run may reach the directories outside
+// its workspace that its prompt named. It runs before the CLI is
+// spawned, because granting means adding them to the CLI's own allow
+// list — a decision that has to exist on the command line, not midway
+// through a turn.
+//
+// nil means no: an adapter with nowhere to ask runs confined to the
+// workspace, which is the safe reading of a boundary it cannot raise.
+type OnOutsideDir func(ctx context.Context, req OutsideDirRequest) bool

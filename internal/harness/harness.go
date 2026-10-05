@@ -54,6 +54,13 @@ type Turn struct {
 	// (approvals.md). It receives the run's context, so a stopped run
 	// settles its pending cards. nil denies ask calls up front.
 	OnApproval func(ctx context.Context, req ApprovalRequest) ApprovalDecision
+
+	// OnOutsideDir decides whether the run may reach the directories
+	// outside Workdir that its prompt named (approvals.md). A CLI's own
+	// path boundary sits below its tool-permission layer, so those
+	// refusals never arrive as can_use_tool and the Host would otherwise
+	// never learn of them. nil keeps the run confined to the workspace.
+	OnOutsideDir func(ctx context.Context, req OutsideDirRequest) bool
 }
 
 // Endpoint is an OpenAI-compatible endpoint a CLI adapter can be pointed

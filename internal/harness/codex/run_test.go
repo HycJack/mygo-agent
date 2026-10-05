@@ -334,3 +334,37 @@ func TestNormalizeItemType(t *testing.T) {
 		}
 	}
 }
+
+// TestCompactionIsAnItemNotANotification pins where codex actually
+// announces a context compaction. The binary contains a
+// `thread/compacted` method name, and subscribing to it looks right, but
+// a real app-server never sends it: the compaction arrives as an item of
+// type contextCompaction, announced twice. Matching the notification
+// would have bound a handler to nothing at all — a compaction would then
+// be invisible, which is the exact failure this event exists to prevent.
+func TestCompactionIsAnItemNotANotification(t *testing.T) {
+	var evs []harness.Event
+	r := newRun(harness.Turn{}, func(ev harness.Event) { evs = append(evs, ev) })
+
+	r.notify("item/started", []byte(`{"item":{"id":"c1","type":"contextCompaction"}}`))
+	if notes := find(evs, harness.EventNote); len(notes) != 0 {
+		t.Fatalf("the started frame already reported it: %+v", notes)
+	}
+
+	r.notify("item/completed", []byte(`{"item":{"id":"c1","type":"contextCompaction"}}`))
+	notes := find(evs, harness.EventNote)
+	if len(notes) != 1 {
+		t.Fatalf("notes %d, want exactly 1: %+v", len(notes), notes)
+	}
+	if !strings.Contains(notes[0].Text, "codex") || !strings.Contains(notes[0].Text, "compacted") {
+		t.Fatalf("note %q", notes[0].Text)
+	}
+
+	// The method name that reads correct stays inert on purpose: if codex
+	// ever starts sending it, this fails loudly instead of quietly
+	// reporting every compaction twice.
+	r.notify("thread/compacted", []byte(`{"threadId":"t1"}`))
+	if notes := find(evs, harness.EventNote); len(notes) != 1 {
+		t.Fatalf("thread/compacted added a second note: %+v", notes)
+	}
+}
