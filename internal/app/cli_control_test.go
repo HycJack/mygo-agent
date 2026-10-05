@@ -12,18 +12,36 @@ import (
 	"mygo-agent/internal/harness"
 )
 
+// read runs fn under the app lock and returns its verdict. Every read of
+// a run's thread state goes through here: the run goroutine writes it from
+// applyEvent and finish, both under update, and finish keeps writing after
+// it clears Running — so a test that reads straight from its own goroutine
+// races with a turn that is still settling, and -race in CI is right to
+// fail on it.
+func read(a *app, fn func()) { a.update(fn) }
+
 // waitForApprovalCard polls the running reply for a pending approval
-// card and returns its id.
+// card and returns its id. The walk goes through update() because the run
+// goroutine is appending to the same messages under that lock: reading
+// them straight from the test goroutine is a data race, and -race in CI
+// is right to fail on it.
 func waitForApprovalCard(t *testing.T, a *app, th *Thread) string {
 	t.Helper()
 	deadline := time.Now().Add(10 * time.Second)
 	for time.Now().Before(deadline) {
-		for i := range th.Messages {
-			for _, b := range th.Messages[i].Blocks {
-				if b.Type == "approval" && b.Running && b.ApprovalID != "" {
-					return b.ApprovalID
+		var id string
+		a.update(func() {
+			for i := range th.Messages {
+				for _, b := range th.Messages[i].Blocks {
+					if b.Type == "approval" && b.Running && b.ApprovalID != "" {
+						id = b.ApprovalID
+						return
+					}
 				}
 			}
+		})
+		if id != "" {
+			return id
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -137,17 +155,22 @@ func TestCodexAppServerApprovalRoundTrip(t *testing.T) {
 
 	go runBackend(a, th, "clean up", 0)
 	id := waitForApprovalCard(t, a, th)
-	a.resolveApproval(id, harness.ApprovalDecision{Approved: true})
+	// The decision goes through update(), as the main thread would:
+	// resolveApproval reads the approvals map the run goroutine writes
+	// under that same lock.
+	a.update(func() { a.resolveApproval(id, harness.ApprovalDecision{Approved: true}) })
 	waitTurn(t, a, th, 0)
 
-	if th.CodexID != "sess-app-1" {
-		t.Fatalf("session id %q", th.CodexID)
+	var codexID string
+	var m Message
+	read(a, func() { codexID, m = th.CodexID, th.Messages[0] })
+	if codexID != "sess-app-1" {
+		t.Fatalf("session id %q", codexID)
 	}
 	decision := readJSON(t, filepath.Join(dir, "decision.json"))
 	if !strings.Contains(decision, `"decision":"accept"`) {
 		t.Fatalf("decision not accepted: %s", decision)
 	}
-	m := th.Messages[0]
 	if !strings.Contains(m.Text, "all ") {
 		t.Fatalf("reply text %q", m.Text)
 	}
@@ -174,7 +197,7 @@ func TestCodexAppServerDeclineRoundTrip(t *testing.T) {
 
 	go runBackend(a, th, "clean up", 0)
 	id := waitForApprovalCard(t, a, th)
-	a.resolveApproval(id, harness.ApprovalDecision{Reason: "not in agent mode"})
+	a.update(func() { a.resolveApproval(id, harness.ApprovalDecision{Reason: "not in agent mode"}) })
 	waitTurn(t, a, th, 0)
 
 	decision := readJSON(t, filepath.Join(dir, "decision.json"))
@@ -195,11 +218,14 @@ func TestClaudeCanUseToolAllow(t *testing.T) {
 	if id != "req-1" {
 		t.Fatalf("approval id %q, want the CLI's request_id", id)
 	}
-	a.resolveApproval(id, harness.ApprovalDecision{Approved: true})
+	a.update(func() { a.resolveApproval(id, harness.ApprovalDecision{Approved: true}) })
 	waitTurn(t, a, th, 0)
 
-	if th.ClaudeID != "sess-claude-1" {
-		t.Fatalf("session id %q", th.ClaudeID)
+	var claudeID string
+	var m Message
+	read(a, func() { claudeID, m = th.ClaudeID, th.Messages[0] })
+	if claudeID != "sess-claude-1" {
+		t.Fatalf("session id %q", claudeID)
 	}
 	decision := readJSON(t, filepath.Join(dir, "claude_decision.json"))
 	if !strings.Contains(decision, `"behavior":"allow"`) || !strings.Contains(decision, "updatedInput") {
@@ -208,8 +234,25 @@ func TestClaudeCanUseToolAllow(t *testing.T) {
 	if !strings.Contains(decision, "rm -rf /tmp/x") {
 		t.Fatalf("input not echoed: %s", decision)
 	}
-	if !strings.Contains(th.Messages[0].Text, "hello world") {
-		t.Fatalf("reply text %q", th.Messages[0].Text)
+	// The CLI said "hello ", asked permission, then said "world". The turn
+	// has to read in that order, and the aggregate the copy button hands
+	// over has to be a readable document — two fragments run together
+	// would be neither.
+	if !strings.Contains(m.Text, "hello") ||
+		!strings.Contains(m.Text, "world") {
+		t.Fatalf("reply text %q", m.Text)
+	}
+	if !strings.Contains(m.Text, "hello \n\nworld") {
+		t.Fatalf("the approval card did not leave a paragraph break in the aggregate: %q", m.Text)
+	}
+	var order []string
+	for _, b := range m.Blocks {
+		order = append(order, b.Type)
+	}
+	// text, the ask, the rest of the prose, then the harness's own closing
+	// note about the turn.
+	if strings.Join(order, ",") != "text,approval,text,note" {
+		t.Fatalf("block order %v, want the prose, the ask, the rest of the prose, then the note", order)
 	}
 }
 
@@ -221,7 +264,7 @@ func TestClaudeCanUseToolDeny(t *testing.T) {
 
 	go runBackend(a, th, "clean up", 0)
 	id := waitForApprovalCard(t, a, th)
-	a.resolveApproval(id, harness.ApprovalDecision{Reason: "too risky"})
+	a.update(func() { a.resolveApproval(id, harness.ApprovalDecision{Reason: "too risky"}) })
 	waitTurn(t, a, th, 0)
 
 	decision := readJSON(t, filepath.Join(dir, "claude_decision.json"))
@@ -245,13 +288,15 @@ func TestClaudeReadOnlyAutoDeny(t *testing.T) {
 	if !strings.Contains(decision, `"behavior":"deny"`) || !strings.Contains(decision, "read-only mode") {
 		t.Fatalf("read-only did not auto-deny: %s", decision)
 	}
-	for i := range th.Messages {
-		for _, b := range th.Messages[i].Blocks {
-			if b.Type == "approval" {
-				t.Fatal("read-only must not surface an approval card")
+	read(a, func() {
+		for i := range th.Messages {
+			for _, b := range th.Messages[i].Blocks {
+				if b.Type == "approval" {
+					t.Error("read-only must not surface an approval card")
+				}
 			}
 		}
-	}
+	})
 }
 
 // TestClaudeUnknownControlSubtype proves an unsupported control request

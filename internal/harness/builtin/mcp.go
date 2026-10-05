@@ -1,13 +1,17 @@
 package builtin
 
 import (
+	"mygo-agent/internal/harness/cli"
+
 	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
+	"hash/fnv"
 	"io"
 	"os/exec"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -26,33 +30,57 @@ type MCPServer struct {
 // mcpClient is a stdio MCP client for one server: initialize,
 // tools/list and tools/call, with JSON-RPC ids matched to a pending map.
 type mcpClient struct {
-	name string
-	cmd  *exec.Cmd
-	in   io.WriteCloser
-	sc   *bufio.Scanner
+	name   string
+	cmd    *exec.Cmd
+	in     io.WriteCloser
+	sc     *bufio.Scanner
+	stderr *tailBuffer
 
+	// mu guards the request table and the transport-death flag. wmu is
+	// separate on purpose: a blocked write must not stop the read loop
+	// from delivering a response, or the two pipes deadlock each other.
 	mu      sync.Mutex
+	wmu     sync.Mutex
 	pending map[int]chan json.RawMessage
 	nextID  int
 	err     error
 }
 
+// write sends one framed message. The write mutex is held across the
+// write itself so two callers cannot interleave halves of a line, and
+// nothing else is: the read loop never takes it.
+func (c *mcpClient) write(payload []byte) error {
+	c.wmu.Lock()
+	defer c.wmu.Unlock()
+	_, err := c.in.Write(append(payload, '\n'))
+	return err
+}
+
 var mcpNameRe = regexp.MustCompile(`[^A-Za-z0-9_-]`)
 
 // mcpToolName is the tool name the model sees: providers allow at most
-// 64 characters of [A-Za-z0-9_-], as pi's client does.
+// 64 characters of [A-Za-z0-9_-], as pi's client does. A name that fits
+// is used verbatim, so a selector rule keeps matching; a truncated one
+// carries a hash of the full server+tool identity, because two long
+// pairs can share a prefix and the gate routes by first name match —
+// the wrong server would answer.
 func mcpToolName(server, tool string) string {
-	n := "mcp_" + server + "_" + tool
-	n = mcpNameRe.ReplaceAllString(n, "_")
-	if len(n) > 64 {
-		n = n[:64]
+	n := mcpNameRe.ReplaceAllString("mcp_"+server+"_"+tool, "_")
+	if len(n) <= 64 {
+		return n
 	}
-	return n
+	h := fnv.New64a()
+	_, _ = io.WriteString(h, n) // a hash write never fails
+	sum := strconv.FormatUint(h.Sum64(), 36)
+	return n[:64-len(sum)-1] + "_" + sum
 }
 
 func newMCPClient(ctx context.Context, s MCPServer) (*mcpClient, error) {
 	cmd := exec.CommandContext(ctx, s.Command, s.Args...)
 	cmd.Env = append(cmdEnv(), s.Env...)
+	// The server leads its own process group, so a cancelled turn takes
+	// its children with it instead of leaving them behind.
+	procGroupAttr(cmd)
 	in, err := cmd.StdinPipe()
 	if err != nil {
 		return nil, err
@@ -61,7 +89,10 @@ func newMCPClient(ctx context.Context, s MCPServer) (*mcpClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	cmd.Stderr = nil // the server's logs are not for the model
+	// A server that dies usually says why on stderr; the tail of it is
+	// what makes a transport death readable, so it is kept, not dropped.
+	stderr := &tailBuffer{max: 8 << 10}
+	cmd.Stderr = stderr
 	if err := cmd.Start(); err != nil {
 		return nil, fmt.Errorf("starting %s: %w", s.Command, err)
 	}
@@ -70,9 +101,14 @@ func newMCPClient(ctx context.Context, s MCPServer) (*mcpClient, error) {
 		cmd:     cmd,
 		in:      in,
 		sc:      bufio.NewScanner(out),
+		stderr:  stderr,
 		pending: map[int]chan json.RawMessage{},
 	}
 	c.sc.Buffer(make([]byte, 64*1024), 4<<20)
+	// Reap the child. Nothing else waits on it, so without this every MCP
+	// server the turn starts is left as a <defunct> process for as long as
+	// the app runs.
+	go func() { _ = cmd.Wait() }()
 	go c.readLoop()
 	if err := c.init(ctx); err != nil {
 		c.Close()
@@ -102,15 +138,20 @@ func (c *mcpClient) call(ctx context.Context, method string, params any) (json.R
 		c.mu.Unlock()
 		return nil, err
 	}
-	_, werr := c.in.Write(append(payload, '\n'))
 	c.mu.Unlock()
-	if werr != nil {
+	if werr := c.write(payload); werr != nil {
 		return nil, werr
 	}
 	select {
 	case res := <-ch:
 		return res, nil
 	case <-ctx.Done():
+		// Drop the pending entry: the reply, if it ever arrives, has
+		// nowhere to go, and leaving the channel here grows the map by
+		// one per timeout for the life of the client.
+		c.mu.Lock()
+		delete(c.pending, id)
+		c.mu.Unlock()
 		return nil, ctx.Err()
 	}
 }
@@ -132,26 +173,66 @@ func (c *mcpClient) readLoop() {
 		c.mu.Lock()
 		ch := c.pending[*msg.ID]
 		delete(c.pending, *msg.ID)
-		if msg.Error != nil {
-			c.err = fmt.Errorf("mcp: %s", msg.Error.Message)
-		}
 		c.mu.Unlock()
 		if ch != nil {
 			if msg.Error != nil {
-				ch <- json.RawMessage(`{"error":` + strconvQuote(msg.Error.Message) + `}`)
+				ch <- errPayload(msg.Error.Message)
 			} else {
 				ch <- msg.Result
 			}
 			close(ch)
 		}
 	}
+	// The server is gone: every waiter is failed here rather than closed
+	// empty, which a caller would read as an empty success.
 	c.mu.Lock()
-	c.err = fmt.Errorf("mcp server %q exited", c.name)
+	c.err = c.deadErr("exited")
 	for id, ch := range c.pending {
+		ch <- errPayload(c.err.Error())
 		close(ch)
 		delete(c.pending, id)
 	}
 	c.mu.Unlock()
+}
+
+// errPayload is the in-band failure shape. A server's own error and a
+// dead transport are reported the same way, so a caller only has to
+// check one shape — and errCheck is what reads it.
+func errPayload(msg string) json.RawMessage {
+	return json.RawMessage(`{"error":{"message":` + strconvQuote(msg) + `}}`)
+}
+
+// deadErr describes a dead transport, with the server's own last words
+// when it left any.
+func (c *mcpClient) deadErr(what string) error {
+	if tail := strings.TrimSpace(c.stderr.String()); tail != "" {
+		return fmt.Errorf("mcp server %q %s: %s", c.name, what, cli.Trunc(tail, 200))
+	}
+	return fmt.Errorf("mcp server %q %s", c.name, what)
+}
+
+// tailBuffer keeps the last max bytes written to it, dropping older
+// ones: a server's diagnostics are worth a tail, not a transcript.
+type tailBuffer struct {
+	mu  sync.Mutex
+	max int
+	buf []byte
+}
+
+func (t *tailBuffer) Write(p []byte) (int, error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.buf = append(t.buf, p...)
+	if len(t.buf) > t.max {
+		t.buf = t.buf[len(t.buf)-t.max:]
+	}
+	return len(p), nil
+}
+
+func (t *tailBuffer) String() string {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return string(t.buf)
 }
 
 // init performs the MCP handshake.
@@ -166,6 +247,11 @@ func (c *mcpClient) init(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	// An empty payload means the transport died before answering; a
+	// successful handshake must carry a result.
+	if len(res) == 0 {
+		return c.deadErr("exited during initialize")
+	}
 	if errCheck(res) != "" {
 		return fmt.Errorf("initialize: %s", errCheck(res))
 	}
@@ -175,9 +261,7 @@ func (c *mcpClient) init(ctx context.Context) error {
 
 func (c *mcpClient) notify(method string) {
 	payload, _ := json.Marshal(map[string]any{"jsonrpc": "2.0", "method": method})
-	c.mu.Lock()
-	c.in.Write(append(payload, '\n'))
-	c.mu.Unlock()
+	_ = c.write(payload)
 }
 
 // listTools returns the server's tools as agent tools.
@@ -235,6 +319,9 @@ func (c *mcpClient) callTool(ctx context.Context, name, args string) (string, er
 	res, err := c.call(ctx, "tools/call", params)
 	if err != nil {
 		return "", err
+	}
+	if len(res) == 0 {
+		return "", c.deadErr("exited during a tool call")
 	}
 	if msg := errCheck(res); msg != "" {
 		return "", fmt.Errorf("%s", msg)
@@ -299,7 +386,8 @@ type mcpTransport interface {
 
 // ServerClient is a connected MCP server, safe to use from the app.
 type ServerClient struct {
-	t mcpTransport
+	name string
+	t    mcpTransport
 }
 
 // StartServer connects to an MCP server and performs the handshake:
@@ -310,13 +398,13 @@ func StartServer(ctx context.Context, s MCPServer) (*ServerClient, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &ServerClient{t: t}, nil
+	return &ServerClient{name: s.Name, t: t}, nil
 }
 
 // startTransport resolves the transport for a server entry.
 func startTransport(ctx context.Context, s MCPServer) (mcpTransport, error) {
 	if s.URL != "" {
-		return startHTTPMCP(ctx, s.URL)
+		return startHTTPMCP(ctx, s.Name, s.URL)
 	}
 	return newMCPClient(ctx, s)
 }
@@ -329,8 +417,9 @@ func (sc *ServerClient) CallTool(ctx context.Context, name, args string) (string
 	return sc.t.callTool(ctx, name, args)
 }
 
-// ServerName is the configured name of the server.
-func (sc *ServerClient) ServerName() string { return "" }
+// ServerName is the configured name of the server, the prefix of every
+// tool it exposes (mcp_github_*) and what a selector rule matches on.
+func (sc *ServerClient) ServerName() string { return sc.name }
 
 // Close shuts the transport down.
 func (sc *ServerClient) Close() { sc.t.Close() }

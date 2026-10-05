@@ -117,19 +117,31 @@ func (a *app) saveThread(th *Thread) {
 		Version: 1, Meta: metaOf(th), Messages: th.Messages, ChatLog: th.ChatLog,
 	}, "", "  ")
 	if err != nil {
+		a.threadsErr = "this task could not be saved: " + err.Error()
 		return
 	}
-	if err := writeFileAtomic(path, data, 0o600); err == nil {
-		a.threadsErr = ""
+	// A save that fails must say so. Swallowing it loses the turn with no
+	// trace, and data.md invariant 3 already establishes the mechanism for
+	// making a load failure visible.
+	if err := writeFileAtomic(path, data, 0o600); err != nil {
+		a.threadsErr = "this task could not be written to " + path + ": " + err.Error()
+		return
 	}
+	a.threadsErr = ""
 }
 
 // removeThreadFile deletes one thread's file. The caller keeps the
 // thread in memory for the undo toast.
 func (a *app) removeThreadFile(th *Thread) {
 	if path, ok := a.threadsDir.file(th); ok {
-		os.Remove(path)
-		os.Remove(filepath.Dir(path)) // the project dir, now empty
+		// A file that survives deletion comes back on the next launch, so
+		// a failure here is reported rather than ignored.
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			a.threadsErr = "the task's file could not be deleted (" + err.Error() + "); it will reappear on the next launch"
+			return
+		}
+		// The project dir, now empty. A non-empty dir is not an error.
+		os.Remove(filepath.Dir(path))
 	}
 }
 
@@ -212,6 +224,8 @@ func decodeThreadFile(path string) (*Thread, error) {
 		Created: tf.Meta.Created, Updated: tf.Meta.Updated,
 		CodexID: tf.Meta.CodexID, ClaudeID: tf.Meta.ClaudeID, PiID: tf.Meta.PiID,
 		Messages: tf.Messages, ChatLog: tf.ChatLog,
+		// The diff count is derived state; the zero value already means
+		// "never counted", so the first read scans.
 	}, nil
 }
 
@@ -265,7 +279,15 @@ func (a *app) importLegacyThreads() {
 			continue
 		}
 	}
-	os.Rename(a.savePath, a.savePath+".migrated")
+	// Never clobber an existing .migrated: the original bytes are the
+	// only copy of what was there before this app touched it.
+	migrated := a.savePath + ".migrated"
+	if _, err := os.Stat(migrated); err == nil {
+		quarantine(migrated, "superseded")
+	}
+	if err := os.Rename(a.savePath, migrated); err != nil {
+		a.threadsErr = "the legacy tasks file could not be set aside (" + err.Error() + "); it will be imported again next launch"
+	}
 	// The in-memory list is built by loadThreads from the tree; nothing
 	// to set here.
 	_ = threads

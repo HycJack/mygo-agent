@@ -34,13 +34,23 @@ func (h *Harness) Kind() string { return "pi" }
 // a stopped one; a non-nil error's message is the failure text for the
 // reply card.
 func (h *Harness) Run(ctx context.Context, turn harness.Turn, emit func(harness.Event)) error {
+	// pi exposes one lever per mode, so an unknown value would run with
+	// the wrong permission. Turn.Mode is a bare int with no clamp
+	// anywhere, and the repo has no recover() to catch a bad index, so
+	// fail loudly instead of guessing.
+	switch turn.Mode {
+	case harness.ModeReadOnly, harness.ModeAgent, harness.ModeFull:
+	default:
+		return fmt.Errorf("pi: unknown approval mode %d", int(turn.Mode))
+	}
+
 	prompt := turn.Prompt
 	sessionID := turn.SessionID
 	if sessionID == "" {
 		sessionID = newUUID()
 	}
 	args := []string{"-p", "--mode", "json", "-ne", "--session-id", sessionID,
-		"--thinking", []string{"off", "minimal", "medium", "high"}[turn.Effort]}
+		"--thinking", effortLevel(turn.Effort)}
 	if turn.Mode == harness.ModeReadOnly {
 		// pi has no permission modes; keep the read tool only.
 		args = append(args, "--tools", "read")
@@ -74,11 +84,13 @@ func (h *Harness) Run(ctx context.Context, turn harness.Turn, emit func(harness.
 			break // agent_settled: the turn is done; reap the CLI
 		}
 	}
-	waitErr := cmd.Wait()
+	// pi exits on its own; it has no resident stdin to close, but the
+	// bounded group teardown is the same guard every adapter uses.
+	waitErr, killed := cli.Reap(cmd, nil)
 	if ctx.Err() != nil {
 		return nil // stopped by the user; keep whatever arrived
 	}
-	if !r.sawEvent || waitErr != nil {
+	if !killed && (!r.sawEvent || waitErr != nil) {
 		tail := strings.TrimSpace(stderr.String())
 		if tail == "" && waitErr != nil {
 			tail = waitErr.Error()
@@ -88,10 +100,23 @@ func (h *Harness) Run(ctx context.Context, turn harness.Turn, emit func(harness.
 		}
 	}
 	if r.tokens > 0 {
-		emit(harness.Event{Kind: harness.EventNote, Text: fmt.Sprintf(
+		r.emit(harness.Event{Kind: harness.EventNote, Text: fmt.Sprintf(
 			"Done · %d tokens · $%.4f · session %s", r.tokens, r.cost, cli.ShortSession(sessionID))})
 	}
 	return nil
+}
+
+// effortLevels are pi's --thinking levels, indexed by Turn.Effort.
+var effortLevels = []string{"off", "minimal", "medium", "high"}
+
+// effortLevel maps an effort to a --thinking level. An out-of-range value
+// must still land somewhere — indexing the table directly would panic the
+// dispatch goroutine, and nothing in the repo recovers.
+func effortLevel(effort int) string {
+	if effort >= 0 && effort < len(effortLevels) {
+		return effortLevels[effort]
+	}
+	return effortLevels[2] // the same level a clamped effort would give
 }
 
 // run carries one pi run's state between events.

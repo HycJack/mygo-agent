@@ -3,8 +3,10 @@ package app
 import (
 	"context"
 	"errors"
+	"time"
 
 	"mygo-agent/internal/harness"
+	"mygo-agent/internal/harness/builtin"
 	"mygo-agent/internal/harness/claude"
 	"mygo-agent/internal/harness/codex"
 	"mygo-agent/internal/harness/pi"
@@ -24,7 +26,7 @@ func sandboxProvider() harness.Sandbox { return sandbox.New() }
 func (a *app) newHarness(th *Thread, turn harness.Turn) harness.Harness {
 	switch a.backend {
 	case "builtin":
-		return builtinHarness{a: a, th: th, turn: turn}
+		return newBuiltinHarness(a, th, turn)
 	case "claude":
 		if a.claudePath != "" {
 			return claude.New(a.claudePath)
@@ -40,7 +42,7 @@ func (a *app) newHarness(th *Thread, turn harness.Turn) harness.Harness {
 	}
 	// Unknown backend or a CLI that is not installed: the built-in agent
 	// always runs. It fails visibly when no provider is configured.
-	return builtinHarness{a: a, th: th, turn: turn}
+	return newBuiltinHarness(a, th, turn)
 }
 
 // dispatch hands a turn to the selected harness in the background. The
@@ -72,7 +74,9 @@ func turnErrText(err error) string {
 // turnFor snapshots everything a harness needs from the Host (the
 // snapshot, not a live reference: config may change mid-run).
 func (a *app) turnFor(th *Thread, prompt string) harness.Turn {
-	mode := harness.Mode(a.mode)
+	// Clamp at the boundary: mode and effort index arrays and flag lists
+	// inside the adapters, and there is no recover() anywhere in the app.
+	mode := harness.Mode(clampMode(a.mode))
 	var sb harness.Sandbox
 	if mode == harness.ModeAgent {
 		sb = sandboxProvider()
@@ -84,7 +88,7 @@ func (a *app) turnFor(th *Thread, prompt string) harness.Turn {
 		Mode:     mode,
 		Rules:    a.permRules,
 		Model:    a.model,
-		Effort:   a.effort,
+		Effort:   clampInt(a.effort, 0, 2),
 		MaxTurns: a.maxTurns,
 		SessionID: map[string]string{
 			"codex": th.CodexID, "claude": th.ClaudeID, "pi": th.PiID,
@@ -94,21 +98,67 @@ func (a *app) turnFor(th *Thread, prompt string) harness.Turn {
 		MemoryKey: key,
 	}
 	if p := a.provider(); p != nil && p.ID != "codex" && p.BaseURL != "" {
-		turn.Endpoint = &harness.Endpoint{ID: p.ID, Name: p.Name, BaseURL: p.BaseURL, APIKey: p.APIKey}
+		turn.Endpoint = &harness.Endpoint{ID: p.ID, Name: p.Name, BaseURL: p.BaseURL, APIKey: p.APIKey, Wire: p.Wire}
 	}
 	return turn
 }
 
+// builtinHarness binds the built-in loop to one turn of one thread.
+//
+// The config it needs is snapshotted here, on the main thread, rather
+// than read from the live app while the turn runs: the user can change
+// the provider or the MCP list mid-turn, and a run that changed its
+// endpoint under itself would be a different agent than the one the
+// approval cards were about.
 type builtinHarness struct {
 	a    *app
 	th   *Thread
 	turn harness.Turn
+
+	provider      Provider
+	mcpServers    []builtin.MCPServer
+	approvalLimit time.Duration
+
+	// at is the index of the running reply this turn writes into, and
+	// priorMessages is the visible history to seed a fresh transcript
+	// from. Both are captured here, on the main thread, because the turn
+	// runs on another goroutine that must not read the live thread.
+	at            int
+	priorMessages []Message
+}
+
+func newBuiltinHarness(a *app, th *Thread, turn harness.Turn) builtinHarness {
+	h := builtinHarness{a: a, th: th, turn: turn, at: -1}
+	// A nil provider is kept as the zero value: runBuiltin reports the
+	// "configure a provider" error rather than dereferencing it.
+	if p := a.provider(); p != nil {
+		h.provider = *p
+	}
+	h.mcpServers = a.effectiveMCPServers()
+	h.approvalLimit = a.approvalTimeout
+	for i := range th.Messages {
+		if th.Messages[i].Running {
+			h.at = i
+		}
+	}
+	if h.at < 0 {
+		h.at = len(th.Messages) - 1
+	}
+	// Everything before this turn's own user message: the seed log is
+	// built from that history and then the prompt is appended, so the
+	// message at at-1 must be excluded or the prompt lands twice. The
+	// texts are copied because the main thread keeps editing the thread.
+	if n := max(h.at-1, 0); n > 0 {
+		h.priorMessages = make([]Message, n)
+		copy(h.priorMessages, th.Messages[:n])
+	}
+	return h
 }
 
 func (h builtinHarness) Kind() string { return "builtin" }
 
 func (h builtinHarness) Run(ctx context.Context, turn harness.Turn, emit func(harness.Event)) error {
-	return h.a.runBuiltin(ctx, h.th, turn, emit)
+	return h.runBuiltin(ctx, emit)
 }
 
 // runBackend is the test shim: dispatches like send does — running flag

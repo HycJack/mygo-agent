@@ -2,10 +2,8 @@ package app
 
 import (
 	"context"
-	"errors"
 
 	"mygo-agent/internal/harness"
-	"mygo-agent/internal/harness/builtin"
 )
 
 // waitForApproval implements LoopConfig.OnApproval (spec/approvals.md):
@@ -34,10 +32,9 @@ func (a *app) waitForApproval(ctx context.Context, th *Thread, at int, req harne
 		a.update(func() { a.settleApproval(th, at, req.Call.ID, d) })
 		return d
 	case <-ctx.Done():
-		reason := "cancelled"
-		if errors.Is(context.Cause(ctx), builtin.ErrApprovalTimedOut) {
-			reason = "approval timed out"
-		}
+		// The deadline is shared by every adapter (harness.ApprovalContext),
+		// so the cause tells a timeout from a cancelled run truthfully.
+		reason := harness.ApprovalReason(ctx)
 		a.update(func() {
 			delete(a.approvals, req.Call.ID)
 			a.settleApproval(th, at, req.Call.ID, harness.ApprovalDecision{Reason: reason})

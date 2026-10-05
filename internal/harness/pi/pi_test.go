@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"mygo-agent/internal/harness"
+	"mygo-agent/internal/harness/cli"
 )
 
 // TestRunFeed drives the JSON wire end to end with a fake CLI: deltas
@@ -119,5 +120,89 @@ while read -r _; do :; done
 	}
 	if !strings.Contains(string(data), "--session-id existing-sess") {
 		t.Fatalf("resume id not passed: %s", data)
+	}
+}
+
+// TestLingerAfterSettledReturns drives a fake CLI that settles and then
+// sleeps forever, ignoring its streams. The reap is bounded, so Run
+// returns instead of holding the turn — the claude lesson, second
+// sighting (spec/cli-backends.md).
+func TestLingerAfterSettledReturns(t *testing.T) {
+	old := cli.ReapGrace
+	cli.ReapGrace = 200 * time.Millisecond
+	defer func() { cli.ReapGrace = old }()
+
+	dir := t.TempDir()
+	script := filepath.Join(dir, "fake-pi.sh")
+	body := `#!/bin/bash
+echo '{"type":"session","version":3,"id":"pi-sess-1"}'
+echo '{"type":"message_end","message":{"role":"assistant","content":[{"type":"text","text":"hi"}],"usage":{"totalTokens":7,"cost":{"total":0.01}}}}'
+echo '{"type":"agent_settled"}'
+sleep 30
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	done := make(chan error, 1)
+	start := time.Now()
+	go func() {
+		done <- New(script).Run(context.Background(),
+			harness.Turn{Workdir: dir, Mode: harness.ModeAgent, Effort: 1}, func(harness.Event) {})
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("run: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("run did not settle — the lingering CLI held the turn")
+	}
+	if elapsed := time.Since(start); elapsed > 10*time.Second {
+		t.Fatalf("run took %s; the reap was not bounded", elapsed)
+	}
+}
+
+// TestUnknownModeReturnsError pins that a mode pi cannot map to a
+// permission fails loudly. Turn.Mode is a bare int with no clamp in the
+// repo, and nothing recovers a panic, so an unknown value must not reach
+// the flag mapping.
+func TestUnknownModeReturnsError(t *testing.T) {
+	// A binary that does not exist: Run must reject the turn before it
+	// ever spawns anything.
+	err := New(filepath.Join(t.TempDir(), "no-such-pi")).Run(context.Background(),
+		harness.Turn{Workdir: t.TempDir(), Mode: harness.Mode(99)}, func(harness.Event) {})
+	if err == nil || !strings.Contains(err.Error(), "mode") {
+		t.Fatalf("err = %v, want an unknown mode error", err)
+	}
+}
+
+// TestOutOfRangeEffortFallsBack pins that an effort outside the level
+// table still maps to a level instead of indexing past the end and
+// panicking the dispatch goroutine.
+func TestOutOfRangeEffortFallsBack(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "fake-pi.sh")
+	body := `#!/bin/bash
+echo "$@" > "{{dir}}/args.txt"
+echo '{"type":"session","version":3,"id":"pi-sess-1"}'
+echo '{"type":"agent_settled"}'
+while read -r _; do :; done
+`
+	body = strings.ReplaceAll(body, "{{dir}}", dir)
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := New(script).Run(context.Background(),
+		harness.Turn{Workdir: dir, Mode: harness.ModeAgent, Effort: 99}, func(harness.Event) {}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "args.txt"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(data), "--thinking medium") {
+		t.Fatalf("out-of-range effort not mapped to a level: %s", data)
 	}
 }

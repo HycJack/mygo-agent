@@ -67,10 +67,18 @@ func TestBuiltinChatLogRoundTrip(t *testing.T) {
 	go runBackend(a, th, "run the tool", 0)
 	waitTurn(t, a, th, len(th.Messages)-1)
 
-	// The tool card captured the real echo output.
+	// The tool card captured the real echo output, and the reply that
+	// followed it sits AFTER it in the ordered sequence — that ordering is
+	// the point of the sequence, not an accident of this test.
 	m := &th.Messages[0]
-	if len(m.Blocks) != 1 || m.Blocks[0].Output != "hello-from-tool" {
+	if len(m.Blocks) != 2 {
 		t.Fatalf("blocks: %+v", m.Blocks)
+	}
+	if m.Blocks[0].Type != blockCommand || m.Blocks[0].Output != "hello-from-tool" {
+		t.Fatalf("the first block is not the tool call: %+v", m.Blocks[0])
+	}
+	if m.Blocks[1].Type != blockText || !strings.Contains(m.Blocks[1].Text, "all done") {
+		t.Fatalf("the reply did not follow the tool call: %+v", m.Blocks[1])
 	}
 	if !strings.Contains(m.Text, "all done") {
 		t.Fatalf("reply text %q", m.Text)

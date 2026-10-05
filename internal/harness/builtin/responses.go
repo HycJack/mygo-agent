@@ -22,17 +22,18 @@ func streamResponses(ctx context.Context, cfg StreamConfig, onText func(string))
 		return assistantResult{}, err
 	}
 	url := strings.TrimRight(cfg.BaseURL, "/") + "/responses"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(payload)))
-	if err != nil {
-		return assistantResult{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if cfg.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
-	}
-
-	client := &http.Client{Timeout: 0}
-	resp, err := client.Do(req)
+	client := &http.Client{Timeout: llmRequestTimeout}
+	resp, err := doWithRetry(ctx, client, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, strings.NewReader(string(payload)))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if cfg.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+		}
+		return req, nil
+	})
 	if err != nil {
 		return assistantResult{}, err
 	}
@@ -70,6 +71,8 @@ func streamResponses(ctx context.Context, cfg StreamConfig, onText func(string))
 			Type string `json:"type"`
 			// output_text.delta
 			Delta string `json:"delta"`
+			// response.function_call_arguments.delta
+			ItemID string `json:"item_id"`
 			// output_item.added / output_item.done
 			Item *struct {
 				Type      string `json:"type"`
@@ -103,12 +106,16 @@ func streamResponses(ctx context.Context, cfg StreamConfig, onText func(string))
 				order = append(order, id)
 			}
 		case "response.function_call_arguments.delta":
-			// The item_id of the streaming call is in item_id; find the
-			// accumulator whose name is still filling.
-			if ev.Item != nil {
-				if a := byItem[ev.Item.ID]; a != nil {
-					a.args.WriteString(ev.Delta)
-				}
+			// The streaming call is named by item_id, not by item: a
+			// delta carries no item object at all, so keying on one
+			// dropped every fragment and left a server that omits
+			// output_item.done with empty arguments.
+			id := ev.ItemID
+			if id == "" && ev.Item != nil {
+				id = ev.Item.ID
+			}
+			if a := byItem[id]; a != nil {
+				a.args.WriteString(ev.Delta)
 			}
 		case "response.output_item.done":
 			if ev.Item == nil {
@@ -158,6 +165,13 @@ func streamResponses(ctx context.Context, cfg StreamConfig, onText func(string))
 	for _, id := range order {
 		a := byItem[id]
 		if call, ok := doneByCall[a.callID]; ok {
+			// The completed item is authoritative, but only if it carried
+			// arguments: some servers send a done frame with the name and
+			// an empty argument string, and taking that as final silently
+			// discarded the deltas streamed before it.
+			if call.Function.Arguments == "" && a.args.Len() > 0 {
+				call.Function.Arguments = a.args.String()
+			}
 			res.ToolCalls = append(res.ToolCalls, call)
 			continue
 		}

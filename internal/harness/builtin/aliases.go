@@ -6,8 +6,7 @@ import "mygo-agent/internal/harness"
 // aliases below bind the root package's types into this package, so the
 // loop and tool code read exactly as they did when they lived at the
 // root. Only protocol types are aliased — everything the loop owns
-// (LoopConfig, Run, StreamConfig, Tool, ToolCallResult, the errors) is
-// declared here.
+// (LoopConfig, Run, StreamConfig, Tool, the errors) is declared here.
 
 type (
 	Turn       = harness.Turn
@@ -35,6 +34,15 @@ type (
 const (
 	WireChat      = harness.WireChat
 	WireResponses = harness.WireResponses
+
+	// Event kinds the loop emits, read through the protocol root so a
+	// renamed kind can never silently stop matching the Host's switch.
+	EventText      = harness.EventText
+	EventToolStart = harness.EventToolStart
+	EventToolEnd   = harness.EventToolEnd
+	EventNote      = harness.EventNote
+	EventError     = harness.EventError
+	EventDone      = harness.EventDone
 
 	ModeReadOnly = harness.ModeReadOnly
 	ModeAgent    = harness.ModeAgent

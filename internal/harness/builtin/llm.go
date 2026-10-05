@@ -13,7 +13,9 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
+	"time"
 )
 
 // chatTool is the tools entry of the request body.
@@ -93,17 +95,18 @@ func streamChatCompletions(ctx context.Context, cfg StreamConfig, onText func(de
 		return assistantResult{}, err
 	}
 	url := strings.TrimRight(cfg.BaseURL, "/") + "/chat/completions"
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
-	if err != nil {
-		return assistantResult{}, err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	if cfg.APIKey != "" {
-		req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
-	}
-
-	client := &http.Client{Timeout: 0} // the context bounds the call
-	resp, err := client.Do(req)
+	client := &http.Client{Timeout: llmRequestTimeout}
+	resp, err := doWithRetry(ctx, client, func() (*http.Request, error) {
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+		if err != nil {
+			return nil, err
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if cfg.APIKey != "" {
+			req.Header.Set("Authorization", "Bearer "+cfg.APIKey)
+		}
+		return req, nil
+	})
 	if err != nil {
 		return assistantResult{}, err
 	}
@@ -189,7 +192,9 @@ func streamChatCompletions(ctx context.Context, cfg StreamConfig, onText func(de
 				acc.id = tc.ID
 			}
 			if tc.Function.Name != "" {
-				acc.name += tc.Function.Name
+				// Assign, never append: a gateway that repeats the name on
+				// every delta used to produce "get_weatherget_weather".
+				acc.name = tc.Function.Name
 			}
 			if len(tc.Function.Arguments) > 0 {
 				var s string
@@ -213,11 +218,17 @@ func streamChatCompletions(ctx context.Context, cfg StreamConfig, onText func(de
 	if res.Err != "" {
 		return res, errors.New(res.Err)
 	}
-	for idx := 0; len(byIndex) > 0; idx++ {
-		acc, ok := byIndex[idx]
-		if !ok {
-			break
-		}
+	// The accumulated tool calls come out in index order whatever the
+	// numbering the gateway used: a 1-based or gapped index is a shape
+	// to accommodate, not a reason to drop every call after the first
+	// hole.
+	idxs := make([]int, 0, len(byIndex))
+	for i := range byIndex {
+		idxs = append(idxs, i)
+	}
+	slices.Sort(idxs)
+	for _, idx := range idxs {
+		acc := byIndex[idx]
 		args := acc.args.String()
 		if args == "" && len(acc.argsObj) > 0 {
 			args = string(acc.argsObj)
@@ -232,4 +243,55 @@ func streamChatCompletions(ctx context.Context, cfg StreamConfig, onText func(de
 		})
 	}
 	return res, nil
+}
+
+// llmRequestTimeout bounds one provider exchange. The turn context is
+// much wider than a single response, so without it a stalled provider
+// would hold the turn open indefinitely.
+const llmRequestTimeout = 5 * time.Minute
+
+// llmAttempts is the total number of tries for a request: one plus a
+// small bounded retry of the failures that are actually transient.
+const llmAttempts = 3
+
+// doWithRetry sends the request built by newReq and returns the first
+// response the caller has to look at. Only a transport failure and a
+// 429/5xx are repeated — a 4xx is the request's own fault — and the
+// retry wraps the send alone: once a body is being streamed, nothing is
+// ever replayed.
+func doWithRetry(ctx context.Context, client *http.Client, newReq func() (*http.Request, error)) (*http.Response, error) {
+	backoff := 200 * time.Millisecond
+	var lastErr error
+	for attempt := range llmAttempts {
+		req, err := newReq()
+		if err != nil {
+			return nil, err
+		}
+		resp, err := client.Do(req)
+		switch {
+		case err != nil:
+			lastErr = err
+		case !retryableStatus(resp.StatusCode):
+			return resp, nil
+		default:
+			b, _ := io.ReadAll(io.LimitReader(resp.Body, 8<<10))
+			resp.Body.Close()
+			lastErr = fmt.Errorf("provider returned %s: %s", resp.Status, strings.TrimSpace(string(b)))
+		}
+		if attempt == llmAttempts-1 {
+			break
+		}
+		select {
+		case <-time.After(backoff):
+			backoff *= 2
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+	return nil, lastErr
+}
+
+// retryableStatus is what a later attempt may still answer.
+func retryableStatus(code int) bool {
+	return code == http.StatusTooManyRequests || code >= 500
 }

@@ -35,6 +35,13 @@ var providerPresets = []struct {
 
 // settingsModal renders the manage-providers dialog.
 func (a *app) settingsModal(c *ui.Context) {
+	// Nothing to draw while closed. The snapshot clones every provider's
+	// model list and formats two strings per provider, so building it
+	// unconditionally made the common case (a closed dialog) the most
+	// expensive thing in the frame.
+	if !a.settingsOpen {
+		return
+	}
 	vm := a.settingsVM()
 	uipkg.Settings(c, vm, settingsActions{a: a})
 	a.settingsOpen = vm.Open // the backdrop and Escape close it view-side

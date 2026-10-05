@@ -1,6 +1,7 @@
 package builtin
 
 import (
+	"mygo-agent/internal/harness"
 	"mygo-agent/internal/harness/cli"
 
 	"context"
@@ -12,13 +13,9 @@ import (
 	"time"
 )
 
-// defaultApprovalTimeout bounds every wait on the host: expiry denies.
-const defaultApprovalTimeout = 10 * time.Minute
-
-// ErrApprovalTimedOut is the cause an approval's context carries when
-// ApprovalTimeout expires. The host reads it to settle what it is showing
-// for the request — the denial itself spells the same reason.
-var ErrApprovalTimedOut = errors.New("approval timed out")
+// The approval deadline is shared with the other adapters, so it lives in
+// the protocol root (spec/approvals.md).
+const defaultApprovalTimeout = harness.DefaultApprovalTimeout
 
 // LoopConfig configures one run of the agent loop. The zero Policy is
 // read-only: a caller that sets no policy fails closed.
@@ -44,13 +41,6 @@ type LoopConfig struct {
 	// until that context is done; a nil handler denies ask calls up front.
 	OnApproval      func(ctx context.Context, req ApprovalRequest) ApprovalDecision
 	ApprovalTimeout time.Duration // default 10 minutes; expiry denies
-}
-
-// ToolCallResult is what executing one tool call produced.
-type ToolCallResult struct {
-	ToolCall ToolCall
-	Output   string
-	IsError  bool
 }
 
 // ErrTurnLimit is returned when the loop stops because it hit the turn
@@ -88,13 +78,13 @@ func Run(ctx context.Context, cfg LoopConfig, history []ChatMessage) ([]ChatMess
 			ReasoningEffort: cfg.ReasoningEffort,
 		}
 		res, err := streamChat(ctx, scfg, func(delta string) {
-			emit(Event{Kind: "text", TextDelta: delta})
+			emit(Event{Kind: EventText, TextDelta: delta})
 		})
 		if err != nil {
 			if ctx.Err() != nil {
 				return messages, ctx.Err()
 			}
-			emit(Event{Kind: "error", Err: err.Error()})
+			emit(Event{Kind: EventError, Err: err.Error()})
 			return messages, err
 		}
 		if res.Content != "" {
@@ -104,7 +94,7 @@ func Run(ctx context.Context, cfg LoopConfig, history []ChatMessage) ([]ChatMess
 			messages = append(messages, ChatMessage{Role: "assistant", Content: nil})
 		}
 		if len(res.ToolCalls) == 0 {
-			emit(Event{Kind: "done"})
+			emit(Event{Kind: EventDone})
 			return messages, nil
 		}
 		// The assistant message that carries tool calls needs the full
@@ -118,7 +108,7 @@ func Run(ctx context.Context, cfg LoopConfig, history []ChatMessage) ([]ChatMess
 			if ctx.Err() != nil {
 				return messages, ctx.Err()
 			}
-			emit(Event{Kind: "tool_start", ToolCall: call})
+			emit(Event{Kind: EventToolStart, ToolCall: call})
 			out, execErr := runGatedTool(ctx, cfg, call)
 			exit := 0
 			if execErr != nil {
@@ -129,7 +119,7 @@ func Run(ctx context.Context, cfg LoopConfig, history []ChatMessage) ([]ChatMess
 					out += "\n" + execErr.Error()
 				}
 			}
-			emit(Event{Kind: "tool_end", ToolCall: call, Output: out, Exit: exit})
+			emit(Event{Kind: EventToolEnd, ToolCall: call, Output: out, Exit: exit})
 			messages = append(messages, ChatMessage{
 				Role:       "tool",
 				Content:    out,
@@ -137,7 +127,7 @@ func Run(ctx context.Context, cfg LoopConfig, history []ChatMessage) ([]ChatMess
 			})
 		}
 	}
-	emit(Event{Kind: "notice", Err: fmt.Sprintf(
+	emit(Event{Kind: EventNote, Text: fmt.Sprintf(
 		"Stopped after %d rounds of tool calls (the turn limit — raise max_turns in config.json). Send a message to keep going.",
 		cfg.MaxTurns)})
 	return messages, ErrTurnLimit
@@ -189,7 +179,7 @@ func askApproval(ctx context.Context, cfg LoopConfig, t Tool, call ToolCall) err
 	}
 	// Expiry sets the cause, so the host can tell "approval timed out"
 	// from a cancelled run when the context fires there as well.
-	actx, cancel := context.WithTimeoutCause(ctx, timeout, ErrApprovalTimedOut)
+	actx, cancel := harness.ApprovalContext(ctx, timeout)
 	defer cancel()
 	type answer struct{ d ApprovalDecision }
 	ch := make(chan answer, 1)
@@ -201,30 +191,9 @@ func askApproval(ctx context.Context, cfg LoopConfig, t Tool, call ToolCall) err
 		}
 		return &DenialError{Tool: t.Name, Reason: a.d.Reason}
 	case <-actx.Done():
-		if errors.Is(context.Cause(actx), ErrApprovalTimedOut) {
-			return &DenialError{Tool: t.Name, Reason: ErrApprovalTimedOut.Error()}
-		}
-		return &DenialError{Tool: t.Name, Reason: "cancelled before approval"}
+		reason := harness.ApprovalReason(actx)
+		return &DenialError{Tool: t.Name, Reason: reason}
 	}
-}
-
-// executeTool finds the tool by name and runs it with its JSON args.
-// Weak models often emit near-JSON (code fences, trailing commas,
-// single quotes, smart quotes), so the arguments go through a repair
-// pass before the tool sees them. It performs no permission check; the
-// loop gates through runGatedTool.
-func executeTool(ctx context.Context, tools []Tool, call ToolCall) (string, error) {
-	for _, t := range tools {
-		if t.Name != call.Function.Name {
-			continue
-		}
-		args, err := parseToolArgs(call.Function.Arguments)
-		if err != nil {
-			return "", err
-		}
-		return t.Execute(ctx, args)
-	}
-	return "", errors.New("unknown tool " + call.Function.Name)
 }
 
 // parseToolArgs cleans up a tool call's argument string and returns

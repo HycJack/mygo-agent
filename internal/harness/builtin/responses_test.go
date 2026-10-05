@@ -121,6 +121,45 @@ func TestStreamResponsesEvents(t *testing.T) {
 	}
 }
 
+// TestStreamResponsesArgumentsFromDeltasAlone: a server that never
+// sends output_item.done carries the arguments only in the deltas, and
+// those name their call by item_id — not by an item object.
+func TestStreamResponsesArgumentsFromDeltasAlone(t *testing.T) {
+	sse := "event: response.output_item.added\n" +
+		`data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_9","name":"bash","arguments":""}}` + "\n\n" +
+		"event: response.function_call_arguments.delta\n" +
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"{\"comm"}` + "\n\n" +
+		"event: response.function_call_arguments.delta\n" +
+		`data: {"type":"response.function_call_arguments.delta","item_id":"fc_1","delta":"and\":\"ls\"}"}` + "\n\n" +
+		"event: response.completed\n" +
+		`data: {"type":"response.completed","response":{"output":[]}}` + "\n\n"
+
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse)
+	}))
+	defer srv.Close()
+
+	res, err := streamChat(t.Context(), StreamConfig{
+		BaseURL: srv.URL, Wire: WireResponses, Model: "m",
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+	}, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(res.ToolCalls) != 1 {
+		t.Fatalf("tool calls %+v", res.ToolCalls)
+	}
+	call := res.ToolCalls[0]
+	if call.ID != "call_9" || call.Function.Name != "bash" {
+		t.Fatalf("call %+v", call)
+	}
+	var args map[string]any
+	if json.Unmarshal([]byte(call.Function.Arguments), &args) != nil || args["command"] != "ls" {
+		t.Fatalf("the deltas did not accumulate: %q", call.Function.Arguments)
+	}
+}
+
 func TestStreamResponsesFailed(t *testing.T) {
 	srv2 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		io.WriteString(w, "event: response.failed\n"+

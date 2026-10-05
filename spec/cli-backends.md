@@ -21,6 +21,13 @@ the same role the built-in agent's cards play.
 
 ## codex app-server protocol
 
+Custom endpoints ride `Turn.Endpoint` and spawn as a `model_providers.<id>`
+config override with the key via `MYGO_PROVIDER_<id>_API_KEY` (the id keeps
+its case; anything outside `[A-Za-z0-9]` hex-escapes, so distinct ids cannot
+collide). `wire_api` follows the provider's declared wire — empty means
+`"responses"`. A provider declaring `"chat"` fails before spawn: newer codex
+CLIs refuse `wire_api="chat"` outright (openai/codex discussion 7782).
+
 Spawn `codex app-server --stdio`; one fresh process per turn; JSON-RPC 2.0
 over NDJSON. Sequence: `initialize` (clientInfo, `capabilities.experimentalApi=true`)
 → `thread/start` or `thread/resume` (params below) → `turn/start`
@@ -104,7 +111,10 @@ one fresh process per turn; JSONL events on stdout.
   `role:"toolResult"`, `toolCallId`, `toolName`, `content`, `isError`;
   `auto_retry_start`; `agent_settled` — the turn is over.
 - **Settle**: break the read loop on `agent_settled` and reap the
-  process; the CLI may keep its streams open (the claude lesson).
+  process; the CLI may keep its streams open (the claude lesson). codex
+  app-server is a resident server: close stdin when the turn settles or
+  `Wait` blocks forever after a completed turn (the same lesson, second
+  sighting).
 - **Approvals**: pi executes its tools with its own permissions; the
   app's approval cards do not cover pi. Read-only mode therefore maps to
   a tool allowlist, the only lever pi exposes.
@@ -120,3 +130,17 @@ one fresh process per turn; JSONL events on stdout.
    timeout, and the no-"always allow" rule.
 4. The session id (`CodexID` / `ClaudeID`) is persisted before the turn's
    first output so a crash mid-turn still resumes.
+
+## Process reaping
+
+Every adapter that starts a CLI shares one guard, `cli.Reap`: close stdin
+(the thing that makes a resident CLI exit), wait a bounded grace, then a
+process-group SIGTERM and finally a leader kill so `Wait` always returns.
+The grace starts only after the CLI itself announced the turn was over, so
+it cannot cut short a turn that is still producing output, and a group
+teardown is reported as cleanup rather than as a failed turn. `WaitDelay`
+alone is not enough: it only engages once the context is already done, so a
+lingering CLI would hold the turn forever.
+
+An MCP server child is reaped too — nothing else waits on it, so without an
+explicit `Wait` every server a turn starts lingers as a <defunct> process.

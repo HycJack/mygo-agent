@@ -3,6 +3,7 @@ package app
 import (
 	"bytes"
 	"context"
+	"maps"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -30,13 +31,16 @@ var skippedDirs = map[string]bool{
 // Actions implementation, and the host-side data work (lazy dir listing
 // with its cache, git status, git diffs for the viewer).
 
-// workspaceViewModel snapshots the panel's render input. Expanded
-// aliases the host's dir map, so the view's toggles land in host state.
+// workspaceViewModel snapshots the panel's render input. Expanded is a
+// copy of the host's dir map: the view reads it and reports a toggle
+// through ToggleDir, so nothing it does writes host state (and the tree
+// only works because the host owns the map, not because the view could
+// reach it).
 func (a *app) workspaceViewModel() *uipkg.WorkspaceVM {
 	vm := &uipkg.WorkspaceVM{
 		Workdir:  a.workdir,
 		GitErr:   a.gitErr,
-		Expanded: a.dirs,
+		Expanded: maps.Clone(a.dirs),
 		Pal:      a.pal,
 	}
 	for _, ch := range a.gitFiles {
@@ -66,6 +70,16 @@ func (h workspaceActions) ListDir(dir string) []uipkg.FileNode {
 		out[i] = uipkg.FileNode{Name: n.Name, Path: n.Path, Dir: n.Dir}
 	}
 	return out
+}
+
+// ToggleDir opens or closes a directory of the tree. The listing itself
+// does not change with the disclosure, so the dir cache stands; the
+// next frame's snapshot carries the new state.
+func (h workspaceActions) ToggleDir(path string) {
+	if h.a.dirs == nil {
+		h.a.dirs = map[string]bool{}
+	}
+	h.a.dirs[path] = !h.a.dirs[path]
 }
 
 // renderWorkspace assembles the snapshot and renders the panel.

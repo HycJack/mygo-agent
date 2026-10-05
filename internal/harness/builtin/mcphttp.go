@@ -17,6 +17,7 @@ import (
 // with an optional Mcp-Session-Id from initialize. Responses may be a
 // single JSON document or an SSE stream; both are accepted.
 type httpMCP struct {
+	name    string
 	url     string
 	client  *http.Client
 	session string
@@ -25,8 +26,19 @@ type httpMCP struct {
 }
 
 // startHTTPMCP opens a transport and performs the initialize handshake.
-func startHTTPMCP(ctx context.Context, url string) (*httpMCP, error) {
-	h := &httpMCP{url: url, client: &http.Client{}}
+// The name is the configured server name, not something derived from the
+// URL: it is the prefix of every tool name, and a rule like
+// mcp_github_* has to be able to match. An unnamed entry falls back to
+// the URL so its tools stay distinguishable.
+func startHTTPMCP(ctx context.Context, name, url string) (*httpMCP, error) {
+	if name == "" {
+		name = url
+	}
+	// The client timeout is a backstop for a connection that never
+	// answers; the per-call context is the real bound.
+	h := &httpMCP{name: name, url: url, client: &http.Client{Timeout: 60 * time.Second}}
+	ctx, cancel := context.WithTimeout(ctx, 20*time.Second)
+	defer cancel()
 	if _, err := h.rpc(ctx, "initialize", map[string]any{
 		"protocolVersion": "2024-11-05",
 		"capabilities":    map[string]any{},
@@ -184,9 +196,13 @@ func (h *httpMCP) listTools(ctx context.Context) ([]Tool, error) {
 			schema = json.RawMessage(`{"type":"object"}`)
 		}
 		tools = append(tools, Tool{
-			Name:        mcpToolName(h.url, tool.Name),
+			Name:        mcpToolName(h.name, tool.Name),
 			Description: "MCP: " + tool.Description,
-			Parameters:  schema,
+			// Every MCP tool declares the one action the policy can
+			// reason about; without it the gate denies the call outright
+			// and no streamable-HTTP server is usable.
+			Actions:    []Action{ActionMCP},
+			Parameters: schema,
 			Execute: func(ctx context.Context, args string) (string, error) {
 				return h.callTool(ctx, tool.Name, args)
 			},
@@ -209,6 +225,9 @@ func (h *httpMCP) callTool(ctx context.Context, name, args string) (string, erro
 	res, err := h.rpc(ctx, "tools/call", params)
 	if err != nil {
 		return "", err
+	}
+	if len(res) == 0 {
+		return "", fmt.Errorf("mcp %s: the server accepted the call without answering it", h.name)
 	}
 	var out struct {
 		Content []struct {

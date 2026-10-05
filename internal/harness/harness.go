@@ -63,6 +63,7 @@ type Endpoint struct {
 	Name    string
 	BaseURL string
 	APIKey  string
+	Wire    string // "chat" or "responses"; empty means responses
 }
 
 // EventKinds are the values of Event.Kind.

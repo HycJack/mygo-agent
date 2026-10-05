@@ -83,8 +83,11 @@ func (h homeActions) Stop() { h.a.stop() }
 // SetDraft fills the composer (the suggestion chips): the bound
 // ViewModel immediately, the host mirror for the frame.
 func (h homeActions) SetDraft(s string) { h.a.setDraft(s) }
-func (h homeActions) SetMode(m int)     { h.a.mode = m; h.a.saveConfig() }
-func (h homeActions) SetEffort(e int)   { h.a.effort = e; h.a.saveConfig() }
+func (h homeActions) SetMode(m int)     { h.a.mode = clampMode(m); h.a.saveConfig() }
+func (h homeActions) SetEffort(e int) {
+	h.a.effort = clampInt(e, 0, 2)
+	h.a.saveConfig()
+}
 func (h homeActions) PickModel(pid, m string) {
 	h.a.providerID, h.a.model = pid, m
 	h.a.saveConfig()

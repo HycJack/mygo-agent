@@ -15,19 +15,20 @@ import (
 // provider: streaming replies, tool calls as cards, skills and MCP
 // tools, all in-process. Like every adapter it returns an error — nil
 // for a clean or stopped turn — and the host settles the reply.
-func (a *app) runBuiltin(ctx context.Context, th *Thread, turn harness.Turn, emit func(harness.Event)) error {
-	prompt, at := turn.Prompt, -1
-	for i := range th.Messages {
-		if th.Messages[i].Running {
-			at = i
-		}
-	}
-	if at < 0 {
-		at = len(th.Messages) - 1
-	}
+//
+// Everything it needs comes from the snapshot the harness captured on the
+// main thread, never from the live app: a turn must not change its
+// endpoint, model or tool set underneath the cards the user is deciding on.
+func (h builtinHarness) runBuiltin(ctx context.Context, emit func(harness.Event)) error {
+	a, th, turn := h.a, h.th, h.turn
+	// The message index and the seed history were captured on the main
+	// thread when the harness was built. Rescanning th.Messages here would
+	// be an unsynchronized read racing the main thread's own appends and
+	// block toggles — the same mistake LoadTranscript used to make.
+	prompt, at := turn.Prompt, h.at
 
-	p := a.provider()
-	if p == nil || p.BaseURL == "" || p.APIKey == "" {
+	p := h.provider
+	if p.BaseURL == "" || p.APIKey == "" {
 		return errors.New("The built-in agent needs a provider with a base URL and an API key. Open the model picker → Manage providers & models…, fill them in, then pick a model from that provider.")
 	}
 
@@ -40,7 +41,7 @@ func (a *app) runBuiltin(ctx context.Context, th *Thread, turn harness.Turn, emi
 		Sandbox:       turn.Sandbox,
 		ConfineWrites: turn.Mode != harness.ModeFull,
 	})
-	mcpClients := a.connectMCP(ctx)
+	mcpClients := a.connectMCP(ctx, h.mcpServers)
 	defer func() {
 		for _, c := range mcpClients {
 			c.Close()
@@ -60,18 +61,26 @@ func (a *app) runBuiltin(ctx context.Context, th *Thread, turn harness.Turn, emi
 	var pending strings.Builder
 	toolStarts := map[string]time.Time{}
 	done := make(chan struct{})
+	// The lock spans the update, not just the take. Two flushes can run
+	// concurrently — the ticker and the final one after close(done) — and
+	// if the lock were released after reading, the later taker could win
+	// the race to the main thread and the two chunks would be appended in
+	// the wrong order, scrambling the reply's text. update() only posts
+	// to the main queue (or takes app.mu headless) and never calls back
+	// into flush, so holding it here cannot deadlock.
 	flush := func() {
 		mu.Lock()
+		defer mu.Unlock()
 		s := pending.String()
 		pending.Reset()
-		mu.Unlock()
 		if s == "" {
 			return
 		}
+		// Through the shared projector, not a direct Text append: the prose
+		// has to land in the ordered block sequence, or a tool call that
+		// arrived mid-stream would render after the text it interrupted.
 		a.update(func() {
-			if m := reply(th, at); m != nil {
-				m.Text += s
-			}
+			a.projectEvent(th, at, "builtin", harness.Event{Kind: harness.EventText, TextDelta: s})
 		})
 	}
 	project := func(ev harness.Event) { a.applyEvent(th, at, "builtin", ev) }
@@ -105,7 +114,7 @@ func (a *app) runBuiltin(ctx context.Context, th *Thread, turn harness.Turn, emi
 		// denies what the user never answers, and the context it hands
 		// the host settles the card when it does (spec/approvals.md).
 		OnApproval:      turn.OnApproval,
-		ApprovalTimeout: a.approvalTimeout,
+		ApprovalTimeout: h.approvalLimit,
 		MaxTurns:        turn.MaxTurns,
 		MaxMessages:     turn.MaxTurns*6 + 12,
 		OnEvent: func(e harness.Event) {
@@ -114,9 +123,14 @@ func (a *app) runBuiltin(ctx context.Context, th *Thread, turn harness.Turn, emi
 				mu.Lock()
 				pending.WriteString(e.TextDelta)
 				mu.Unlock()
-			case harness.EventToolStart, harness.EventToolEnd, harness.EventError, harness.EventNote:
+			case harness.EventToolStart, harness.EventToolEnd, harness.EventError,
+				harness.EventNote, harness.EventReasoning:
 				// Tool cards and reports go through the shared projector;
 				// the text stays on its 40ms batching ticker above.
+				// Reasoning belongs in this filter too: it was missing
+				// from it entirely, so the built-in agent's thinking was
+				// dropped on the floor while every other backend's
+				// reached the transcript.
 				flush()
 				if e.Kind == harness.EventToolStart {
 					toolStarts[e.ToolCall.ID] = time.Now()
@@ -145,7 +159,7 @@ func (a *app) runBuiltin(ctx context.Context, th *Thread, turn harness.Turn, emi
 	// The transcript lives behind the Memory protocol
 	// (spec/architecture.md): load it, seed it from the thread's visible
 	// messages on the first turn, append this turn's prompt.
-	history := a.transcriptFor(turn, th, at, prompt)
+	history := h.transcriptFor(prompt)
 	logAt := len(history)
 	a.update(func() {
 		if m := reply(th, at); m != nil {
@@ -166,11 +180,11 @@ func (a *app) runBuiltin(ctx context.Context, th *Thread, turn harness.Turn, emi
 	return nil
 }
 
-// connectMCP starts every configured server, skipping the ones that
+// connectMCP starts every snapshotted server, skipping the ones that
 // fail (they would only produce tool errors).
-func (a *app) connectMCP(ctx context.Context) []*builtin.ServerClient {
+func (a *app) connectMCP(ctx context.Context, servers []builtin.MCPServer) []*builtin.ServerClient {
 	var clients []*builtin.ServerClient
-	for _, s := range a.effectiveMCPServers() {
+	for _, s := range servers {
 		if c, err := builtin.StartServer(ctx, s); err == nil {
 			clients = append(clients, c)
 		}
@@ -209,17 +223,16 @@ func parseToolDiff(out string) []DiffLine {
 // seedChatLog builds a fresh transcript from the thread's visible
 // messages plus the new prompt: system, prior user/assistant texts,
 // then the prompt. Tool round-trips from earlier app sessions are not
-// carried over.
-func (a *app) seedChatLog(th *Thread, at int, prompt string) []harness.ChatMessage {
+// carried over. The history it walks is the copy taken on the main thread
+// at construction, never the live thread.
+func (h builtinHarness) seedChatLog(prompt string) []harness.ChatMessage {
+	prior := h.priorMessages
 	msgs := []harness.ChatMessage{{
 		Role: "system",
-		Content: builtinSystemPrompt(a.workdir, builtin.DiscoverSkills(a.workdir)) +
+		Content: builtinSystemPrompt(h.turn.Workdir, builtin.DiscoverSkills(h.turn.Workdir)) +
 			"\n\nAnswer in the user's language. When you have the result, summarise what you did and stop; do not call tools without a reason.",
 	}}
-	for i, m := range th.Messages {
-		if i >= at-1 {
-			break
-		}
+	for _, m := range prior {
 		switch m.Role {
 		case "user":
 			msgs = append(msgs, harness.ChatMessage{Role: "user", Content: m.Text})
@@ -238,14 +251,15 @@ func (a *app) seedChatLog(th *Thread, at int, prompt string) []harness.ChatMessa
 // transcriptFor resolves the turn's starting transcript through the
 // Memory protocol, seeding from the thread's visible messages when the
 // store is empty.
-func (a *app) transcriptFor(turn harness.Turn, th *Thread, at int, prompt string) []harness.ChatMessage {
+func (h builtinHarness) transcriptFor(prompt string) []harness.ChatMessage {
 	history := []harness.ChatMessage(nil)
-	if turn.Memory != nil {
-		history = turn.Memory.LoadTranscript(turn.MemoryKey)
+	if h.turn.Memory != nil {
+		history = h.turn.Memory.LoadTranscript(h.turn.MemoryKey)
 	}
-	if history == nil {
-		history = a.seedChatLog(th, at, prompt)
-	} else if prompt != "" {
+	if len(history) == 0 {
+		return h.seedChatLog(prompt)
+	}
+	if prompt != "" {
 		history = append(history, harness.ChatMessage{Role: "user", Content: prompt})
 	}
 	return history

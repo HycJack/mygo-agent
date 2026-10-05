@@ -143,6 +143,11 @@ type app struct {
 	vm        *uipkg.ViewModel
 	sidebarVM *uipkg.SidebarVM
 
+	// transcriptCache holds each thread's last transcript snapshot, keyed
+	// by thread id and validated by Thread.viewStamp, so an unchanged
+	// frame does not re-copy every message and block.
+	transcriptCache map[string]transcriptEntry
+
 	// uiCtx is the frame's context, stashed at the top of view() so
 	// deferred actions (undo toasts) can reach it.
 	uiCtx *ui.Context
@@ -277,7 +282,9 @@ func (a *app) saveConfig() {
 	})
 	if err == nil {
 		a.configErr = ""
+		return
 	}
+	a.configErr = "settings could not be saved: " + err.Error()
 }
 
 // toAgentServers / fromAgentServers convert between the config type
@@ -507,6 +514,26 @@ func uid() string {
 	return hex.EncodeToString(b)
 }
 
+// clampInt bounds n to [lo, hi]. The mode and effort selectors are plain
+// ints that reach the adapters, which index arrays and flag lists with
+// them; nothing in the repository recovers from a panic, so an
+// out-of-range value from the UI or a hand-edited file has to be made
+// harmless here rather than trusted.
+func clampInt(n, lo, hi int) int { return min(max(n, lo), hi) }
+
+// clampMode bounds the approval mode to the three the policy knows. A
+// value outside the range is not clamped to the nearest end: clamping
+// upward would turn a corrupt or hand-edited 9 into FULL ACCESS, and
+// clamping downward would silently demote a legitimate "agent". Neither
+// end is a safe guess, so an unknown mode fails to the most restrictive
+// one (permissions.md: unknown everything fails closed).
+func clampMode(m int) int {
+	if m < int(harness.ModeReadOnly) || m > int(harness.ModeFull) {
+		return int(harness.ModeReadOnly)
+	}
+	return m
+}
+
 func (a *app) byID(id string) *Thread {
 	for _, t := range a.threads {
 		if t.ID == id {
@@ -581,8 +608,18 @@ func (a *app) deleteThread(c *ui.Context, id string) {
 		}
 	}
 	a.focusComposer = true
+	// The cached snapshot holds every message and block of the thread;
+	// keeping it after the task is gone leaks the whole transcript for
+	// the life of the process.
+	delete(a.transcriptCache, removed.ID)
 	a.removeThreadFile(removed)
 	removedAt := at
+	// The undo toast is a UI affordance, not part of the deletion: the
+	// task is already gone from state and disk whether or not a surface is
+	// attached to offer a way back.
+	if c == nil {
+		return
+	}
 	c.ToastAction("Task deleted", "Undo", func() {
 		if a.byID(removed.ID) != nil {
 			return
@@ -607,8 +644,18 @@ func truncTitle(s string, n int) string {
 	return string(r[:n-1]) + "…"
 }
 
-// changedFiles counts the file patches across a thread's messages.
+// changedFiles counts the file patches across a thread's messages. The
+// count is cached on the thread: the header reads it every frame, and a
+// full scan of every block of every message is the wrong price for a
+// label. Projector appends keep it current; a message rewrite marks it
+// stale and the next read recomputes.
 func changedFiles(th *Thread) int {
+	if th == nil {
+		return 0
+	}
+	if th.diffsKnown {
+		return th.diffCount
+	}
 	n := 0
 	for _, m := range th.Messages {
 		for _, b := range m.Blocks {
@@ -617,5 +664,20 @@ func changedFiles(th *Thread) int {
 			}
 		}
 	}
+	th.diffCount, th.diffsKnown = n, true
 	return n
 }
+
+// noteDiffBlock records that a diff card was appended, keeping the cached
+// changed-file count current without a rescan.
+func (th *Thread) noteDiffBlock() {
+	// On a thread whose count was never established, stay unknown: the
+	// next read scans and gets the right answer, where incrementing from
+	// an unestablished zero would bake the drift in.
+	if th.diffsKnown {
+		th.diffCount++
+	}
+}
+
+// invalidateDiffCount marks the cache for recomputation after a rewrite.
+func (th *Thread) invalidateDiffCount() { th.diffsKnown = false }

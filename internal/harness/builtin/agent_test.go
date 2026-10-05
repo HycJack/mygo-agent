@@ -5,6 +5,7 @@ import (
 
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -116,20 +117,25 @@ func TestSkillParseAndDiscover(t *testing.T) {
 	}
 }
 
-func TestExecuteToolUnknownAndBadArgs(t *testing.T) {
-	tools := Tools(".", nil)
-	if _, err := executeTool(context.Background(), tools, ToolCall{Function: struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	}{Name: "nope"}}); err == nil {
-		t.Fatal("unknown tool must fail")
+func TestGatedToolUnknownAndBadArgs(t *testing.T) {
+	// The gated path is the only path: a call that does not resolve to a
+	// tool, or whose arguments are not JSON, never reaches an Execute.
+	cfg := LoopConfig{Tools: Tools(".", nil), Policy: Policy{Mode: ModeFull}}
+	_, err := runGatedTool(t.Context(), cfg, toolCallNamed("nope", ""))
+	if err == nil || !strings.Contains(err.Error(), "unknown tool") {
+		t.Fatalf("unknown tool must fail: %v", err)
 	}
-	if _, err := executeTool(context.Background(), tools, ToolCall{Function: struct {
-		Name      string `json:"name"`
-		Arguments string `json:"arguments"`
-	}{Name: "bash", Arguments: "{not json"}}); err == nil {
+	if _, err := runGatedTool(t.Context(), cfg, toolCallNamed("bash", "{not json")); err == nil {
 		t.Fatal("invalid arguments must fail")
 	}
+}
+
+// toolCallNamed builds one call for a tool name and argument string.
+func toolCallNamed(name, args string) ToolCall {
+	var call ToolCall
+	call.Function.Name = name
+	call.Function.Arguments = args
+	return call
 }
 
 func TestTrimOutput(t *testing.T) {
@@ -171,22 +177,42 @@ func TestParseToolArgsRepairsWeakModels(t *testing.T) {
 	}
 }
 
-func TestExecuteToolRepairsArguments(t *testing.T) {
+func TestRunGatedToolRepairsArguments(t *testing.T) {
 	ran := ""
 	tools := []Tool{{
 		Name:       "bash",
+		Actions:    []Action{ActionFileRead}, // allowed in every mode
 		Parameters: json.RawMessage(`{"type":"object"}`),
 		Execute: func(ctx context.Context, args string) (string, error) {
 			ran = args
 			return "ok", nil
 		},
 	}}
-	var call ToolCall
-	call.Function.Name = "bash"
-	call.Function.Arguments = "```json\n{\"command\":\"pwd\"}\n```"
-	out, err := executeTool(t.Context(), tools, call)
+	out, err := runGatedTool(t.Context(), LoopConfig{Tools: tools, Policy: Policy{Mode: ModeAgent}},
+		toolCallNamed("bash", "```json\n{\"command\":\"pwd\"}\n```"))
 	if err != nil || out != "ok" || ran != `{"command":"pwd"}` {
 		t.Fatalf("execute: %q %v %q", out, err, ran)
+	}
+}
+
+// TestRunGatedToolDeniedByPolicy asserts the gate really is on the path
+// this test drives: a denied call never reaches the tool.
+func TestRunGatedToolDeniedByPolicy(t *testing.T) {
+	ran := false
+	tools := []Tool{{
+		Name:       "write",
+		Actions:    []Action{ActionFileWrite},
+		Parameters: json.RawMessage(`{"type":"object"}`),
+		Execute: func(ctx context.Context, args string) (string, error) {
+			ran = true
+			return "ok", nil
+		},
+	}}
+	_, err := runGatedTool(t.Context(), LoopConfig{Tools: tools, Policy: Policy{Mode: ModeReadOnly}},
+		toolCallNamed("write", "{}"))
+	var deny *DenialError
+	if !errors.As(err, &deny) || ran {
+		t.Fatalf("read-only mode must deny the call before running it: %v (ran=%v)", err, ran)
 	}
 }
 

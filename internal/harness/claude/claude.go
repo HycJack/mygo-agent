@@ -14,13 +14,19 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"time"
 
 	"mygo-agent/internal/harness"
 	"mygo-agent/internal/harness/cli"
 )
 
 // Harness runs one turn against the claude binary at Bin.
-type Harness struct{ Bin string }
+type Harness struct {
+	Bin string
+	// ApprovalTimeout bounds each approval wait; zero means the shared
+	// harness.DefaultApprovalTimeout. Tests shorten it.
+	ApprovalTimeout time.Duration
+}
 
 // New builds a claude harness for the binary at bin.
 func New(bin string) *Harness { return &Harness{Bin: bin} }
@@ -83,7 +89,7 @@ func (h *Harness) Run(ctx context.Context, turn harness.Turn, emit func(harness.
 		e = func(harness.Event) {}
 	}
 	r := &run{turn: turn, ctx: ctx, stdin: stdin, mode: turn.Mode, emit: e,
-		cards: map[string]int{}}
+		approvalTimeout: h.ApprovalTimeout, cards: map[string]int{}}
 	sc := bufio.NewScanner(stdout)
 	sc.Buffer(make([]byte, 64*1024), 8<<20)
 	for sc.Scan() {
@@ -96,13 +102,14 @@ func (h *Harness) Run(ctx context.Context, turn harness.Turn, emit func(harness.
 			break
 		}
 	}
-	stdin.Close()
-	waitErr := cmd.Wait()
+	waitErr, killed := cli.Reap(cmd, stdin)
 
 	if ctx.Err() != nil {
 		return nil // stopped by the user; keep whatever arrived
 	}
-	if r.sawEvent && waitErr == nil {
+	if r.sawEvent && (waitErr == nil || killed) {
+		// A CLI we had to stop after it already settled is not a failed
+		// turn: the events it sent stand.
 		return nil
 	}
 	tail := strings.TrimSpace(stderr.String())
@@ -126,7 +133,9 @@ type run struct {
 	sawEvent  bool
 	sawResult bool
 
-	pending strings.Builder
+	// approvalTimeout bounds one approval wait; zero uses the shared
+	// default (harness.ApprovalContext).
+	approvalTimeout time.Duration
 
 	// wrote records control responses when there is no CLI to write to
 	// (unit tests); production always has stdin.
@@ -172,11 +181,21 @@ func (r *run) controlRequest(line string) {
 	call.Function.Arguments = string(req.Request.Input)
 	decision := harness.ApprovalDecision{Reason: "no approval handler is configured"}
 	if r.turn.OnApproval != nil {
-		decision = r.turn.OnApproval(r.ctx, harness.ApprovalRequest{
+		// Every approval wait is bounded (spec/approvals.md): a card on a
+		// live run must never sit unanswered. Expiry settles the call as
+		// a denial inside the stream — not a failed turn — and the reason
+		// tells the model (and the Host's card) why.
+		actx, cancel := harness.ApprovalContext(r.ctx, r.approvalTimeout)
+		decision = r.turn.OnApproval(actx, harness.ApprovalRequest{
 			Call:    call,
 			Summary: harness.ApprovalSummary(call),
 			Reason:  "claude asks to use this tool",
 		})
+		if actx.Err() != nil {
+			// A decision that arrives after the deadline is not a decision.
+			decision = harness.ApprovalDecision{Reason: harness.ApprovalReason(actx)}
+		}
+		cancel()
 	}
 	if decision.Approved {
 		var input any
@@ -216,18 +235,6 @@ func (r *run) writeControl(response map[string]any) {
 	}
 	line, _ := json.Marshal(map[string]any{"type": "control_response", "response": response})
 	_, _ = r.stdin.Write(append(line, '\n'))
-}
-
-// flush pushes batched text deltas onto the thread.
-func (r *run) flush() {
-	if r.pending.Len() == 0 {
-		return
-	}
-	s := r.pending.String()
-	r.pending.Reset()
-	if s != "" {
-		r.send(harness.Event{Kind: harness.EventText, TextDelta: s})
-	}
 }
 
 // handle applies one stream-json line.
@@ -278,10 +285,8 @@ func (r *run) handle(line string) {
 				if blk.Text == "" {
 					continue
 				}
-				r.flush()
 				r.send(harness.Event{Kind: harness.EventText, TextDelta: blk.Text})
 			case "tool_use":
-				r.flush()
 				r.toolUse(blk.ID, blk.Name, blk.RawInput)
 			}
 		}
@@ -297,7 +302,6 @@ func (r *run) handle(line string) {
 		}
 
 	case "result":
-		r.flush()
 		verb := "Done"
 		if ev.IsError || ev.Subtype != "success" {
 			verb = "Stopped"

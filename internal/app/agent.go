@@ -52,6 +52,7 @@ func (a *app) regenerate(th *Thread) {
 	if a.backend == "builtin" {
 		th.ChatLog = th.ChatLog[:min(int(logAt), len(th.ChatLog))]
 	}
+	th.invalidateDiffCount() // the messages were rewound
 	now := time.Now()
 	th.Messages = append(th.Messages, Message{ID: uid(), Role: "assistant", Running: true, At: now, LogAt: logAt})
 	a.running = true

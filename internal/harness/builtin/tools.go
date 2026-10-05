@@ -3,6 +3,7 @@ package builtin
 import (
 	"mygo-agent/internal/harness/cli"
 
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
@@ -62,6 +63,9 @@ func bashTool(workdir string, o ToolOptions) Tool {
 			}
 			ctx, cancel := context.WithTimeout(ctx, timeout)
 			defer cancel()
+			if err := ctx.Err(); err != nil {
+				return "", cancelled("bash")
+			}
 			shell, flag := "bash", "-c"
 			if runtime.GOOS == "windows" {
 				shell, flag = "powershell", "-NoProfile -Command"
@@ -74,8 +78,13 @@ func bashTool(workdir string, o ToolOptions) Tool {
 			if err != nil {
 				return "", err
 			}
-			out, err := cmd.CombinedOutput()
-			res := cli.TrimOutput(string(out), 32<<10)
+			// The cap applies while the child writes, not after it exits:
+			// CombinedOutput would hold a runaway command's whole output
+			// in memory first.
+			out := &capBuffer{max: maxCommandOutput}
+			cmd.Stdout, cmd.Stderr = out, out
+			err = cmd.Run()
+			res := cli.TrimOutput(out.String(), 32<<10)
 			if err != nil {
 				// Killed or timed out, the outcome is unknown
 				// (spec/sandbox.md): the result says so.
@@ -112,15 +121,36 @@ func readFileTool(workdir string) Tool {
 			if err := json.Unmarshal([]byte(args), &in); err != nil {
 				return "", err
 			}
+			if err := ctx.Err(); err != nil {
+				return "", cancelled("read_file")
+			}
 			if in.Limit <= 0 {
 				in.Limit = 400
 			}
-			data, err := os.ReadFile(safeJoin(workdir, in.Path))
+			full := safeJoin(workdir, in.Path)
+			if refusesSensitive(full) {
+				return "", errSensitivePath
+			}
+			// Refuse a whole-file slurp, but honour the range the caller
+			// actually asked for. Refusing on total size while the remedy
+			// in the message is "read it in ranges" made every range read
+			// of a large lockfile fail too, so the file was permanently
+			// unreadable. A ranged read streams, so the file's total size
+			// is irrelevant — readRange bounds what it accumulates.
+			st, err := os.Stat(full)
+			if err != nil {
+				return "", err
+			}
+			if st.Size() > maxReadFileBytes && in.Offset <= 1 {
+				return "", fmt.Errorf("%s is %d bytes, over the %d-byte read limit; read a range of it with offset and limit",
+					in.Path, st.Size(), maxReadFileBytes)
+			}
+			data, err := readRange(full, in.Offset, in.Limit)
 			if err != nil {
 				return "", err
 			}
 			lines := strings.Split(strings.TrimRight(string(data), "\n"), "\n")
-			from, to := in.Offset, in.Offset+in.Limit
+			from, to := 1, len(lines)
 			if from < 1 {
 				from = 1
 			}
@@ -137,6 +167,50 @@ func readFileTool(workdir string) Tool {
 			return b.String(), nil
 		},
 	}
+}
+
+// readRange streams the requested 1-based line range out of a file and
+// returns just those lines. It never holds the whole file, which is the
+// point: a ranged read of a huge lockfile or bundle has to work, and
+// loading the file only to throw most of it away is what the size cap
+// forbids. What it accumulates is bounded by maxRangeReadBytes, so a huge
+// line count in the range cannot size the heap either.
+func readRange(path string, offset, limit int) (string, error) {
+	f, err := os.Open(path)
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	// One line may be up to the range cap; anything longer is a binary or
+	// a minified bundle, and refusing it beats growing the heap.
+	sc.Buffer(make([]byte, 64*1024), maxRangeReadBytes)
+	if offset < 1 {
+		offset = 1
+	}
+	var b strings.Builder
+	line, held := 0, 0
+	for sc.Scan() {
+		line++
+		if line < offset {
+			continue
+		}
+		if limit > 0 && line >= offset+limit {
+			break
+		}
+		// sc.Bytes() is valid until the next Scan, so measure before writing.
+		line := sc.Bytes()
+		if held+len(line) > maxRangeReadBytes {
+			return "", fmt.Errorf("that range is over the %d-byte read limit; narrow it with offset and limit", maxRangeReadBytes)
+		}
+		held += len(line)
+		b.Write(line)
+		b.WriteByte('\n')
+	}
+	if err := sc.Err(); err != nil {
+		return "", err
+	}
+	return b.String(), nil
 }
 
 func editFileTool(workdir string, o ToolOptions) Tool {
@@ -156,8 +230,14 @@ func editFileTool(workdir string, o ToolOptions) Tool {
 			if err := json.Unmarshal([]byte(args), &in); err != nil {
 				return "", err
 			}
+			if err := ctx.Err(); err != nil {
+				return "", cancelled("edit_file")
+			}
 			full := safeJoin(workdir, in.Path)
-			if o.ConfineWrites && !underDir(workdir, full) {
+			// Lexical containment is not enough: a symlink inside the
+			// workdir pointing out of it would walk straight past the
+			// gate, so the resolved paths are compared too.
+			if o.ConfineWrites && !(underDir(workdir, full) && underDir(canonical(workdir), canonical(full))) {
 				return "", fmt.Errorf("in the current mode edit_file only writes inside the project directory: %s is outside", in.Path)
 			}
 			data, err := os.ReadFile(full)
@@ -203,7 +283,14 @@ func listFilesTool(workdir string) Tool {
 				Path string `json:"path"`
 			}
 			_ = json.Unmarshal([]byte(args), &in)
-			entries, err := os.ReadDir(safeJoin(workdir, in.Path))
+			if err := ctx.Err(); err != nil {
+				return "", cancelled("list_files")
+			}
+			dir := safeJoin(workdir, in.Path)
+			if refusesSensitive(dir) {
+				return "", errSensitivePath
+			}
+			entries, err := os.ReadDir(dir)
 			if err != nil {
 				return "", err
 			}
@@ -212,6 +299,12 @@ func listFilesTool(workdir string) Tool {
 				n := e.Name()
 				if e.IsDir() {
 					n += "/"
+					// A listing of a credential store is a map of it;
+					// skip the entry rather than the whole listing so the
+					// rest of the directory still renders.
+					if refusesSensitive(filepath.Join(dir, n)) {
+						continue
+					}
 				}
 				names = append(names, n)
 			}
@@ -244,10 +337,39 @@ func grepTool(workdir string) Tool {
 				return "", err
 			}
 			root := safeJoin(workdir, in.Path)
+			if refusesSensitive(root) {
+				return "", errSensitivePath
+			}
 			var out []string
 			skips := map[string]bool{".git": true, "node_modules": true, "target": true, "dist": true}
 			_ = filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
-				if err != nil || len(out) >= 200 {
+				// The walk is not interruptible from outside, so the stop
+				// button is honoured here between entries.
+				if ctx.Err() != nil {
+					return filepath.SkipAll
+				}
+				// err and d must be handled before d is touched: WalkDir
+				// calls back with a NIL DirEntry when the root itself
+				// cannot be lstat'ed, so a model-authored path that does
+				// not exist would dereference nil and take the app down.
+				if err != nil {
+					return filepath.SkipAll
+				}
+				if d == nil {
+					return filepath.SkipAll
+				}
+				// Every entry is checked, not just the root: a walk rooted
+				// outside the project crosses credential stores on the way,
+				// and a FILE symlink into one is not a directory, so
+				// gating on d.IsDir() alone would let os.ReadFile below
+				// follow it straight into the store.
+				if refusesSensitive(path) {
+					if d.IsDir() {
+						return filepath.SkipDir
+					}
+					return nil
+				}
+				if len(out) >= 200 {
 					return filepath.SkipAll
 				}
 				if d.IsDir() {
@@ -274,6 +396,9 @@ func grepTool(workdir string) Tool {
 				}
 				return nil
 			})
+			if err := ctx.Err(); err != nil {
+				return "", cancelled("grep")
+			}
 			if len(out) == 0 {
 				return "(no matches)", nil
 			}
@@ -294,6 +419,9 @@ func readSkillTool(workdir string, skills *SkillSet) Tool {
 			}
 			if err := json.Unmarshal([]byte(args), &in); err != nil {
 				return "", err
+			}
+			if err := ctx.Err(); err != nil {
+				return "", cancelled("read_skill")
 			}
 			if skills == nil {
 				return "", fmt.Errorf("no skills are installed")
@@ -326,6 +454,72 @@ func safeJoin(root, path string) string {
 	return filepath.Join(root, filepath.Clean("/"+path))
 }
 
+// sensitivePaths are the credential stores the file tools refuse, the
+// same list the sandbox masks for a shell command
+// (internal/providers/sandbox). Without it here the shell boundary was
+// the only thing standing between the model and `~/.aws/credentials`:
+// `file.read` is allow in every mode, an absolute path passes straight
+// through safeJoin, and the content leaves the machine in the next
+// request. A deny list on one path and not the other is a hole, not a
+// policy.
+//
+// Both the literal and the symlink-resolved form of each store are kept.
+// Resolution is best-effort — a path that does not exist yet cannot be
+// resolved — and a home directory reached through a symlink would
+// otherwise make every comparison miss.
+var sensitivePaths = func() [][2]string {
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		return nil
+	}
+	var out [][2]string
+	for _, sub := range []string{".ssh", ".aws", ".gnupg", ".kube", ".docker", ".config/gh", ".netrc"} {
+		raw := filepath.Clean(filepath.Join(home, sub))
+		out = append(out, [2]string{raw, canonical(raw)})
+	}
+	return out
+}()
+
+// errSensitivePath is the settled denial a credential read gets. It is a
+// normal tool error the model can read and react to, not a crash.
+var errSensitivePath = errors.New("refused: that path is a credential store (ssh keys, cloud credentials, tokens); the sandbox boundary hides it from shell commands too, and the app does not read it on the model's behalf")
+
+// refusesSensitive reports whether path is inside a credential store. A
+// symlink or a `..` segment must not be a way around it, so both forms
+// of the candidate are compared against both forms of every store.
+//
+// The comparison also folds case, because the default volume on macOS and
+// Windows is case-insensitive: a purely textual check lets
+// `~/.SSH/id_rsa` through a list that holds `~/.ssh`, and the read then
+// succeeds at the filesystem level. Folding on a case-sensitive volume
+// costs nothing — it can only refuse a path that a case-sensitive
+// filesystem would have refused anyway.
+func refusesSensitive(path string) bool {
+	if path == "" || len(sensitivePaths) == 0 {
+		return false
+	}
+	forms := [2]string{pathKey(filepath.Clean(path)), pathKey(canonical(path))}
+	for _, store := range sensitivePaths {
+		for _, s := range store {
+			if s == "" {
+				continue
+			}
+			key := pathKey(s)
+			for _, f := range forms {
+				if f == key || underDir(key, f) {
+					return true
+				}
+			}
+		}
+	}
+	return false
+}
+
+// pathKey normalizes a path for comparison by folding case, so the same
+// location compares equal however it was spelled. Separators are left
+// alone: underDir goes through filepath.Rel, which wants the native form.
+func pathKey(p string) string { return strings.ToLower(p) }
+
 // underDir reports whether path is root itself or inside it.
 func underDir(root, path string) bool {
 	rel, err := filepath.Rel(root, path)
@@ -335,14 +529,55 @@ func underDir(root, path string) bool {
 	return rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
+// Read caps. maxCommandOutput is the ceiling on what one shell command
+// may hold in memory; it sits well above the trim the model sees, so
+// TrimOutput's "first N" marker still describes what was dropped.
+const (
+	maxCommandOutput = 1 << 20
+	maxReadFileBytes = 2 << 20
+	// maxRangeReadBytes bounds a single line while streaming a range, and
+	// the longest line a ranged read will accept at all.
+	maxRangeReadBytes = 2 << 20
+)
+
+// capBuffer keeps the first max bytes a command writes and drops the
+// rest, so a runaway command cannot size the heap. It is safe for the
+// merged stdout and stderr of one exec.Cmd: os/exec shares a single pipe
+// when the two writers are the same value, so one goroutine writes here.
+type capBuffer struct {
+	buf bytes.Buffer
+	max int
+}
+
+// Write accepts every byte the child offers and retains only the first
+// max: a command that would fill memory is slowed, not failed.
+func (c *capBuffer) Write(p []byte) (int, error) {
+	if room := c.max - c.buf.Len(); room > 0 {
+		c.buf.Write(p[:min(room, len(p))])
+	}
+	return len(p), nil
+}
+
+func (c *capBuffer) String() string { return c.buf.String() }
+
+// cancelled is what the walk tools report when a stop arrives: the tool
+// name says which call gave up, which the bare context error does not.
+func cancelled(tool string) error {
+	return fmt.Errorf("%s was cancelled", tool)
+}
+
 // shellCommand builds the command for one shell tool invocation. Without
 // a Sandbox (full access) it is a plain child process; with one, the
 // scratch directory is created here — the provider owns the boundary,
 // the harness owns the child's environment and the cleanup order.
+// Either way the child leads its own process group: a stop or a timeout
+// kills the whole tree, and WaitDelay bounds the output pipes a
+// surviving grandchild would otherwise hold open forever.
 func shellCommand(ctx context.Context, o ToolOptions, workdir, name string, arg ...string) (*exec.Cmd, func(), error) {
 	if o.Sandbox == nil {
 		cmd := exec.CommandContext(ctx, name, arg...)
 		cmd.Dir = workdir
+		procGroupAttr(cmd)
 		return cmd, nil, nil
 	}
 	scratch, err := os.MkdirTemp("", "mygo-sandbox-")
@@ -368,6 +603,7 @@ func shellCommand(ctx context.Context, o ToolOptions, workdir, name string, arg 
 		cleanup = func() { wrapCleanup(); inner() }
 	}
 	cmd.Dir = workdir
+	procGroupAttr(cmd)
 	// The child sees a minimal environment pointing at the boundary's
 	// writable places, so caches and temp files land inside the grants.
 	cmd.Env = []string{

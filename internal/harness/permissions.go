@@ -183,21 +183,25 @@ func ApprovalSummary(call ToolCall) string {
 		}
 		return ""
 	}
+	// Redact before truncating: a cut can otherwise hide the tail of a
+	// secret behind the ellipsis, and a card is persisted into the
+	// thread file, not just drawn.
+	red := func(s string, n int) string { return cli.Trunc(cli.Redact(s), n) }
 	name := call.Function.Name
 	switch {
 	case name == "bash":
-		return "$ " + cli.Trunc(strings.Join(strings.Fields(get("command")), " "), 160)
+		return "$ " + red(strings.Join(strings.Fields(get("command")), " "), 160)
 	case get("path") != "":
-		return name + " " + cli.Trunc(get("path"), 160)
+		return name + " " + red(get("path"), 160)
 	case get("pattern") != "":
-		return name + " " + cli.Trunc(get("pattern"), 120)
+		return name + " " + red(get("pattern"), 120)
 	case get("name") != "":
-		return name + " " + cli.Trunc(get("name"), 120)
+		return name + " " + red(get("name"), 120)
 	default:
 		if _, ok := strings.CutPrefix(name, "mcp_"); ok {
 			// MCP arguments are free-form: a bounded, flattened view so
 			// the ask is not a blind yes (spec/approvals.md).
-			if args := cli.Trunc(strings.Join(strings.Fields(call.Function.Arguments), " "), 160); args != "" {
+			if args := red(strings.Join(strings.Fields(call.Function.Arguments), " "), 160); args != "" {
 				return name + " " + args
 			}
 		}
