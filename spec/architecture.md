@@ -4,8 +4,8 @@ The app is four layers joined by protocols, in the shape of agent-foundation
 (a13n): a Harness runs turns, Providers supply isolation and memory, the Host
 owns state and policy, and the UI renders host state. Every boundary is one
 interface in one file with one owning spec section. The harness list is the
-replaceable part: builtin, codex, claude and demo differ only in their
-adapter; the Host never branches on a harness's internals.
+replaceable part: builtin, codex, claude and pi differ only in
+their adapter; the Host never branches on a harness's internals.
 
 ```
 ┌────────────────────────────────────────────────────────────┐
@@ -38,21 +38,35 @@ adapter; the Host never branches on a harness's internals.
   `internal/providers`. The harness owns the loop, the tool set, the
   permission gate, the approval wait and the stream wire clients; it knows
   nothing about threads, windows or files-on-disk beyond its workdir.
+  The root package is the protocol and the shared value types only; the
+  built-in agent (loop, tools, skills, MCP) lives in
+  `internal/harness/builtin`, and the CLI adapters in their own
+  subpackages — `internal/harness/claude` (stream-json control),
+  `internal/harness/codex` (app-server JSON-RPC), `internal/harness/pi`
+  (JSON mode) — plus `internal/harness/cli` for the pieces they share
+  (process-group kill guard, output/argument helpers). An
+  adapter implements `Harness` and **returns** its failure: it streams
+  events and never settles threads itself — the Host's dispatch owns the
+  run's context and calls finish when Run returns. Approvals reach an
+  adapter through `Turn.OnApproval` (the spec-promised callback on the
+  Turn); codex's custom endpoint rides `Turn.Endpoint`. A rule break is
+  a spec break; `scripts/check-deps.sh` checks the subpackages too.
 - `internal/providers/*` may import `internal/harness` (for the interface
   and value types) and nothing else inside the repo.
 - `internal/app` (Host + UI) may import everything; it is the assembly end.
 - `internal/ui` holds the shared view code: ViewModels the host fills,
   the Actions interface the views call back through, the palette/theme,
   the icon set, the markdown renderer (with its incremental MdCache) and
-  the diff-line renderer. It imports mygo's toolkit and
-  `internal/harness` value types — never `internal/app` or providers.
-  Migrated: Home, Composer, Sidebar (with the GroupThreads/RelTime pure
-  helpers), Workspace, Markdown, DiffLineRow. The thread's block cards
-  and the viewer pane still render inline in the host — their state
-  (Block, viewerState) changes mid-turn and mid-load; they migrate when
-  a second UI surface needs them, over the same ViewModel pattern.
-- `internal/components` stays UI-toolkit-level: it imports no internal
-  package.
+  the diff-line renderer. It imports mygo's toolkit,
+  `internal/harness` value types — never
+  `internal/app` or providers. Migrated: Home, Composer, Sidebar (with
+  the GroupThreads/RelTime pure helpers), Workspace, Markdown,
+  DiffLineRow, the thread transcript with its block cards and approval
+  card (Transcript), the file viewer (Viewer), the manage-providers
+  dialog (Settings), and the window chrome (Header, RenameDialog). The
+  host assembles the frame around them: shortcuts, panels, terminal dock,
+  and one bridge per surface that fills the ViewModel and syncs the
+  bindings (drafts, menus, toggles) back after each frame.
 - `scripts/check-deps.sh` enforces the arrows and runs in CI. A rule break is
   a spec break: change the spec in the same commit or fix the code.
 
@@ -100,11 +114,11 @@ type Harness interface {
 ## What stayed out (deliberately)
 
 - mygo's immediate-mode framework renders from live state with host
-  callbacks; the shared views in `internal/ui` render from ViewModel
+  callbacks; every view in `internal/ui` renders from ViewModel
   snapshots and report through Actions, and the host syncs the snapshot's
-  transient bits (draft, menu state) back after each frame. The thread
-  view — whose state changes under the renderer mid-turn — migrates last,
-  when a second UI surface (headless CLI, remote) justifies it.
+  transient bits (drafts, menu state, toggles) back after each frame.
+  Blocks fold and approval decisions run through TranscriptActions, so
+  the view never writes host state directly.
 - No remote/stream transport yet. When one appears, it consumes the same
   `Event` stream the projector does (a13n's AG-UI adapter is the model:
   standard events where they fit, one CUSTOM kind otherwise).

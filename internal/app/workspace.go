@@ -13,6 +13,7 @@ import (
 	uipkg "mygo-agent/internal/ui"
 
 	"mygo-agent/internal/harness"
+	"mygo-agent/internal/harness/cli"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -211,7 +212,7 @@ func (a *app) openGitDiff(ch gitChange) {
 			out, err := exec.CommandContext(ctx, "git", "-C", repo, "diff", "--", ch.Path).Output()
 			cancel()
 			if err != nil {
-				a.update(func() { a.viewer.Err = truncTitle("git diff: "+err.Error(), 200); a.viewer.Loading = false })
+				a.update(func() { a.viewer.Err = cli.Trunc("git diff: "+err.Error(), 200); a.viewer.Loading = false })
 				return
 			}
 			text = string(out)

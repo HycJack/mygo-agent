@@ -27,6 +27,7 @@ func (a *app) sidebarViewModel() *uipkg.SidebarVM {
 	vm.Backend = a.backend
 	vm.BackendName = a.backendLabel()
 	vm.CodexFound = a.codexPath != ""
+	vm.PiFound = a.piPath != ""
 	vm.BackendMenu = a.backendMenu
 	vm.ProjectMenu = a.projectMenu
 	vm.HoverRow = a.hoverRow
@@ -68,7 +69,6 @@ func (h sidebarActions) NewTask() {
 }
 
 func (h sidebarActions) OpenThread(id string) {
-	println("DBG OpenThread", id, "cur->", id)
 	h.a.current = id
 	h.a.focusComposer = true
 	h.a.winTitle()

@@ -1,6 +1,8 @@
 package app
 
 import (
+	uipkg "mygo-agent/internal/ui"
+
 	"os"
 	"path/filepath"
 	"slices"
@@ -9,6 +11,7 @@ import (
 	"time"
 
 	"mygo-agent/internal/harness"
+	"mygo-agent/internal/harness/builtin"
 
 	"github.com/egoist/mygo/ui"
 )
@@ -27,7 +30,7 @@ func newTestApp(t *testing.T) *app {
 	a.providerID = "codex"
 	a.model = defaultModels[0]
 	a.effort = 1
-	a.backend = "demo"
+	a.backend = "builtin"
 	a.mcpServers = nil
 	return a
 }
@@ -43,6 +46,32 @@ func waitUntil(t *testing.T, tt *ui.Tester, done func() bool) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	t.Fatal("timed out waiting for the agent to finish")
+}
+
+// TestSettingsModalCloses pins the dialog's close contract: a backdrop
+// click must close it and stay closed — the view-side flag has to reach
+// host state, or the next frame rebuilds the dialog open again.
+func TestSettingsModalCloses(t *testing.T) {
+	a := newTestApp(t)
+	a.settingsSel = "codex"
+	tt := ui.NewTester(a.view, 1240, 800)
+
+	a.settingsOpen = true
+	tt.Frame()
+	if !tt.HasText("PROVIDERS") {
+		t.Fatal("the settings dialog is not on screen")
+	}
+
+	// The dim backdrop: a click far outside the 780×480 panel.
+	tt.ClickAt(30, 100)
+	tt.Frame()
+	tt.Frame()
+	if a.settingsOpen {
+		t.Fatal("the backdrop click did not reach host state")
+	}
+	if tt.HasText("PROVIDERS") {
+		t.Fatal("the settings dialog is still on screen")
+	}
 }
 
 func TestHomeRenders(t *testing.T) {
@@ -67,8 +96,13 @@ func TestChipFillsDraft(t *testing.T) {
 	}
 }
 
-func TestSendRunsDemoAgent(t *testing.T) {
-	a := newTestApp(t)
+// TestSendRunsBuiltinAgent drives the full send path through the UI:
+// the Send button creates the thread, the built-in agent runs against a
+// fake provider (tool round trip included), and the composer and rail
+// settle back when the turn finishes.
+func TestSendRunsBuiltinAgent(t *testing.T) {
+	dir := t.TempDir()
+	a, _ := builtinFixture(t, dir)
 	tt := ui.NewTester(a.view, 1240, 800)
 	a.homeViewModel().Draft = "Explain the layout system"
 	tt.Frame()
@@ -90,12 +124,28 @@ func TestSendRunsDemoAgent(t *testing.T) {
 		a.update(func() { stopped = !a.running })
 		return stopped
 	})
+	// The composer is back to Send, and the rail's spinner is gone.
+	tt.Frame()
+	if tt.HasText("Stop") {
+		t.Fatal("the send button still shows Stop after the turn finished")
+	}
+	for _, tvm := range a.sidebarViewModel().Threads {
+		if tvm.Running {
+			t.Fatal("the sidebar still shows the task as running")
+		}
+	}
 	reply := th.Messages[1]
-	if !strings.Contains(reply.Text, "plan for") {
+	if !strings.Contains(reply.Text, "all done") {
 		t.Fatalf("reply text %q", reply.Text)
 	}
-	if len(reply.Blocks) == 0 {
-		t.Fatal("the reply has no tool cards")
+	var ran bool
+	for _, b := range reply.Blocks {
+		if b.Type == "command" && strings.Contains(b.Output, "hello-from-tool") {
+			ran = true
+		}
+	}
+	if !ran {
+		t.Fatalf("the tool card is missing: %+v", reply.Blocks)
 	}
 	if !tt.HasText("Explain the layout system") {
 		t.Fatal("the sent message is not on screen")
@@ -274,9 +324,8 @@ func TestMarkdownTableAndBlocks(t *testing.T) {
 		"2. second item",
 	}, "\n")
 	tt := ui.NewTester(func(c *ui.Context) {
-		a := &app{theme: codexTheme(), pal: codexPalette()}
-		c.SetTheme(a.theme)
-		a.markdown(c, "test", src, true)
+		c.SetTheme(codexTheme())
+		uipkg.Markdown(c, uipkg.NewMdCache(), "test", src, true, codexPalette())
 	}, 900, 1200)
 	for _, want := range []string{"Field", "Type", "attempts", "deadline", "time.Time",
 		"quoted note", "first item", "second item"} {
@@ -297,9 +346,10 @@ func TestMarkdownTableAndBlocks(t *testing.T) {
 
 func TestMarkdownSpans(t *testing.T) {
 	tt := ui.NewTester(func(c *ui.Context) {
-		a := &app{theme: codexTheme(), pal: codexPalette()}
-		c.SetTheme(a.theme)
-		a.markdown(c, "test", "Plain **bold** and `code` and ~~gone~~ and [a link](https://example.com).\n\n```go\nx := 1\n```", true)
+		c.SetTheme(codexTheme())
+		uipkg.Markdown(c, uipkg.NewMdCache(), "test",
+			"Plain **bold** and `code` and ~~gone~~ and [a link](https://example.com).\n\n```go\nx := 1\n```",
+			true, codexPalette())
 	}, 400, 300)
 	// The marks are gone, the words stay (inline runs are separate text
 	// nodes).
@@ -362,7 +412,7 @@ func TestWordDiffMarks(t *testing.T) {
 
 func TestEffectiveMCPServersMergesDotMCPJSON(t *testing.T) {
 	a := newTestApp(t)
-	a.mcpServers = []harness.MCPServer{{Name: "configured", Command: "configured-cmd"}}
+	a.mcpServers = []builtin.MCPServer{{Name: "configured", Command: "configured-cmd"}}
 	mcpJSON := `{"mcpServers":{"from-project":{"command":"npx","args":["-y","@modelcontextprotocol/server-everything"]}}}`
 	if err := os.WriteFile(filepath.Join(a.workdir, ".mcp.json"), []byte(mcpJSON), 0o644); err != nil {
 		t.Fatal(err)

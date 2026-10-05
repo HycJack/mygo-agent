@@ -9,7 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/egoist/mygo"
 	"mygo-agent/internal/harness"
 
 	"github.com/egoist/mygo/ui"
@@ -24,12 +23,15 @@ var imageExts = map[string]bool{".png": true, ".jpg": true, ".jpeg": true, ".gif
 var markdownExts = map[string]bool{".md": true, ".markdown": true}
 var diffExts = map[string]bool{".diff": true, ".patch": true}
 
+// The viewer renders in internal/ui over a ViewModel snapshot
+// (spec/architecture.md); this file is the bridge plus the host-side
+// file reading: images as bitmaps, Markdown rendered, patches as
+// colored diffs, everything else as text with line numbers.
+
 // viewerOpenNow reports whether the viewer covers the main area.
 func (a *app) viewerIsOpen() bool { return a.viewerOpen && a.viewer.Path != "" }
 
-// openFile reads a file from the workspace and shows it in the viewer:
-// images as bitmaps, Markdown rendered, patches as colored diffs,
-// everything else as text with line numbers.
+// openFile reads a file from the workspace and shows it in the viewer.
 func (a *app) openFile(path string) {
 	ext := strings.ToLower(filepath.Ext(path))
 	base := filepath.Base(path)
@@ -138,100 +140,20 @@ func humanCount(n int) string {
 	return fmt.Sprint(n)
 }
 
-// viewerPane is the file viewer: a toolbar with the file and a back
-// button, then the content by kind.
-func (a *app) viewerPane(c *ui.Context) {
-	t := c.Theme()
-	v := &a.viewer
-	ui.Column(c).Fill().Background(a.pal.Bg).Children(func() {
-		// Toolbar.
-		ui.Row(c).Height(40).PaddingX(12).Gap(8).AlignItems(ui.Center).
-			BorderWidth(0, 0, 1, 0).BorderColor(a.pal.Border).Children(func() {
-			back := ui.ButtonBase(c).Gap(6).Padding(4, 8).Radius(7).Cursor(ui.CursorPointer)
-			if back.Hovered() {
-				back.Background(a.pal.Hover)
-			}
-			if back.Clicked() {
-				a.viewerOpen = false
-			}
-			back.Children(func() {
-				ui.Icon(c, icBack).FontSize(14).TextColor(t.TextMuted)
-				ui.Text(c, "Chat").FontSize(12).TextColor(t.TextMuted)
-			})
-			ui.Icon(c, a.viewerIcon(v.Kind)).FontSize(14).TextColor(a.pal.TextMuted)
-			ui.Text(c, v.Title).Font("monospace").FontSize(12).SingleLine()
-			if v.Sub != "" {
-				ui.Text(c, v.Sub).FontSize(11).Font("monospace").TextColor(a.pal.TextMuted)
-			}
-			ui.Spacer(c)
-			if v.Note != "" {
-				ui.Text(c, v.Note).FontSize(11).TextColor(a.pal.Warning).SingleLine()
-			}
-			if v.Kind == "diff" || v.Kind == "text" {
-				ui.Toggle(c, &a.viewerWrap, "Wrap")
-			}
-			cp := ui.ButtonBase(c).Label("Copy contents").Tooltip("Copy").Size(26, 26).Radius(6).Center()
-			if cp.Hovered() {
-				cp.Background(a.pal.Hover)
-			}
-			if cp.Clicked() {
-				mygo.Clipboard.WriteText(v.Raw)
-				c.Toast("Copied")
-			}
-			cp.Children(func() { ui.Icon(c, icCopy).FontSize(13).TextColor(t.TextMuted) })
-		})
-		// Content.
-		switch {
-		case v.Loading:
-			ui.Column(c).Fill().Center().Gap(10).Children(func() {
-				ui.Spinner(c)
-				ui.Text(c, "Running git diff…").FontSize(12).TextColor(t.TextMuted)
-			})
-		case v.Err != "":
-			ui.Column(c).Fill().AlignItems(ui.Center).Children(func() {
-				ui.Column(c).MaxWidth(520).Margin(24, ui.Auto).Children(func() {
-					a.blockError(c, &Block{Type: "error", Text: v.Err})
-				})
-			})
-		case v.Kind == "image":
-			ui.Scroll(c).Grow(1).Children(func() {
-				ui.Column(c).Fill().Center().Padding(20).Children(func() {
-					ui.Image(c, v.Bitmap).Radius(8)
-				})
-			})
-		case v.Kind == "markdown":
-			ui.Scroll(c).Grow(1).Children(func() {
-				ui.Column(c).FillWidth().Padding(24).Gap(6).MaxWidth(860).Margin(0, ui.Auto).Children(func() {
-					a.markdown(c, "viewer:"+v.Path, v.Text, true)
-				})
-			})
-		case v.Kind == "diff" || v.Kind == "text":
-			nums := v.Kind == "text"
-			ui.Scroll(c).Grow(1).Children(func() {
-				ui.Column(c).FillWidth().PaddingY(6).Children(func() {
-					for _, l := range v.Lines {
-						uipkg.DiffLineRow(c, l, nums, a.viewerWrap, a.pal)
-					}
-				})
-			})
-		default:
-			ui.Column(c).Fill().Center().Children(func() {
-				ui.Text(c, "Nothing to show.").TextColor(t.TextMuted)
-			})
-		}
-	})
+// renderViewer assembles the snapshot and renders the viewer pane.
+func (a *app) renderViewer(c *ui.Context) {
+	vm := &uipkg.ViewerVM{
+		Path: a.viewer.Path, Kind: a.viewer.Kind, Title: a.viewer.Title,
+		Sub: a.viewer.Sub, Note: a.viewer.Note, Err: a.viewer.Err,
+		Raw: a.viewer.Raw, Text: a.viewer.Text, Loading: a.viewer.Loading,
+		Lines: a.viewer.Lines, Bitmap: a.viewer.Bitmap,
+		Wrap: a.viewerWrap, Md: a.md(), Pal: a.pal,
+	}
+	uipkg.Viewer(c, vm, viewerActions{a: a})
+	a.viewerWrap = vm.Wrap // the toggle's binding
 }
 
-// viewerIcon picks the toolbar icon by kind.
-func (a *app) viewerIcon(kind string) *ui.SVG {
-	switch kind {
-	case "image":
-		return icImage
-	case "markdown":
-		return icFileText
-	case "diff":
-		return icGitBranch
-	default:
-		return icFileText
-	}
-}
+// viewerActions adapts *app to ui.ViewerActions.
+type viewerActions struct{ a *app }
+
+func (h viewerActions) Close() { h.a.viewerOpen = false }

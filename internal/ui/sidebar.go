@@ -23,9 +23,10 @@ type SidebarVM struct {
 	Threads []ThreadVM
 	Current string
 
-	Backend     string // "builtin" | "demo" | "claude" | "codex"
+	Backend     string // builtin | codex | claude | pi
 	BackendName string
 	CodexFound  bool
+	PiFound     bool
 
 	// Transient view state; the host syncs it back after each frame.
 	BackendMenu bool
@@ -285,8 +286,9 @@ func projectSwitcher(c *ui.Context, vm *SidebarVM, acts SidebarActions) {
 		}
 	})
 	ui.Popover(c, sw, &vm.ProjectMenu, func() {
-		ui.Column(c).Width(300).Padding(4).Radius(12).Background(vm.Pal.Card).
-			Border(1, vm.Pal.Border).Shadow(0, 8, 24, 0, ui.RGBA(0, 0, 0, 0.4)).Children(func() {
+		// Popover's panel already paints the look; more here would read
+		// as a second border inside it.
+		ui.Column(c).Width(300).Padding(4).Children(func() {
 			ui.Text(c, "PROJECTS").FontSize(10).FontWeight(600).TextColor(vm.Pal.TextMuted).
 				Padding(6, 10, 2).LetterSpacing(0.6)
 			for _, p := range vm.Projects {
@@ -354,15 +356,12 @@ func backendPicker(c *ui.Context, vm *SidebarVM, acts SidebarActions) {
 	})
 	ui.Popover(c, pick, &vm.BackendMenu, func() {
 		closeMenu := func() { vm.BackendMenu = false }
-		ui.Column(c).Width(250).Padding(4).Radius(10).Background(vm.Pal.Card).
-			Border(1, vm.Pal.Border).Shadow(0, 8, 24, 0, ui.RGBA(0, 0, 0, 0.4)).Children(func() {
+		// Popover's panel already paints the look; more here would read
+		// as a second border inside it.
+		ui.Column(c).Width(250).Padding(4).Children(func() {
 			if MenuItem(c, "Built-in agent — runs in the app", vm.Backend == "builtin", vm.Pal) {
 				closeMenu()
 				acts.SetBackend("builtin")
-			}
-			if MenuItem(c, "Demo agent — built-in, no account", vm.Backend == "demo", vm.Pal) {
-				closeMenu()
-				acts.SetBackend("demo")
 			}
 			if MenuItem(c, "Claude Code — runs the claude binary", vm.Backend == "claude", vm.Pal) {
 				closeMenu()
@@ -375,6 +374,14 @@ func backendPicker(c *ui.Context, vm *SidebarVM, acts SidebarActions) {
 			if MenuItemDisabled(c, label, vm.Backend == "codex", !vm.CodexFound, vm.Pal) {
 				closeMenu()
 				acts.SetBackend("codex")
+			}
+			label = "Pi coding agent — runs the pi binary"
+			if !vm.PiFound {
+				label = "Pi coding agent — not found in PATH"
+			}
+			if MenuItemDisabled(c, label, vm.Backend == "pi", !vm.PiFound, vm.Pal) {
+				closeMenu()
+				acts.SetBackend("pi")
 			}
 		})
 	})

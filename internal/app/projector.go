@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"mygo-agent/internal/harness"
+	"mygo-agent/internal/harness/cli"
 )
 
 // applyEvent is the Host's projector (spec/architecture.md): the one
@@ -30,6 +31,8 @@ func (a *app) applyEvent(th *Thread, at int, kind string, ev harness.Event) {
 				th.CodexID = ev.SessionID
 			case "claude":
 				th.ClaudeID = ev.SessionID
+			case "pi":
+				th.PiID = ev.SessionID
 			}
 			a.saveThread(th)
 		case harness.EventToolStart:
@@ -81,7 +84,7 @@ func (a *app) applyEvent(th *Thread, at int, kind string, ev harness.Event) {
 			b.Exit = ev.Exit
 			b.Ms = ev.Ms
 			if b.Type == "command" {
-				b.Output = harness.TrimOutput(ev.Output, 16<<10)
+				b.Output = cli.TrimOutput(ev.Output, 16<<10)
 				b.Open = b.Edit
 			}
 			// A diff card already shows what changed; leave it be.

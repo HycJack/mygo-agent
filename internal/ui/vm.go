@@ -1,10 +1,12 @@
-// Package ui holds view code shared across app surfaces: ViewModels the
-// host fills from its state, the Actions interface the views call back
-// through, and the views themselves (home and the composer today; the
-// thread, sidebar and workspace migrate as they stabilize).
+// Package ui holds the app's views: ViewModels the host fills from its
+// state, the Actions interfaces the views call back through, and the
+// views themselves — home, the composer, the sidebar, the workspace
+// panel, the thread transcript with its block cards, the file viewer,
+// the manage-providers dialog and the window chrome.
 //
-// Import rule (spec/architecture.md): internal/ui imports mygo's toolkit
-// and internal/harness value types — never internal/app or providers.
+// Import rule (spec/architecture.md): internal/ui imports mygo's
+// toolkit, internal/components and internal/harness value types —
+// never internal/app or providers.
 package ui
 
 import (
@@ -142,8 +144,9 @@ func modelButton(c *ui.Context, vm *ViewModel, acts Actions) {
 		}
 	})
 	ui.Popover(c, mb, &vm.ModelMenu, func() {
-		ui.Column(c).Width(320).Padding(4).Radius(12).Background(vm.Pal.Card).
-			Border(1, vm.Pal.Border).Shadow(0, 8, 24, 0, ui.RGBA(0, 0, 0, 0.4)).Children(func() {
+		// Popover's panel already paints the look; more here would read
+		// as a second border inside it.
+		ui.Column(c).Width(320).Padding(4).Children(func() {
 			ui.Row(c).Padding(6, 10, 2).Children(func() {
 				ui.Text(c, "PROVIDER / MODEL").FontSize(10).FontWeight(600).TextColor(vm.Pal.TextMuted).LetterSpacing(0.6).Grow(1)
 				ui.Text(c, "EFFORT").FontSize(10).FontWeight(600).TextColor(vm.Pal.TextMuted).LetterSpacing(0.6)

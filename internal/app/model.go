@@ -1,10 +1,8 @@
 package app
 
 import (
-	"bytes"
 	"context"
 	"errors"
-	"fmt"
 
 	"crypto/rand"
 	"encoding/hex"
@@ -21,107 +19,13 @@ import (
 
 	"mygo-agent/internal/config"
 	"mygo-agent/internal/harness"
+	"mygo-agent/internal/harness/builtin"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
 )
 
-// Block is a card inside an assistant message: a command it ran, a file
-// patch it applied, a stretch of reasoning, an error, or a pending
-// approval.
-type Block struct {
-	Type    string // "command" | "diff" | "reasoning" | "error" | "approval"
-	Text    string // the command line, error message or reasoning text
-	Output  string // command output
-	Exit    int    // command exit code, -1 when unknown
-	Running bool   // the command is still running
-	Edit    bool   // a file edit, rendered as a diff card when done
-	Ms      int64  // how long the tool took
-	Open    bool   // the card's body is expanded
-	File    string // the patched file
-	Add     int
-	Del     int
-	Lines   []DiffLine
-
-	// ApprovalID identifies the pending approval this card asks about;
-	// the decision buttons resolve it through app.approvals.
-	ApprovalID string
-	// ToolID is the harness tool-call id that opened a command card; the
-	// projector matches tool_end events to it.
-	ToolID string
-}
-
-// Message is one turn of a thread: the user's prompt or the assistant's
-// reply with its tool cards.
-type Message struct {
-	ID      string
-	Role    string // "user" | "assistant"
-	Text    string
-	Blocks  []Block
-	Running bool
-	At      time.Time
-
-	// LogAt marks where this assistant turn begins in the thread's
-	// ChatLog, so regenerate can rewind it.
-	LogAt int
-}
-
-// Thread is one Codex task, belonging to a project.
-type Thread struct {
-	ID        string
-	ProjectID string // the project the task ran in
-	Title     string
-	Messages  []Message
-	Created   time.Time
-	Updated   time.Time
-	CodexID   string // codex exec session id, for resuming
-	ClaudeID  string // Claude Code session id, for resuming
-
-	// ChatLog is the built-in backend's full transcript, including the
-	// tool round-trips, so a task survives app restarts with context
-	// intact.
-	ChatLog []harness.ChatMessage `json:"chat_log,omitempty"`
-}
-
-// fsNode is one entry of the workspace file tree.
-type fsNode struct {
-	Name string
-	Path string
-	Dir  bool
-}
-
-// gitChange is one path of `git status --porcelain`: "M", "A", "D",
-// "R", "??" and so on.
-type gitChange struct {
-	Code string
-	Path string
-}
-
-// viewerState is what the file viewer shows while it is open.
-type viewerState struct {
-	Path    string // file path, or "git:<path>" for a working-tree diff
-	Kind    string // "text" | "image" | "markdown" | "diff"
-	Title   string
-	Sub     string // "+12 −3" or a byte size
-	Text    string // the raw text, for Markdown rendering
-	Lines   []DiffLine
-	Raw     string // the unrendered text, for the copy button
-	Bitmap  *ui.Bitmap
-	Err     string
-	Note    string // e.g. "showing the first 20,000 lines"
-	Loading bool
-}
-
-// The persisted types live in internal/config; alias them so the rest
-// of the app reads naturally.
-type (
-	Project   = config.Project
-	Provider  = config.Provider
-	MCPServer = config.MCPServer
-)
-
-// app is the whole application state; the view is a function of it.
 type app struct {
 	win   *mygo.Window
 	theme *ui.Theme
@@ -142,13 +46,14 @@ type app struct {
 	providerID string // the provider the model comes from
 	mode       int    // 0 read-only, 1 agent, 2 full access
 	effort     int    // 0 low, 1 medium, 2 high — the model's reasoning effort
-	backend    string // "demo" | "codex"
+	backend    string // builtin | codex | claude | pi
 
 	providers []Provider
 
 	workdir    string // the active project's path
 	codexPath  string
 	claudePath string
+	piPath     string
 	savePath   string
 	configPath string
 
@@ -161,6 +66,10 @@ type app struct {
 
 	running bool
 	cancel  context.CancelFunc
+	// cancelMu guards cancel: dispatch sets it from the frame — which in
+	// headless runs already holds a.mu — while finish clears it under
+	// update; a second, narrower lock avoids re-entering a.mu.
+	cancelMu sync.Mutex
 
 	renaming    bool
 	renameID    string
@@ -171,7 +80,6 @@ type app struct {
 	modelMenu    bool
 	projectMenu  bool
 	hoverRow     string // the task row the pointer is on, for its delete button
-	hoverMsg     string // the message the pointer is on, for its action row
 	pickingDir   bool   // a native directory dialog is out
 	settingsOpen bool   // the manage-providers modal is open
 	settingsSel  string // the provider being edited there
@@ -190,7 +98,7 @@ type app struct {
 	gitFiles []gitChange
 	gitErr   string
 
-	mcpServers []harness.MCPServer
+	mcpServers []builtin.MCPServer
 	permRules  harness.Rules // tool-name selector overrides from config.json
 	// approvalTimeout overrides the loop's approval deadline; 0 keeps the
 	// loop's 10-minute default.
@@ -256,7 +164,7 @@ func newApp() *app {
 		maxTurns:      25,
 		mode:          1,
 		effort:        1,
-		backend:       "demo",
+		backend:       "builtin",
 		termHeight:    260,
 		navOpen:       true,
 		wsOpen:        false,
@@ -271,6 +179,9 @@ func newApp() *app {
 	}
 	if p, err := exec.LookPath("claude"); err == nil {
 		a.claudePath = p
+	}
+	if p, err := exec.LookPath("pi"); err == nil {
+		a.piPath = p
 	}
 	base, err := os.UserConfigDir()
 	if err != nil {
@@ -319,7 +230,7 @@ func (a *app) loadConfig() {
 		a.effort = cfg.Effort
 	}
 	switch cfg.Backend {
-	case "demo", "codex", "builtin", "claude":
+	case "codex", "builtin", "claude", "pi":
 		a.backend = cfg.Backend
 	}
 	a.mcpServers = toAgentServers(cfg.MCPServers)
@@ -374,7 +285,7 @@ func (a *app) saveConfig() {
 // effectiveMCPServers merges the configured servers with the active
 // project's .mcp.json — the convention Claude Code and pi use, so
 // checking a project in brings its tools along.
-func (a *app) effectiveMCPServers() []harness.MCPServer {
+func (a *app) effectiveMCPServers() []builtin.MCPServer {
 	out := slices.Clone(a.mcpServers)
 	data, err := os.ReadFile(filepath.Join(a.workdir, ".mcp.json"))
 	if err != nil {
@@ -403,18 +314,18 @@ func (a *app) effectiveMCPServers() []harness.MCPServer {
 		if dup || srv.Command == "" {
 			continue
 		}
-		out = append(out, harness.MCPServer{Name: name, Command: srv.Command, Args: srv.Args, Env: srv.Env})
+		out = append(out, builtin.MCPServer{Name: name, Command: srv.Command, Args: srv.Args, Env: srv.Env})
 	}
 	return out
 }
 
-func toAgentServers(in []config.MCPServer) []harness.MCPServer {
+func toAgentServers(in []config.MCPServer) []builtin.MCPServer {
 	if in == nil {
 		return nil
 	}
-	out := make([]harness.MCPServer, len(in))
+	out := make([]builtin.MCPServer, len(in))
 	for i, s := range in {
-		out[i] = harness.MCPServer{Name: s.Name, Command: s.Command, Args: s.Args, Env: s.Env}
+		out[i] = builtin.MCPServer{Name: s.Name, Command: s.Command, Args: s.Args, Env: s.Env}
 	}
 	return out
 }
@@ -432,7 +343,7 @@ func permRulesToConfig(in harness.Rules) map[string]string {
 	return out
 }
 
-func fromAgentServers(in []harness.MCPServer) []config.MCPServer {
+func fromAgentServers(in []builtin.MCPServer) []config.MCPServer {
 	if in == nil {
 		return nil
 	}
@@ -590,20 +501,6 @@ func (a *app) openTerminal() bool {
 	}
 	return true
 }
-
-// writeFileAtomic writes through a temp file and a rename, so a crash
-// mid-write never leaves a truncated file behind.
-func writeFileAtomic(path string, data []byte, perm os.FileMode) error {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return err
-	}
-	tmp := path + ".tmp"
-	if err := os.WriteFile(tmp, data, perm); err != nil {
-		return err
-	}
-	return os.Rename(tmp, path)
-}
-
 func uid() string {
 	b := make([]byte, 6)
 	_, _ = rand.Read(b)
@@ -650,243 +547,6 @@ func (a *app) update(fn func()) {
 }
 
 // errThreadsUnsupported reports a data file from a newer schema.
-var errThreadsUnsupported = errors.New("file was written by a newer version")
-
-// threadsFile is the legacy single-file threads.json shape, read only
-// by the upgrade contract.
-type threadsFile struct {
-	Version int       `json:"version"`
-	Threads []*Thread `json:"threads"`
-}
-
-// quarantine renames an unloadable data file out of the way so a later
-// save cannot destroy it (spec/data.md). Returns the new name.
-func quarantine(path, why string) string {
-	for attempt := 0; ; attempt++ {
-		name := path + "." + why
-		if attempt > 0 {
-			name = fmt.Sprintf("%s.%s.%d", path, why, attempt+1)
-		}
-		if _, err := os.Stat(name); err == nil {
-			continue
-		}
-		if err := os.Rename(path, name); err != nil {
-			return ""
-		}
-		return name
-	}
-}
-
-// threadsLayout owns the per-thread persistence tree
-// (spec/data.md): threads/<projectID>/<threadID>.json, one small file
-// per task, mode 0600, atomic writes.
-type threadsLayout struct {
-	root string // <configDir>/codex-go/threads
-}
-
-func (l threadsLayout) file(th *Thread) (string, bool) {
-	if l.root == "" || !safeName(th.ProjectID) || !safeName(th.ID) {
-		return "", false
-	}
-	return filepath.Join(l.root, th.ProjectID, th.ID+".json"), true
-}
-
-// safeName refuses path separators and dot names before a value becomes
-// a path segment.
-func safeName(s string) bool {
-	if s == "" || s == "." || s == ".." {
-		return false
-	}
-	return !strings.ContainsAny(s, "/\\\x00")
-}
-
-// threadFile is the persisted shape of one thread file (spec/data.md).
-type threadFile struct {
-	Version  int                   `json:"version"`
-	Meta     threadMeta            `json:"meta"`
-	Messages []Message             `json:"messages"`
-	ChatLog  []harness.ChatMessage `json:"chat_log,omitempty"`
-}
-
-type threadMeta struct {
-	ID        string    `json:"id"`
-	ProjectID string    `json:"project_id"`
-	Title     string    `json:"title"`
-	Created   time.Time `json:"created"`
-	Updated   time.Time `json:"updated"`
-	CodexID   string    `json:"codex_id,omitempty"`
-	ClaudeID  string    `json:"claude_id,omitempty"`
-}
-
-func metaOf(th *Thread) threadMeta {
-	return threadMeta{ID: th.ID, ProjectID: th.ProjectID, Title: th.Title,
-		Created: th.Created, Updated: th.Updated, CodexID: th.CodexID, ClaudeID: th.ClaudeID}
-}
-
-// saveThread writes one thread's file atomically. The thread's Messages
-// and ChatLog stay in memory; only their own file is touched.
-func (a *app) saveThread(th *Thread) {
-	path, ok := a.threadsDir.file(th)
-	if !ok {
-		return
-	}
-	data, err := json.MarshalIndent(threadFile{
-		Version: 1, Meta: metaOf(th), Messages: th.Messages, ChatLog: th.ChatLog,
-	}, "", "  ")
-	if err != nil {
-		return
-	}
-	if err := writeFileAtomic(path, data, 0o600); err == nil {
-		a.threadsErr = ""
-	}
-}
-
-// removeThreadFile deletes one thread's file. The caller keeps the
-// thread in memory for the undo toast.
-func (a *app) removeThreadFile(th *Thread) {
-	if path, ok := a.threadsDir.file(th); ok {
-		os.Remove(path)
-		os.Remove(filepath.Dir(path)) // the project dir, now empty
-	}
-}
-
-// loadThreads walks the tree and decodes every thread file. One bad
-// file is quarantined and skipped; the rest still load (spec/data.md).
-func (a *app) loadThreads() {
-	if a.threadsDir.root == "" {
-		return
-	}
-	entries, err := os.ReadDir(a.threadsDir.root)
-	if err != nil {
-		return // no tree yet
-	}
-	for _, proj := range entries {
-		if !proj.IsDir() || !safeName(proj.Name()) {
-			continue
-		}
-		files, err := os.ReadDir(filepath.Join(a.threadsDir.root, proj.Name()))
-		if err != nil {
-			continue
-		}
-		for _, f := range files {
-			name := f.Name()
-			if !strings.HasSuffix(name, ".json") || nameendsQuarantined(name) {
-				continue
-			}
-			path := filepath.Join(a.threadsDir.root, proj.Name(), name)
-			th, err := decodeThreadFile(path)
-			if err != nil {
-				why := "invalid"
-				if errors.Is(err, errThreadsUnsupported) {
-					why = "unsupported"
-				}
-				if kept := quarantine(path, why); kept != "" {
-					a.threadsErr = filepath.Base(kept) + " (" + err.Error() + ")"
-				}
-				continue
-			}
-			if th.ProjectID == "" {
-				th.ProjectID = a.activeProject
-			}
-			a.threads = append(a.threads, th)
-		}
-	}
-	// Newest first, the order the sidebar expects.
-	slices.SortFunc(a.threads, func(x, y *Thread) int {
-		return y.Updated.Compare(x.Updated)
-	})
-	if len(a.threads) > 0 {
-		a.current = a.threads[0].ID
-		if th := a.byID(a.current); th != nil && th.ProjectID != a.activeProject {
-			a.current = ""
-		}
-	}
-}
-
-// nameendsQuarantined reports a previously quarantined file; the scan
-// skips them so quarantine renames stay once-per-file.
-func nameendsQuarantined(name string) bool {
-	return strings.HasSuffix(name, ".invalid") || strings.HasSuffix(name, ".unsupported")
-}
-
-// decodeThreadFile strictly decodes one thread file.
-func decodeThreadFile(path string) (*Thread, error) {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	var tf threadFile
-	if err := dec.Decode(&tf); err != nil {
-		return nil, err
-	}
-	if tf.Version > 1 {
-		return nil, fmt.Errorf("%w (thread schema %d)", errThreadsUnsupported, tf.Version)
-	}
-	return &Thread{
-		ID: tf.Meta.ID, ProjectID: tf.Meta.ProjectID, Title: tf.Meta.Title,
-		Created: tf.Meta.Created, Updated: tf.Meta.Updated,
-		CodexID: tf.Meta.CodexID, ClaudeID: tf.Meta.ClaudeID,
-		Messages: tf.Messages, ChatLog: tf.ChatLog,
-	}, nil
-}
-
-// decodeThreads parses the legacy single-file threads.json: the wrapped
-// versioned shape, or the bare pre-version array (the upgrade contract),
-// strictly.
-func decodeThreads(data []byte) ([]*Thread, error) {
-	dec := json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	var wrapped threadsFile
-	if err := dec.Decode(&wrapped); err == nil {
-		if wrapped.Version > 1 {
-			return nil, fmt.Errorf("%w (tasks schema %d)", errThreadsUnsupported, wrapped.Version)
-		}
-		return wrapped.Threads, nil
-	}
-	dec = json.NewDecoder(bytes.NewReader(data))
-	dec.DisallowUnknownFields()
-	var threads []*Thread
-	if err := dec.Decode(&threads); err != nil {
-		return nil, err
-	}
-	return threads, nil
-}
-
-// importLegacyThreads loads the pre-directory single-file
-// threads.json once (bare array or wrapped), imports its threads into
-// the tree, and renames the original .migrated — preserved, never
-// overwritten (spec/data.md).
-func (a *app) importLegacyThreads() {
-	if a.savePath == "" {
-		return
-	}
-	data, err := os.ReadFile(a.savePath)
-	if err != nil {
-		return
-	}
-	threads, err := decodeThreads(data)
-	if err != nil {
-		if name := quarantine(a.savePath, "invalid"); name != "" {
-			a.threadsErr = filepath.Base(name) + " (" + err.Error() + ")"
-		}
-		return
-	}
-	for _, th := range threads {
-		if th.ProjectID == "" {
-			th.ProjectID = a.activeProject
-		}
-		a.saveThread(th)
-		if th.ID == "" { // unsaved placeholder: keep in memory only
-			continue
-		}
-	}
-	os.Rename(a.savePath, a.savePath+".migrated")
-	// The in-memory list is built by loadThreads from the tree; nothing
-	// to set here.
-	_ = threads
-}
 
 func (a *app) createThread() *Thread {
 	now := time.Now()

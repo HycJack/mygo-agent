@@ -3,7 +3,6 @@ package ui
 import (
 	"strings"
 
-	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
 
@@ -435,10 +434,10 @@ func (md markdownRenderer) codeCard(c *ui.Context, p fencePart) {
 				cp.Background(md.pal.CardHover)
 			}
 			if cp.Clicked() {
-				mygo.Clipboard.WriteText(p.text)
+				c.WriteClipboard(p.text)
 				c.Toast("Copied")
 			}
-			cp.Children(func() { ui.Icon(c, icCopy).FontSize(12).TextColor(t.TextMuted) })
+			cp.Children(func() { ui.Icon(c, IconCopy).FontSize(12).TextColor(t.TextMuted) })
 		})
 		ui.ScrollBoth(c).MaxHeight(360).Children(func() {
 			ui.Text(c, strings.TrimRight(p.text, "\n")).Font("monospace").FontSize(12).

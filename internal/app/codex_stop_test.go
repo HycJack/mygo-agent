@@ -42,14 +42,14 @@ done
 	go runBackend(a, th, "hello", 0)
 
 	waitFor(t, 10*time.Second, func() bool {
-		started := false
-		a.update(func() { started = a.codexPid != 0 && th.Messages[0].Running })
-		return started
+		running := false
+		a.update(func() { running = th.Messages[0].Running && !a.running == false })
+		return running
 	})
 
-	claudePid := 0
-	a.update(func() { claudePid = a.codexPid })
-	if claudePid == 0 || !alive(claudePid) {
+	// The fake codex records its own pid; the host no longer tracks it.
+	claudePid := readIntFile(t, filepath.Join(dir, "claude.pid"))
+	if !alive(claudePid) {
 		t.Fatalf("codex process %d is not running", claudePid)
 	}
 	childPid := readIntFile(t, filepath.Join(dir, "child.pid"))

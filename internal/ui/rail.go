@@ -1,6 +1,4 @@
-// Package components holds reusable pieces of the app's UI, built on
-// MyGo's toolkit and styled through the colors handed to them.
-package components
+package ui
 
 import (
 	"strings"

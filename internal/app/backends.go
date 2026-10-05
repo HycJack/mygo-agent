@@ -2,46 +2,71 @@ package app
 
 import (
 	"context"
+	"errors"
 
 	"mygo-agent/internal/harness"
+	"mygo-agent/internal/harness/claude"
+	"mygo-agent/internal/harness/codex"
+	"mygo-agent/internal/harness/pi"
 	"mygo-agent/internal/providers/sandbox"
 )
 
 // sandboxProvider returns the platform sandbox for agent mode.
 func sandboxProvider() harness.Sandbox { return sandbox.New() }
 
-// The four harness adapters (spec/architecture.md). Each wraps one
-// per-turn runner; they consume the Turn and emit normalized Events, and
-// the Host dispatches by Kind without knowing their internals.
+// The harness adapters (spec/architecture.md). The CLI ones live in
+// internal/harness/{claude,codex,pi}; this file binds them to the host:
+// it snapshots the turn, streams events into the projector, owns the
+// run's context and settles the turn when an adapter returns.
 
 // newHarness builds the adapter for the configured backend, bound to one
 // turn of one thread.
-func (a *app) newHarness(th *Thread, at int, turn harness.Turn) harness.Harness {
+func (a *app) newHarness(th *Thread, turn harness.Turn) harness.Harness {
 	switch a.backend {
 	case "builtin":
-		return builtinHarness{a: a, th: th, at: at}
+		return builtinHarness{a: a, th: th, turn: turn}
 	case "claude":
 		if a.claudePath != "" {
-			return claudeHarness{a: a, th: th, at: at}
+			return claude.New(a.claudePath)
 		}
 	case "codex":
 		if a.codexPath != "" {
-			return codexHarness{a: a, th: th, at: at}
+			return codex.New(a.codexPath)
+		}
+	case "pi":
+		if a.piPath != "" {
+			return pi.New(a.piPath)
 		}
 	}
-	return demoHarness{a: a, th: th, at: at}
+	// Unknown backend or a CLI that is not installed: the built-in agent
+	// always runs. It fails visibly when no provider is configured.
+	return builtinHarness{a: a, th: th, turn: turn}
 }
 
-// dispatch hands a turn to the selected harness in the background.
+// dispatch hands a turn to the selected harness in the background. The
+// host owns the run's context (stop() cancels it) and its end: adapters
+// stream events and return, they never touch thread state themselves.
 func (a *app) dispatch(th *Thread, prompt string, at int) {
 	turn := a.turnFor(th, prompt)
-	h := a.newHarness(th, at, turn)
+	turn.OnApproval = func(ctx context.Context, req harness.ApprovalRequest) harness.ApprovalDecision {
+		return a.waitForApproval(ctx, th, at, req)
+	}
+	h := a.newHarness(th, turn)
+	ctx, cancel := context.WithCancel(context.Background())
+	a.setCancel(cancel)
 	go func() {
-		err := h.Run(context.Background(), turn, func(ev harness.Event) {
-			a.applyEvent(th, at, h.Kind(), ev)
-		})
-		_ = err // the adapters settle their own turns via a.finish
+		err := h.Run(ctx, turn, func(ev harness.Event) { a.applyEvent(th, at, h.Kind(), ev) })
+		a.finish(th, at, turnErrText(err))
 	}()
+}
+
+// turnErrText maps an adapter's error to the reply card's text: a
+// stopped run keeps whatever arrived, a failed one shows the reason.
+func turnErrText(err error) string {
+	if err == nil || errors.Is(err, context.Canceled) {
+		return ""
+	}
+	return err.Error()
 }
 
 // turnFor snapshots everything a harness needs from the Host (the
@@ -53,7 +78,7 @@ func (a *app) turnFor(th *Thread, prompt string) harness.Turn {
 		sb = sandboxProvider()
 	}
 	key := harness.MemoryKey(th.ProjectID, th.ID)
-	return harness.Turn{
+	turn := harness.Turn{
 		Prompt:   prompt,
 		Workdir:  a.workdir,
 		Mode:     mode,
@@ -62,79 +87,33 @@ func (a *app) turnFor(th *Thread, prompt string) harness.Turn {
 		Effort:   a.effort,
 		MaxTurns: a.maxTurns,
 		SessionID: map[string]string{
-			"codex": th.CodexID, "claude": th.ClaudeID,
+			"codex": th.CodexID, "claude": th.ClaudeID, "pi": th.PiID,
 		}[a.backend],
 		Sandbox:   sb,
 		Memory:    threadMemory{a: a},
 		MemoryKey: key,
 	}
+	if p := a.provider(); p != nil && p.ID != "codex" && p.BaseURL != "" {
+		turn.Endpoint = &harness.Endpoint{ID: p.ID, Name: p.Name, BaseURL: p.BaseURL, APIKey: p.APIKey}
+	}
+	return turn
 }
 
 type builtinHarness struct {
-	a  *app
-	th *Thread
-	at int
+	a    *app
+	th   *Thread
+	turn harness.Turn
 }
 
 func (h builtinHarness) Kind() string { return "builtin" }
 
 func (h builtinHarness) Run(ctx context.Context, turn harness.Turn, emit func(harness.Event)) error {
-	h.a.runBuiltin(ctx, h.th, turn, emit)
-	return nil
+	return h.a.runBuiltin(ctx, h.th, turn, emit)
 }
 
-type claudeHarness struct {
-	a  *app
-	th *Thread
-	at int
-}
-
-func (h claudeHarness) Kind() string { return "claude" }
-
-func (h claudeHarness) Run(ctx context.Context, turn harness.Turn, emit func(harness.Event)) error {
-	h.a.runClaude(ctx, h.th, turn, emit)
-	return nil
-}
-
-type codexHarness struct {
-	a  *app
-	th *Thread
-	at int
-}
-
-func (h codexHarness) Kind() string { return "codex" }
-
-func (h codexHarness) Run(ctx context.Context, turn harness.Turn, emit func(harness.Event)) error {
-	h.a.runCodex(ctx, h.th, turn, emit)
-	return nil
-}
-
-type demoHarness struct {
-	a  *app
-	th *Thread
-	at int
-}
-
-func (h demoHarness) Kind() string { return "demo" }
-
-func (h demoHarness) Run(ctx context.Context, turn harness.Turn, emit func(harness.Event)) error {
-	h.a.runDemo(ctx, h.th, turn, emit)
-	return nil
-}
-
-// runBackend is the test shim: builds the turn from the app and runs the
-// selected backend to completion.
+// runBackend is the test shim: dispatches like send does — running flag
+// included — without touching the composer.
 func runBackend(a *app, th *Thread, prompt string, at int) {
-	turn := a.turnFor(th, prompt)
-	turn.SessionID = map[string]string{"codex": th.CodexID, "claude": th.ClaudeID}[a.backend]
-	switch a.backend {
-	case "codex":
-		go a.runCodex(context.Background(), th, turn, func(ev harness.Event) { a.applyEvent(th, at, "codex", ev) })
-	case "claude":
-		go a.runClaude(context.Background(), th, turn, func(ev harness.Event) { a.applyEvent(th, at, "claude", ev) })
-	case "builtin":
-		go a.runBuiltin(context.Background(), th, turn, func(ev harness.Event) { a.applyEvent(th, at, "builtin", ev) })
-	default:
-		go a.runDemo(context.Background(), th, turn, func(ev harness.Event) { a.applyEvent(th, at, "demo", ev) })
-	}
+	a.update(func() { a.running = true })
+	a.dispatch(th, prompt, at)
 }

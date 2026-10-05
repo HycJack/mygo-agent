@@ -8,12 +8,14 @@ import (
 	"time"
 
 	"mygo-agent/internal/harness"
+	"mygo-agent/internal/harness/builtin"
 )
 
 // runBuiltin drives the built-in agent loop against the selected
 // provider: streaming replies, tool calls as cards, skills and MCP
-// tools, all in-process.
-func (a *app) runBuiltin(ctx context.Context, th *Thread, turn harness.Turn, emit func(harness.Event)) {
+// tools, all in-process. Like every adapter it returns an error — nil
+// for a clean or stopped turn — and the host settles the reply.
+func (a *app) runBuiltin(ctx context.Context, th *Thread, turn harness.Turn, emit func(harness.Event)) error {
 	prompt, at := turn.Prompt, -1
 	for i := range th.Messages {
 		if th.Messages[i].Running {
@@ -23,21 +25,18 @@ func (a *app) runBuiltin(ctx context.Context, th *Thread, turn harness.Turn, emi
 	if at < 0 {
 		at = len(th.Messages) - 1
 	}
-	ctx, cancel := a.adoptCancel(ctx)
-	defer cancel()
 
 	p := a.provider()
 	if p == nil || p.BaseURL == "" || p.APIKey == "" {
-		a.finish(th, at, "The built-in agent needs a provider with a base URL and an API key. Open the model picker → Manage providers & models…, fill them in, then pick a model from that provider.")
-		return
+		return errors.New("The built-in agent needs a provider with a base URL and an API key. Open the model picker → Manage providers & models…, fill them in, then pick a model from that provider.")
 	}
 
-	skills := harness.DiscoverSkills(turn.Workdir)
+	skills := builtin.DiscoverSkills(turn.Workdir)
 	// The mode tunes how the tools execute (spec/permissions.md): agent
 	// mode runs the shell inside the sandbox and confines writes to the
 	// workspace; full access does neither; read-only denies both before
 	// execution.
-	tools := harness.Tools(turn.Workdir, skills, harness.ToolOptions{
+	tools := builtin.Tools(turn.Workdir, skills, builtin.ToolOptions{
 		Sandbox:       turn.Sandbox,
 		ConfineWrites: turn.Mode != harness.ModeFull,
 	})
@@ -93,7 +92,7 @@ func (a *app) runBuiltin(ctx context.Context, th *Thread, turn harness.Turn, emi
 	if wire == "" {
 		wire = harness.WireChat
 	}
-	cfg := harness.LoopConfig{
+	cfg := builtin.LoopConfig{
 		BaseURL:         p.BaseURL,
 		APIKey:          p.APIKey,
 		Model:           turn.Model,
@@ -105,9 +104,7 @@ func (a *app) runBuiltin(ctx context.Context, th *Thread, turn harness.Turn, emi
 		// Approvals surface as cards on the reply; the loop's timeout
 		// denies what the user never answers, and the context it hands
 		// the host settles the card when it does (spec/approvals.md).
-		OnApproval: func(actx context.Context, req harness.ApprovalRequest) harness.ApprovalDecision {
-			return a.waitForApproval(actx, th, at, req)
-		},
+		OnApproval:      turn.OnApproval,
 		ApprovalTimeout: a.approvalTimeout,
 		MaxTurns:        turn.MaxTurns,
 		MaxMessages:     turn.MaxTurns*6 + 12,
@@ -156,26 +153,25 @@ func (a *app) runBuiltin(ctx context.Context, th *Thread, turn harness.Turn, emi
 		}
 	})
 
-	transcript, err := harness.Run(ctx, cfg, history)
+	transcript, err := builtin.Run(ctx, cfg, history)
 	close(done)
 	flush()
 	if turn.Memory != nil {
 		turn.Memory.StoreTranscript(turn.MemoryKey, transcript)
 	}
-	errText := ""
-	if err != nil && ctx.Err() == nil && !errors.Is(err, harness.ErrTurnLimit) {
+	if err != nil && ctx.Err() == nil && !errors.Is(err, builtin.ErrTurnLimit) {
 		// The turn limit already announced itself as a notice.
-		errText = err.Error()
+		return err
 	}
-	a.finish(th, at, errText)
+	return nil
 }
 
 // connectMCP starts every configured server, skipping the ones that
 // fail (they would only produce tool errors).
-func (a *app) connectMCP(ctx context.Context) []*harness.ServerClient {
-	var clients []*harness.ServerClient
+func (a *app) connectMCP(ctx context.Context) []*builtin.ServerClient {
+	var clients []*builtin.ServerClient
 	for _, s := range a.effectiveMCPServers() {
-		if c, err := harness.StartServer(ctx, s); err == nil {
+		if c, err := builtin.StartServer(ctx, s); err == nil {
 			clients = append(clients, c)
 		}
 	}
@@ -183,7 +179,7 @@ func (a *app) connectMCP(ctx context.Context) []*harness.ServerClient {
 }
 
 // builtinSystemPrompt describes the agent, its project and its skills.
-func builtinSystemPrompt(workdir string, skills *harness.SkillSet) string {
+func builtinSystemPrompt(workdir string, skills *builtin.SkillSet) string {
 	var b strings.Builder
 	b.WriteString("You are Codex, a coding agent embedded in a desktop app. ")
 	b.WriteString("You work inside the project directory " + workdir + ". ")
@@ -217,7 +213,7 @@ func parseToolDiff(out string) []DiffLine {
 func (a *app) seedChatLog(th *Thread, at int, prompt string) []harness.ChatMessage {
 	msgs := []harness.ChatMessage{{
 		Role: "system",
-		Content: builtinSystemPrompt(a.workdir, harness.DiscoverSkills(a.workdir)) +
+		Content: builtinSystemPrompt(a.workdir, builtin.DiscoverSkills(a.workdir)) +
 			"\n\nAnswer in the user's language. When you have the result, summarise what you did and stop; do not call tools without a reason.",
 	}}
 	for i, m := range th.Messages {

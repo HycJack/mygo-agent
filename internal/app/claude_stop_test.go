@@ -85,9 +85,9 @@ done
 		return ticked
 	})
 
-	claudePid := 0
-	a.update(func() { claudePid = a.claudePid })
-	if claudePid == 0 || !alive(claudePid) {
+	// The fake claude records its own pid; the host no longer tracks it.
+	claudePid := readIntFile(t, filepath.Join(dir, "claude.pid"))
+	if !alive(claudePid) {
 		t.Fatalf("claude process %d is not running", claudePid)
 	}
 	childPid := readIntFile(t, filepath.Join(dir, "child.pid"))

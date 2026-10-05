@@ -13,6 +13,10 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
+// The window frame assembles the shared views from internal/ui around
+// host state (spec/architecture.md): shortcuts, the sidebar/workspace
+// toggles, the terminal dock, and the bridges that fill ViewModels.
+
 // view builds the whole window: the sidebar of tasks and the workspace
 // panel beside the thread of the chosen task — or the file viewer in its
 // place — with the composer below and the terminal docked at the bottom.
@@ -60,7 +64,7 @@ func (a *app) view(c *ui.Context) {
 			a.renderSidebar(c, top)
 		}
 		ui.Column(c).Grow(1).MinWidth(0).Background(a.pal.Bg).Children(func() {
-			a.header(c, tb)
+			a.renderHeader(c, tb)
 			// The terminal docks above the bottom edge; the viewer, the
 			// thread, or both share the rest.
 			body := ui.Column(c).Grow(1).MinHeight(0)
@@ -83,29 +87,11 @@ func (a *app) view(c *ui.Context) {
 	a.overlays(c)
 }
 
-// iconToggle is a header icon button with a pressed look while active.
-func (a *app) iconToggle(c *ui.Context, tip string, active bool, ic *ui.SVG, fn func()) {
-	b := ui.ButtonBase(c).Label(tip).Tooltip(tip).Size(28, 28).Radius(7).Center().Cursor(ui.CursorPointer)
-	if active || b.Hovered() {
-		b.Background(a.pal.Hover)
-	}
-	if b.Clicked() {
-		fn()
-	}
-	b.Children(func() {
-		col := a.pal.TextMuted
-		if active {
-			col = a.pal.Text
-		}
-		ui.Icon(c, ic).FontSize(15).TextColor(col)
-	})
-}
-
 // mainPane is the header's body: the file viewer while one is open, else
 // the home screen or the thread.
 func (a *app) mainPane(c *ui.Context) {
 	if a.viewerIsOpen() {
-		a.viewerPane(c)
+		a.renderViewer(c)
 		return
 	}
 	ui.Column(c).Grow(1).MinHeight(0).Children(func() {
@@ -118,96 +104,63 @@ func (a *app) mainPane(c *ui.Context) {
 	})
 }
 
-// header is the custom title bar of the main column: the panel toggles,
-// the task's title with its model and mode, and the actions on the right.
-func (a *app) header(c *ui.Context, tb ui.TitleBar) {
+// renderHeader assembles the header snapshot and renders the shared
+// header bar.
+func (a *app) renderHeader(c *ui.Context, tb ui.TitleBar) {
 	th := a.currentThread()
-	left := float32(16)
-	if !a.navOpen {
-		left = tb.Left + 12 // clear the window controls
+	vm := &uipkg.HeaderVM{
+		Title:    "New task",
+		Running:  a.running,
+		NavOpen:  a.navOpen,
+		WsOpen:   a.wsOpen,
+		TermOpen: a.termOpen,
+		MenuOpen: a.threadMenu,
+		Pal:      a.pal,
 	}
-	ui.Row(c).Height(max(tb.Height, 48)).Padding(0, tb.Right+12, 0, left).DragWindow().AlignItems(ui.Center).Gap(10).Children(func() {
-		// The tasks sidebar toggle.
-		a.iconToggle(c, "Toggle sidebar (⌘B)", a.navOpen, icPanelLeft, func() { a.navOpen = !a.navOpen })
-		ui.Box(c).Width(1).Height(18).Background(a.pal.Border)
-		ui.Icon(c, icMessage).FontSize(15).TextColor(a.pal.TextMuted)
-		title := "New task"
-		if th != nil && th.Title != "" {
-			title = th.Title
+	if th != nil {
+		vm.HasTask = true
+		if th.Title != "" {
+			vm.Title = th.Title
 		}
-		ui.Text(c, title).SingleLine().FontWeight(600).FontSize(13).Grow(1).MinWidth(0)
-		if th != nil {
-			mode := []string{"Read only", "Agent", "Full access"}[a.mode]
-			ui.Textf(c, "%s · %s · %s", a.backendLabel(), a.model, mode).FontSize(11).TextColor(a.pal.TextMuted).SingleLine().MinWidth(0)
-			if n := changedFiles(th); n > 0 {
-				badge := ui.Row(c).Gap(4).AlignItems(ui.Center).Padding(2, 8).Radius(999).Background(a.pal.Card).
-					Border(1, a.pal.Border).Children(func() {
-					ui.Icon(c, icGitBranch).FontSize(11).TextColor(a.pal.TextMuted)
-					ui.Textf(c, "%d changed", n).FontSize(11).TextColor(a.pal.TextMuted).SingleLine()
-				})
-				badge.Tooltip("Files changed in this task")
-			}
-		}
-		ui.Spacer(c)
-		if a.running {
-			ui.Row(c).Gap(6).AlignItems(ui.Center).Padding(2, 8).Radius(999).Background(a.pal.Card).Children(func() {
-				ui.Spinner(c)
-				ui.Text(c, "Working").FontSize(11).TextColor(a.pal.TextMuted)
-			})
-		}
-		// While the workspace panel is closed, its toggle lives here at
-		// the window's top-right corner; open, it moves onto the panel.
-		if !a.wsOpen {
-			a.iconToggle(c, "Show workspace (⌘E)", false, icPanelRight, func() {
-				a.wsOpen = true
-				a.refreshGit()
-			})
-		}
-		// Terminal toggle.
-		termBtn := ui.ButtonBase(c).Label("Toggle terminal").Tooltip("Toggle terminal (⌘T)").
-			Size(28, 28).Radius(7).Center().Cursor(ui.CursorPointer)
-		if termBtn.Hovered() {
-			termBtn.Background(a.pal.Hover)
-		}
-		if termBtn.Clicked() {
-			a.toggleTerminal(c)
-		}
-		termBtn.Children(func() {
-			col := a.pal.TextMuted
-			if a.termOpen {
-				col = a.pal.Text
-			}
-			ui.Icon(c, icTerminal).FontSize(15).TextColor(col)
-		})
-		more := ui.ButtonBase(c).Label("Task actions").Tooltip("Task actions").
-			Size(28, 28).Radius(7).Center().Cursor(ui.CursorPointer)
-		if more.Hovered() || a.threadMenu {
-			more.Background(a.pal.Hover)
-		}
-		if more.Clicked() {
-			a.threadMenu = !a.threadMenu
-		}
-		more.Children(func() { ui.Icon(c, icMore).FontSize(15).TextColor(a.pal.TextMuted) })
-		ui.Popover(c, more, &a.threadMenu, func() {
-			closeMenu := func() { a.threadMenu = false }
-			ui.Column(c).Width(210).Padding(4).Radius(10).Background(a.pal.Card).
-				Border(1, a.pal.Border).Shadow(0, 8, 24, 0, ui.RGBA(0, 0, 0, 0.4)).Children(func() {
-				if th != nil && uipkg.MenuItem(c, "Rename task", false, a.pal) {
-					closeMenu()
-					a.renaming, a.renameID, a.renameDraft = true, th.ID, th.Title
-				}
-				if th != nil && uipkg.MenuItem(c, "Export as Markdown", false, a.pal) {
-					closeMenu()
-					a.exportMarkdown(c, th)
-				}
-				ui.Box(c).Height(1).Margin(4, 6).Background(a.pal.Border)
-				if th != nil && uipkg.MenuItem(c, "Delete task", false, a.pal) {
-					closeMenu()
-					a.deleteThread(c, th.ID)
-				}
-			})
-		})
-	})
+		vm.Meta = fmt.Sprintf("%s · %s · %s", a.backendLabel(), a.model, uipkg.ModeLabel(a.mode))
+		vm.Changed = changedFiles(th)
+	}
+	uipkg.Header(c, tb, vm, headerActions{a: a, th: th})
+	a.threadMenu = vm.MenuOpen // the popover's binding
+}
+
+// headerActions adapts *app to ui.HeaderActions for the open task.
+type headerActions struct {
+	a  *app
+	th *Thread
+}
+
+func (h headerActions) ToggleNav() { h.a.navOpen = !h.a.navOpen }
+
+func (h headerActions) ToggleWorkspace() {
+	h.a.wsOpen = true
+	h.a.refreshGit()
+}
+
+func (h headerActions) ToggleTerminal() { h.a.toggleTerminal(h.a.uiCtx) }
+
+func (h headerActions) Rename() {
+	if h.th == nil {
+		return
+	}
+	h.a.renaming, h.a.renameID, h.a.renameDraft = true, h.th.ID, h.th.Title
+}
+
+func (h headerActions) Export() {
+	if h.th != nil {
+		h.a.exportMarkdown(h.a.uiCtx, h.th)
+	}
+}
+
+func (h headerActions) Delete() {
+	if h.th != nil {
+		h.a.deleteThread(h.a.uiCtx, h.th.ID)
+	}
 }
 
 // home is what a new task starts from: the shared view in internal/ui
@@ -251,41 +204,34 @@ func (a *app) backendLabel() string {
 	switch a.backend {
 	case "codex":
 		return "Codex CLI"
-	case "builtin":
-		return "Built-in agent"
+	case "claude":
+		return "Claude Code"
+	case "pi":
+		return "Pi"
 	default:
-		return "Demo agent"
+		return "Built-in agent"
 	}
 }
 
 // overlays are the dialogs drawn above everything while open: renaming
 // a task, and managing the model providers.
 func (a *app) overlays(c *ui.Context) {
-	ui.Modal(c, &a.renaming, func() {
-		ui.Column(c).Width(380).Padding(20).Gap(14).Radius(12).Background(a.pal.Card).
-			Border(1, a.pal.Border).Shadow(0, 12, 32, 0, ui.RGBA(0, 0, 0, 0.5)).Children(func() {
-			ui.Text(c, "Rename task").FontSize(15).Bold()
-			ui.TextInput(c, &a.renameDraft).Label("Title").AutoFocus()
-			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c, "Cancel").Clicked() {
-					a.renaming = false
-				}
-				if ui.PrimaryButton(c, "Rename").Clicked() {
-					a.applyRename()
-				}
-			})
-		})
-	})
+	vm := &uipkg.RenameVM{Open: a.renaming, Title: a.renameDraft}
+	uipkg.RenameDialog(c, vm, renameActions{a: a})
+	a.renaming, a.renameDraft = vm.Open, vm.Title
 	a.settingsModal(c)
 }
 
-func (a *app) applyRename() {
-	if th := a.byID(a.renameID); th != nil {
-		th.Title = strings.TrimSpace(a.renameDraft)
+// renameActions adapts *app to ui.RenameActions.
+type renameActions struct{ a *app }
+
+func (h renameActions) Apply(title string) {
+	if th := h.a.byID(h.a.renameID); th != nil {
+		th.Title = strings.TrimSpace(title)
 		th.Updated = time.Now()
-		a.saveThread(th)
+		h.a.saveThread(th)
 	}
-	a.renaming = false
+	h.a.renaming = false
 }
 
 // exportMarkdown writes the thread to a Markdown file in Downloads.

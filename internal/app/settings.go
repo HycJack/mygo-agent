@@ -1,14 +1,23 @@
 package app
 
 import (
+	uipkg "mygo-agent/internal/ui"
+
 	"fmt"
 	"slices"
 	"strings"
 
 	"mygo-agent/internal/harness"
+	"mygo-agent/internal/harness/builtin"
+	"mygo-agent/internal/harness/codex"
 
 	"github.com/egoist/mygo/ui"
 )
+
+// The manage-providers dialog renders in internal/ui over a ViewModel
+// snapshot (spec/architecture.md); this file is the bridge: snapshot
+// assembly, the Actions implementation, the mirror of the form's
+// bindings back into host state, and the host-side mutations.
 
 // providerPreset is a one-click fill for the provider form: OpenAI-
 // compatible endpoints the codex CLI can talk to with wire_api="chat".
@@ -24,208 +33,114 @@ var providerPresets = []struct {
 	{"Ollama (local)", "http://localhost:11434/v1", harness.WireChat, []string{"llama3.2"}},
 }
 
-// settingsModal is the manage-providers dialog: the providers on the
-// left, the chosen one's name, endpoint, key and models on the right.
-// Every change saves immediately.
+// settingsModal renders the manage-providers dialog.
 func (a *app) settingsModal(c *ui.Context) {
-	t := c.Theme()
-	ui.Modal(c, &a.settingsOpen, func() {
-		ui.Row(c).Width(780).Height(480).Radius(12).Clip().Background(a.pal.Bg).
-			Border(1, a.pal.Border).Shadow(0, 12, 32, 0, ui.RGBA(0, 0, 0, 0.5)).
-			AlignItems(ui.Stretch).Children(func() {
-			// The provider list.
-			ui.Column(c).Width(220).Background(a.pal.SidebarBG).BorderWidth(0, 1, 0, 0).
-				BorderColor(a.pal.Border).Children(func() {
-				ui.Text(c, "PROVIDERS").FontSize(10.5).FontWeight(600).TextColor(a.pal.TextMuted).
-					Padding(14, 14, 6).LetterSpacing(0.6)
-				ui.Scroll(c).Grow(1).Padding(0, 8, 8).Children(func() {
-					for i := range a.providers {
-						p := &a.providers[i]
-						row := ui.ButtonBase(c).Fill().Padding(7, 10).Radius(7).Gap(8)
-						chosen := p.ID == a.settingsSel
-						if chosen {
-							row.Background(a.pal.Sel)
-						} else if row.Hovered() {
-							row.Background(a.pal.Hover)
-						}
-						if row.Clicked() {
-							a.settingsSel = p.ID
-						}
-						row.ContextMenu(func(m *ui.Menu) {
-							if m.Item("Remove provider").Chosen() {
-								a.removeProvider(p.ID)
-							}
-						})
-						row.Children(func() {
-							ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-								ui.Text(c, p.Name).SingleLine().FontSize(12.5)
-								ui.Textf(c, "%d models", len(p.Models)).SingleLine().FontSize(10.5).TextColor(a.pal.TextMuted)
-							})
-						})
-					}
-					add := ui.ButtonBase(c).Fill().Padding(7, 10).Radius(7).Gap(8).Margin(0, 0, 4)
-					if add.Hovered() {
-						add.Background(a.pal.Hover)
-					}
-					if add.Clicked() {
-						a.addProvider()
-					}
-					add.Children(func() {
-						ui.Icon(c, icPlus).FontSize(13).TextColor(t.TextMuted)
-						ui.Text(c, "Add provider").FontSize(12.5).TextColor(t.TextMuted)
-					})
-				})
-			})
-			// The form.
-			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-				p := a.providerByID(a.settingsSel)
-				if p == nil {
-					ui.Column(c).Fill().Center().Gap(8).Children(func() {
-						ui.Text(c, "No provider selected.").FontSize(13).TextColor(t.TextMuted)
-						ui.Text(c, "Add one, or pick a preset to fill in.").FontSize(12).TextColor(a.pal.TextMuted)
-					})
-					return
-				}
-				pi := slices.IndexFunc(a.providers, func(x Provider) bool { return x.ID == p.ID })
-				ui.Scroll(c).Grow(1).Children(func() {
-					ui.Column(c).FillWidth().Padding(20, 24, 24).Gap(14).Children(func() {
-						ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-							ui.Text(c, p.Name).FontSize(16).Bold().SingleLine().Grow(1).MinWidth(0)
-							if p.ID == "codex" {
-								ui.Text(c, "uses the codex CLI's own sign-in").FontSize(11).TextColor(t.TextMuted)
-							}
-						})
-						if p.ID != "codex" {
-							ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-								ui.Text(c, "Presets:").FontSize(11.5).TextColor(t.TextMuted)
-								for _, ps := range providerPresets {
-									pr := ui.Button(c, ps.name).FontSize(11.5)
-									if pr.Clicked() {
-										a.providers[pi].Name = ps.name
-										a.providers[pi].BaseURL = ps.baseURL
-										a.providers[pi].Wire = ps.wire
-										a.providers[pi].Models = slices.Clone(ps.models)
-										a.saveConfig()
-									}
-								}
-							})
-							a.formField(c, "Name", &a.providers[pi].Name, false)
-							a.formField(c, "Base URL", &a.providers[pi].BaseURL, false)
-							a.formField(c, "API key", &a.providers[pi].APIKey, true)
-							// Which wire the endpoint speaks: the codex
-							// and OpenAI models use the Responses API,
-							// most other vendors chat completions.
-							ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-								ui.Text(c, "API").FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
-								for _, w := range []struct {
-									id, label string
-								}{{harness.WireChat, "Chat Completions"}, {harness.WireResponses, "Responses"}} {
-									wire := a.providers[pi].Wire
-									if wire == "" {
-										wire = harness.WireChat
-									}
-									b := ui.ButtonBase(c).Padding(4, 10).Radius(999).Gap(6)
-									if wire == w.id {
-										b.Background(t.Text)
-										b.Children(func() {
-											ui.Text(c, w.label).FontSize(11.5).TextColor(t.AccentText)
-										})
-									} else {
-										b.Border(1, t.Border)
-										b.Children(func() {
-											ui.Text(c, w.label).FontSize(11.5).TextColor(t.TextMuted)
-										})
-									}
-									if b.Clicked() {
-										a.providers[pi].Wire = w.id
-										a.saveConfig()
-									}
-								}
-							})
-							ui.Column(c).Gap(4).Children(func() {
-								ui.Text(c, "Models").FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
-								ui.TokenField(c, &a.providers[pi].Models, nil)
-								ui.Text(c, "Enter or comma adds a model; Backspace removes the last.").FontSize(11).TextColor(t.TextMuted)
-							})
-							ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(10, 12).Radius(8).
-								Background(a.pal.Card).Children(func() {
-								ui.Icon(c, icTerminal).FontSize(13).TextColor(a.pal.TextMuted)
-								ui.Textf(c, "Runs as: codex exec -c model_provider=%s -m <model>, API key via $%s",
-									p.ID, envKeyFor(p.ID)).FontSize(11).TextColor(t.TextMuted).Grow(1).MinWidth(0)
-							})
-							ui.Row(c).Justify(ui.End).Children(func() {
-								del := ui.Button(c, "Delete provider")
-								if del.Clicked() {
-									a.removeProvider(p.ID)
-								}
-							})
-						} else {
-							ui.Text(c, "The models below come from the codex CLI's own sign-in — no key needed. "+
-								"Add a provider above to use any OpenAI-compatible endpoint.").FontSize(12.5).TextColor(t.TextMuted)
-							ui.Row(c).Gap(6).Wrap().Children(func() {
-								for _, m := range p.Models {
-									ui.Text(c, m).Font("monospace").FontSize(12).Padding(4, 10).Radius(999).
-										Background(a.pal.Card).Border(1, a.pal.Border)
-								}
-							})
-							if ui.Button(c, "Add model").Clicked() {
-								a.providers[pi].Models = append(a.providers[pi].Models, fmt.Sprintf("gpt-5.2-codex-%s", uid()))
-								a.saveConfig()
-							}
-						}
-						a.mcpSection(c)
-					})
-				})
-			})
-		})
-	})
+	vm := a.settingsVM()
+	uipkg.Settings(c, vm, settingsActions{a: a})
+	a.settingsOpen = vm.Open // the backdrop and Escape close it view-side
+	a.syncSettings(vm)
 }
 
-// mcpSection is the MCP servers block at the bottom of the settings
-// dialog: each configured server spawns at run time and its tools join
-// the agent's tool set as mcp_<server>_<tool>.
-func (a *app) mcpSection(c *ui.Context) {
-	t := c.Theme()
-	ui.Box(c).Height(1).Background(a.pal.Border)
-	ui.Column(c).Gap(8).Children(func() {
-		ui.Text(c, "MCP SERVERS").FontSize(10.5).FontWeight(600).TextColor(t.TextMuted).LetterSpacing(0.6)
-		if len(a.mcpServers) == 0 {
-			ui.Text(c, "None configured. A server is a command speaking MCP over stdio; its tools join the agent's set.").FontSize(11.5).TextColor(t.TextMuted)
-		}
-		for i := range a.mcpServers {
-			srv := &a.mcpServers[i]
-			row := ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(7, 10).Radius(7).Background(a.pal.Card).
-				Border(1, a.pal.Border)
-			row.ContextMenu(func(m *ui.Menu) {
-				if m.Item("Remove server").Chosen() {
-					a.mcpServers = slices.Delete(a.mcpServers, i, i+1)
-					a.saveConfig()
-				}
-			})
-			row.Children(func() {
-				ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-					ui.Text(c, srv.Name).SingleLine().FontSize(12.5)
-					ui.Text(c, srv.Command+" "+strings.Join(srv.Args, " ")).SingleLine().
-						Font("monospace").FontSize(11).TextColor(t.TextMuted)
-				})
-			})
-		}
-		// Add form.
-		ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-			ui.Column(c).Gap(3).Grow(1).Children(func() {
-				ui.Text(c, "Name").FontSize(10.5).TextColor(t.TextMuted)
-				ui.TextInput(c, &a.mcpDraftName).Placeholder("filesystem").FontSize(12)
-			})
-			ui.Column(c).Gap(3).Grow(3).Children(func() {
-				ui.Text(c, "Command and arguments").FontSize(10.5).TextColor(t.TextMuted)
-				ui.TextInput(c, &a.mcpDraftCommand).Placeholder(`npx -y @modelcontextprotocol/server-filesystem /tmp`).FontSize(12)
-			})
-			add := ui.Button(c, "Add")
-			if add.Clicked() {
-				a.addMCPServer()
-			}
+// settingsVM snapshots the dialog's render input. The providers' fields
+// and the MCP draft lines are copies the view binds into; syncSettings
+// mirrors them back after the frame.
+func (a *app) settingsVM() *uipkg.SettingsVM {
+	vm := &uipkg.SettingsVM{
+		Open: a.settingsOpen,
+		Sel:  a.settingsSel,
+		Pal:  a.pal,
+	}
+	vm.MCPName, vm.MCPCommand = a.mcpDraftName, a.mcpDraftCommand
+	for i := range a.providers {
+		p := &a.providers[i]
+		vm.Providers = append(vm.Providers, uipkg.ProviderEditVM{
+			ID: p.ID, Name: p.Name, BaseURL: p.BaseURL, APIKey: p.APIKey,
+			Wire: p.Wire, Models: slices.Clone(p.Models),
+			Codex: p.ID == "codex",
+			RunsAs: fmt.Sprintf("Runs as: codex exec -c model_provider=%s -m <model>, API key via $%s",
+				p.ID, codex.EnvKey(p.ID)),
 		})
-	})
+	}
+	for _, ps := range providerPresets {
+		vm.Presets = append(vm.Presets, uipkg.PresetVM{Name: ps.name})
+	}
+	for _, s := range a.mcpServers {
+		vm.MCPServer = append(vm.MCPServer, uipkg.MCPVM{
+			Name: s.Name, Command: s.Command + " " + strings.Join(s.Args, " "),
+		})
+	}
+	return vm
+}
+
+// syncSettings mirrors the form's bindings into host state and saves
+// when the frame actually changed a provider.
+func (a *app) syncSettings(vm *uipkg.SettingsVM) {
+	a.mcpDraftName, a.mcpDraftCommand = vm.MCPName, vm.MCPCommand
+	dirty := false
+	for i := range vm.Providers {
+		v := &vm.Providers[i]
+		p := a.providerByID(v.ID)
+		if p == nil {
+			continue // removed while the frame was up
+		}
+		if p.Name != v.Name || p.BaseURL != v.BaseURL || p.APIKey != v.APIKey ||
+			p.Wire != v.Wire || !slices.Equal(p.Models, v.Models) {
+			p.Name, p.BaseURL, p.APIKey, p.Wire = v.Name, v.BaseURL, v.APIKey, v.Wire
+			p.Models = v.Models
+			dirty = true
+		}
+	}
+	if dirty {
+		a.saveConfig()
+	}
+}
+
+// settingsActions adapts *app to ui.SettingsActions.
+type settingsActions struct{ a *app }
+
+func (h settingsActions) Select(id string)         { h.a.settingsSel = id }
+func (h settingsActions) AddProvider()             { h.a.addProvider() }
+func (h settingsActions) RemoveProvider(id string) { h.a.removeProvider(id) }
+func (h settingsActions) AddMCP()                  { h.a.addMCPServer() }
+
+func (h settingsActions) RemoveMCP(i int) {
+	if i < 0 || i >= len(h.a.mcpServers) {
+		return
+	}
+	h.a.mcpServers = slices.Delete(h.a.mcpServers, i, i+1)
+	h.a.saveConfig()
+}
+
+func (h settingsActions) ApplyPreset(id string, preset int) {
+	if preset < 0 || preset >= len(providerPresets) {
+		return
+	}
+	p := h.a.providerByID(id)
+	if p == nil || p.ID == "codex" {
+		return
+	}
+	ps := providerPresets[preset]
+	p.Name, p.BaseURL, p.Wire = ps.name, ps.baseURL, ps.wire
+	p.Models = slices.Clone(ps.models)
+	h.a.saveConfig()
+}
+
+func (h settingsActions) SetWire(id, wire string) {
+	p := h.a.providerByID(id)
+	if p == nil {
+		return
+	}
+	p.Wire = wire
+	h.a.saveConfig()
+}
+
+func (h settingsActions) AddModel(id string) {
+	p := h.a.providerByID(id)
+	if p == nil {
+		return
+	}
+	p.Models = append(p.Models, fmt.Sprintf("gpt-5.2-codex-%s", uid()))
+	h.a.saveConfig()
 }
 
 // addMCPServer parses the draft "command args…" line into a server and
@@ -237,28 +152,13 @@ func (a *app) addMCPServer() {
 		return
 	}
 	fields := strings.Fields(line)
-	a.mcpServers = append(a.mcpServers, harness.MCPServer{
+	a.mcpServers = append(a.mcpServers, builtin.MCPServer{
 		Name:    name,
 		Command: fields[0],
 		Args:    fields[1:],
 	})
 	a.mcpDraftName, a.mcpDraftCommand = "", ""
 	a.saveConfig()
-}
-
-// formField is one labeled input of the provider form, saving on change.
-func (a *app) formField(c *ui.Context, label string, value *string, password bool) {
-	t := c.Theme()
-	ui.Column(c).Gap(4).Children(func() {
-		ui.Text(c, label).FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
-		in := ui.TextInput(c, value).FontSize(13)
-		if password {
-			in.Password()
-		}
-		if in.Changed() {
-			a.saveConfig()
-		}
-	})
 }
 
 // addProvider appends an empty provider and opens it for editing.
@@ -291,20 +191,4 @@ func (a *app) removeProvider(id string) {
 		}
 	}
 	a.saveConfig()
-}
-
-// envKeyFor is the environment variable a provider's API key is handed
-// to the codex CLI through (its model_providers.<id>.env_key).
-func envKeyFor(providerID string) string {
-	var b strings.Builder
-	b.WriteString("MYGO_PROVIDER_")
-	for _, r := range strings.ToUpper(providerID) {
-		if (r >= 'A' && r <= 'Z') || (r >= '0' && r <= '9') {
-			b.WriteRune(r)
-		} else {
-			b.WriteByte('_')
-		}
-	}
-	b.WriteString("_API_KEY")
-	return b.String()
 }

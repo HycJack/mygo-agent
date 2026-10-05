@@ -10,6 +10,14 @@ import (
 // (spec/architecture.md): the app fills ViewModels from its state and
 // implements Actions; the views never touch app state directly.
 
+// md returns the shared markdown cache, building it on first use.
+func (a *app) md() *uipkg.MdCache {
+	if a.mdCache == nil {
+		a.mdCache = uipkg.NewMdCache()
+	}
+	return a.mdCache
+}
+
 // homeViewModel returns the persistent ViewModel both composers bind
 // to, refreshing the host-owned fields in place. vm.Draft is the single
 // binding target — the text area writes keystrokes into it and syncVM

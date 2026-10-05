@@ -8,6 +8,13 @@ var (
 	EffortNames = []string{"Low", "Medium", "High"}
 )
 
+// ModeLabel is the long form of a mode's name, for display next to a
+// task (the header's meta line).
+func ModeLabel(mode int) string {
+	names := []string{"Read only", "Agent", "Full access"}
+	return names[min(mode, 2)]
+}
+
 // Segments is a small segmented control over one integer choice, shared
 // by the mode selector and the effort selector. The choice arrives as a
 // value (the ViewModel is a snapshot); a click reports back through set.
