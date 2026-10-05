@@ -58,29 +58,12 @@ func (h *Harness) Run(ctx context.Context, turn harness.Turn, emit func(harness.
 
 	// Config overrides ride the spawn args: the reasoning effort always,
 	// and a custom endpoint as a model_providers entry whose key arrives
-	// through an env var.
-	effort := "medium"
-	switch turn.Effort {
-	case 0:
-		effort = "low"
-	case 2:
-		effort = "high"
-	}
-	args := []string{"app-server", "--stdio",
-		"-c", "model_reasoning_effort=" + effort}
-	var cmdEnv []string
-	if ep := turn.Endpoint; ep != nil && ep.BaseURL != "" {
-		id := ep.ID
-		args = append(args,
-			"-c", fmt.Sprintf("model_provider=%q", id),
-			"-c", fmt.Sprintf("model_providers.%s.name=%q", id, ep.Name),
-			"-c", fmt.Sprintf("model_providers.%s.base_url=%q", id, ep.BaseURL),
-			"-c", fmt.Sprintf("model_providers.%s.wire_api=%q", id, "chat"),
-			"-c", fmt.Sprintf("model_providers.%s.env_key=%q", id, EnvKey(id)),
-		)
-		cmdEnv = append(os.Environ(), EnvKey(id)+"="+ep.APIKey)
-	} else {
-		cmdEnv = os.Environ()
+	// through an env var. spawnArgs owns that, including the wire the
+	// provider speaks and the rejection of a chat-completions endpoint
+	// newer codex CLIs refuse to load.
+	args, cmdEnv, err := spawnArgs(turn)
+	if err != nil {
+		return err
 	}
 
 	cmd := exec.CommandContext(ctx, h.Bin, args...)
@@ -659,8 +642,19 @@ func frameID(raw json.RawMessage) (int, bool) {
 // turn: the reasoning effort always, and a custom endpoint as a
 // model_providers entry whose key arrives through an env var.
 func spawnArgs(turn harness.Turn) ([]string, []string, error) {
+	// Mode and Effort are plain ints on Turn and are clamped nowhere in the
+	// repo, so both are switched rather than indexed: an out-of-range value
+	// must fail closed, not panic the dispatch goroutine (there is no
+	// recover anywhere in the process).
+	effort := "medium"
+	switch turn.Effort {
+	case 0:
+		effort = "low"
+	case 2:
+		effort = "high"
+	}
 	args := []string{"app-server", "--stdio",
-		"-c", "model_reasoning_effort=" + []string{"low", "medium", "high"}[turn.Effort]}
+		"-c", "model_reasoning_effort=" + effort}
 	cmdEnv := os.Environ()
 	if ep := turn.Endpoint; ep != nil && ep.BaseURL != "" {
 		wire := ep.Wire
