@@ -79,7 +79,7 @@
 │                     threads.json（版本化+隔离）·config.json │
 │   │ harness.Turn / Event（归一化事件流）                    │
 │ HARNESS（internal/harness）一个协议，四个可替换后端：       │
-│      builtin 循环 · codex app-server · claude 控制协议 · demo│
+│      builtin 循环 · codex app-server · claude 控制协议 · pi json│
 │   │ Sandbox / Memory 协议                                  │
 │ PROVIDERS（internal/providers/sandbox）                     │
 │      macOS Seatbelt · Linux bubblewrap · 平台缺失时诚实报错 │
