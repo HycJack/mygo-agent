@@ -78,11 +78,20 @@ func TestMessageActionsFollowHover(t *testing.T) {
 	}
 
 	tst := ui.NewTester(msgView(), 800, 500)
-	tst.Move(400, 480) // over the last (assistant) message
+	// Hover points derive from the user bubble instead of hardcoded
+	// pixels: the bubble's own row shows Copy; the assistant row (below
+	// its reserved action bar and the list gap) shows Regenerate.
+	b, ok := tst.Find("帮我看看这个项目的结构")
+	if !ok {
+		t.Fatal("the user bubble is missing")
+	}
+	tst.Move(b.X+b.W/2, b.Y+b.H/2)
 	tst.Frame()
 	if !tst.HasText("Copy") {
-		t.Error("hovering the assistant row shows no Copy action")
+		t.Error("hovering the user bubble shows no Copy action")
 	}
+	tst.Move(b.X+b.W/2, b.Y+b.H+60)
+	tst.Frame()
 	if !tst.HasText("Regenerate") {
 		t.Error("hovering the last assistant row shows no Regenerate action")
 	}
@@ -109,7 +118,11 @@ func TestMessageActionsFollowHover(t *testing.T) {
 // put the message text on the clipboard.
 func TestMessageActionCopyClickable(t *testing.T) {
 	tst := ui.NewTester(msgView(), 800, 500)
-	tst.Move(400, 480) // over the last (assistant) message
+	b, ok := tst.Find("帮我看看这个项目的结构")
+	if !ok {
+		t.Fatal("the user bubble is missing")
+	}
+	tst.Move(b.X+b.W/2, b.Y+b.H/2) // over the user bubble
 	tst.Frame()
 	tst.Frame() // settle the hover before the click
 
@@ -117,7 +130,7 @@ func TestMessageActionCopyClickable(t *testing.T) {
 		t.Fatalf("click Copy: %v", err)
 	}
 	tst.Frame()
-	if got := tst.Clipboard(); got != "这是一个 Codex 风格的桌面 AI 编码代理。" {
+	if got := tst.Clipboard(); got != "帮我看看这个项目的结构" {
 		t.Fatalf("clipboard %q — the Copy click did not land", got)
 	}
 }

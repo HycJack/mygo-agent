@@ -65,27 +65,33 @@ func Transcript(c *ui.Context, vm *TranscriptVM, acts TranscriptActions) {
 	st := vm.List
 	st.Key = func(i int) any { return vm.Messages[i].ID }
 	st.FollowEnd = true
+	// The conversation column, centered the way ZCode's is: the anchor
+	// rail rides its left edge and the messages keep a comfortable
+	// reading measure.
 	ui.Row(c).Grow(1).MinHeight(0).AlignItems(ui.Stretch).Children(func() {
-		// The anchor rail: one dash per message, hover previews it,
-		// click jumps to it.
-		items := make([]RailItem, len(vm.Messages))
-		first, _ := st.Visible()
-		for i := range vm.Messages {
-			m := &vm.Messages[i]
-			items[i] = RailItem{ID: m.ID, Preview: railPreview(m), Active: i == first}
-		}
-		AnchorRail(c, items, Colors{
-			Active:    vm.Pal.Text,
-			TextMuted: vm.Pal.TextMuted,
-			Border:    vm.Pal.Border,
-			Surface:   vm.Pal.Card,
-			Text:      vm.Pal.Text,
-		}, func(it RailItem, index int) {
-			st.ScrollTo(index, ui.Start)
+		col := ui.Row(c).FillWidth().MaxWidth(880).Margin(0, ui.Auto)
+		col.Children(func() {
+			// The anchor rail: one dash per message, hover previews it,
+			// click jumps to it.
+			items := make([]RailItem, len(vm.Messages))
+			first, _ := st.Visible()
+			for i := range vm.Messages {
+				m := &vm.Messages[i]
+				items[i] = RailItem{ID: m.ID, Preview: railPreview(m), Active: i == first}
+			}
+			AnchorRail(c, items, Colors{
+				Active:    vm.Pal.Text,
+				TextMuted: vm.Pal.TextMuted,
+				Border:    vm.Pal.Border,
+				Surface:   vm.Pal.Card,
+				Text:      vm.Pal.Text,
+			}, func(it RailItem, index int) {
+				st.ScrollTo(index, ui.Start)
+			})
+			ui.List(c, st, len(vm.Messages), func(i int) {
+				messageRow(c, vm, acts, i)
+			}).Grow(1).MinHeight(0).Justify(ui.End).Gap(20).Padding(24, 18, 16)
 		})
-		ui.List(c, st, len(vm.Messages), func(i int) {
-			messageRow(c, vm, acts, i)
-		}).Grow(1).MinHeight(0).Justify(ui.End).Gap(20).Padding(24, 44, 16)
 	})
 }
 
@@ -144,6 +150,7 @@ func messageRow(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, i int) 
 	isLast := !vm.Running && i == len(vm.Messages)-1
 	root := ui.Row(c).Gap(10).AlignItems(ui.Start)
 	showActions := root.Hovered()
+	fadeIn(c, root, m)
 	root.Children(func() {
 		avatar := ui.Box(c).Size(26, 26).Radius(7).Background(vm.Pal.Card).Border(1, vm.Pal.Border).Center()
 		avatar.Children(func() { ui.Icon(c, IconSparkles).FontSize(14).TextColor(t.Text) })
@@ -171,6 +178,24 @@ func messageRow(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, i int) 
 			})
 		})
 	})
+}
+
+// fadeIn is the ZCode-style motion: a message that was just created
+// fades in over 180ms; older messages (history, scrolling back) render
+// at full opacity from the first frame. State rides the keyed row, so a
+// streaming message animates once, not per frame.
+func fadeIn(c *ui.Context, root *ui.Element, m *MessageVM) {
+	const dur = 180 * time.Millisecond
+	born := ui.Local(root, "born", func() time.Time { return time.Time{} })
+	if born.IsZero() {
+		*born = c.Now()
+	}
+	age := c.Now().Sub(*born)
+	if age >= dur || c.Now().Sub(m.At) > 2*time.Second {
+		return
+	}
+	root.Opacity(float32(age) / float32(dur))
+	c.AnimationFrame() // keep ticking until the fade completes
 }
 
 // messageActions is the action row under a message: its time and its
