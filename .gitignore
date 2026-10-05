@@ -5,5 +5,10 @@ mygo-agent.exe
 codex-app
 *.tmp
 
+# editor / plugin runtime state: each holds a plugin_root path into this
+# machine's cache, which is not the same on anyone else's
+.v2c/
+.video_agent/
+
 # OS
 .DS_Store

@@ -78,9 +78,18 @@ Generated SBPL, launched as `sandbox-exec -p <profile> -- <argv>`:
 
 - The wrapper is a process: sandboxed commands are killed by cancelling the
   context like any other command (the app's process-group stop applies).
+  That stop is a **process-group** kill, and it must be wired into the shell
+  tool's command, not merely written: a direct-child kill leaves the command's
+  own children running, and — because they still hold the output pipe — leaves
+  the tool call blocked in `Wait` long after its deadline. `WaitDelay` bounds
+  that pipe; both halves of the guard belong together.
 - A sandboxed command that was killed or timed out has an **unknown
   outcome**: its result says so instead of reporting a clean failure.
 - `Scratch` directories are removed when the run finishes.
+
+The credential denylist here masks the stores for a *shell* command. The
+file tools apply the same list themselves (permissions.md), because a mode
+that denies `shell.exec` still allows `file.read`.
 
 ## Invariants
 

@@ -62,6 +62,7 @@ func (a *app) view(c *ui.Context) {
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
 		if a.navOpen {
 			a.renderSidebar(c, top)
+			a.divider(c, &a.navWidth, 1)
 		}
 		ui.Column(c).Grow(1).MinWidth(0).Background(a.pal.Bg).Children(func() {
 			a.renderHeader(c, tb)
@@ -80,11 +81,42 @@ func (a *app) view(c *ui.Context) {
 			}
 		})
 		if a.wsOpen {
+			a.divider(c, &a.wsWidth, -1)
 			a.renderWorkspace(c)
 		}
 	})
 
 	a.overlays(c)
+}
+
+// Divider drag bounds, DIP.
+const (
+	dividerMin = 180.0
+	dividerMax = 520.0
+)
+
+// divider is the draggable splitter between the panels: dragging it
+// resizes the neighbouring panel (sign decides which side yields). The
+// panels' own borders moved here, so the line you see is the handle.
+//
+// The bounds are the constants above rather than parameters, and they are
+// not named min/max: those would shadow the builtins the clamp below is
+// written with, and a function that calls itself as min(w, lo) is a
+// runtime blowup, not a compile error one reader can see.
+func (a *app) divider(c *ui.Context, width *float32, sign float32) {
+	div := ui.Column(c).Width(5).Justify(ui.Center)
+	div.Cursor(ui.CursorResizeEW)
+	if dx, _, ok := div.Dragged(); ok {
+		w := *width + sign*dx
+		*width = min(max(w, dividerMin), dividerMax)
+	}
+	line := a.pal.Border
+	if div.Hovered() {
+		line = a.pal.Hover
+	}
+	div.Children(func() {
+		ui.Box(c).Width(1).Grow(1).Background(line)
+	})
 }
 
 // mainPane is the header's body: the file viewer while one is open, else

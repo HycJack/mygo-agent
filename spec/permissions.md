@@ -7,7 +7,7 @@ the approval-mode selector must change what the built-in backend can do, not
 only the flags handed to external CLIs.
 
 The design follows agent-foundation's shape (closed action catalog, selector
-rules, four permission modes) at desktop scale.
+rules, three permission modes) at desktop scale.
 
 ## Action catalog
 
@@ -30,6 +30,30 @@ Rules:
 - MCP tools always declare exactly `mcp.call`. The policy cannot know what a
   foreign server does, so `mcp.call` is treated as unbounded: in read-only
   mode it is denied, in agent mode it asks.
+
+## The credential denylist
+
+`file.read` and `skill.read` are allow in all three modes, and an absolute
+path passes straight through the path join, so the gate alone would let the
+model read `~/.aws/credentials` in read-only mode and carry it out in the next
+request. The file tools therefore refuse a fixed set of credential stores —
+the same list the sandbox masks for a shell command (sandbox.md):
+
+```
+~/.ssh   ~/.aws   ~/.gnupg   ~/.kube   ~/.docker   ~/.config/gh   ~/.netrc
+```
+
+- It is a **deny list on the tool**, not a mode: it applies in every mode,
+  including full access. A sandbox boundary is a convenience; a credential
+  store is a secret.
+- Both the literal and the symlink-resolved form of each store are compared,
+  so a symlink or a `..` segment is not a way around it. Resolution is
+  best-effort — a path that does not exist cannot be resolved — which is why
+  both forms are kept rather than only the resolved one.
+- A refusal is a settled tool result the model can read, naming the reason.
+  It is never a crash and never a silent empty success.
+- Writes are not the concern here: `ConfineWrites` already confines them to
+  the workspace in agent mode.
 
 ## Permission modes and defaults
 

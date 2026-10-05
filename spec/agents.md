@@ -14,7 +14,7 @@
 ## 2. 现状盘点（与本方案相关的代码事实）
 
 - **配置** `internal/config`：v1，`providers`（OpenAI 兼容端点 + codex/claude 内置）、`mcp_servers`（全局）、`permissions.rules`、`backend/model/effort/max_turns`（**全局单选**）。严格解析（未知字段报错），版本化，拒绝更新版本的文件。
-- **Harness 协议** `internal/harness`：`Harness/Turn/Event` 单回合协议 + 四个适配器（builtin / codex app-server / claude stream-json / demo）。`Turn` 携带 prompt/workdir/mode/rules/model/effort/sessionID/sandbox/memory。
+- **Harness 协议** `internal/harness`：`Harness/Turn/Event` 单回合协议 + 四个适配器（builtin / codex app-server / claude stream-json / pi json）。`Turn` 携带 prompt/workdir/mode/rules/model/effort/sessionID/sandbox/memory。
 - **工具**：`harness.Tools(workdir, skills, ToolOptions)` 构建内置 6 件（bash / read_file / edit_file / list_files / grep / read_skill），每个 `Tool{Name, Description, Actions, Parameters, Execute}` —— 天然的注册表素材。
 - **Skills**：`DiscoverSkills(projectDir)` 从项目目录发现，经 `read_skill` 工具暴露。
 - **MCP**：运行时 `a.effectiveMCPServers()`（全局配置 + 项目 `.mcp.json`）spawn 后把工具并入工具集（仅 builtin）。
@@ -35,7 +35,7 @@
     "id": "ag-01",
     "name": "Refactorer",
     "emoji": "🛠",
-    "backend": "builtin",            // builtin | codex | claude | demo
+    "backend": "builtin",            // builtin | codex | claude | pi
     "provider": "prov-9676…",         // 模型来源
     "model": "deepseek-chat",
     "effort": 1,

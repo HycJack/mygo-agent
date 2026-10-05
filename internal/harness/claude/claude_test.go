@@ -211,3 +211,62 @@ sleep 30
 		t.Fatalf("events incomplete — text:%q result note:%v", text, note)
 	}
 }
+
+// TestSilentCLIIsNotACleanTurn pins the failure mode where the CLI
+// produces nothing at all and is then cut off: a hang before its first
+// line, a crash that left no stderr, a binary that never started. All
+// three look identical on the wire, and reporting them as a finished turn
+// leaves the user an empty reply with no reason for it — the one outcome
+// they cannot act on. The run has to say that it stopped without answering.
+func TestSilentCLIIsNotACleanTurn(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "silent-claude.sh")
+	// Reads its input, then hangs: no init, no events, no stderr.
+	if err := os.WriteFile(script, []byte("#!/bin/bash\nIFS= read -r _\nsleep 300\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := New(script).Run(ctx, harness.Turn{Workdir: dir}, func(harness.Event) {})
+	if err == nil {
+		t.Fatal("a CLI that produced nothing reported a clean turn")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "stopped before it answered") {
+		t.Fatalf("the error does not say the CLI never answered: %q", msg)
+	}
+	if strings.Contains(msg, "claude:claude:") {
+		t.Fatalf("the prefix is doubled: %q", msg)
+	}
+}
+
+// TestStopAfterOutputIsStillClean is the other half: a run that got on
+// with it and was then stopped by the user is not a failure, and the fix
+// above must not turn a deliberate stop into an error card.
+func TestStopAfterOutputIsStillClean(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "slow-claude.sh")
+	// Streams one line, then keeps the turn open.
+	if err := os.WriteFile(script, []byte(`#!/bin/bash
+IFS= read -r _
+echo '{"type":"assistant","message":{"content":[{"type":"text","text":"working"}]}}'
+sleep 300
+`), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	var text string
+	if err := New(script).Run(ctx, harness.Turn{Workdir: dir}, func(ev harness.Event) {
+		if ev.Kind == harness.EventText {
+			text += ev.TextDelta
+		}
+	}); err != nil {
+		t.Fatalf("a stopped run that had already produced output reported a failure: %v", err)
+	}
+	if text != "working" {
+		t.Fatalf("what arrived was lost: %q", text)
+	}
+}

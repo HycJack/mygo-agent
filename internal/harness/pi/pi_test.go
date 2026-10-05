@@ -206,3 +206,48 @@ while read -r _; do :; done
 		t.Fatalf("out-of-range effort not mapped to a level: %s", data)
 	}
 }
+
+// TestSilentCLIIsNotACleanTurn pins the failure mode where a CLI produces
+// nothing at all and is then cut off: a hang before its first line, a
+// crash that left no stderr, a binary that never started properly. All
+// three look identical on the wire, and reporting them as a finished turn
+// leaves the user an empty reply with no reason for it — the one outcome
+// they cannot act on. The run has to say that it stopped without answering.
+func TestSilentCLIIsNotACleanTurn(t *testing.T) {
+	dir := t.TempDir()
+	script := filepath.Join(dir, "silent-pi.sh")
+	// Reads its input, then hangs: no session, no events, no stderr.
+	if err := os.WriteFile(script, []byte("#!/bin/bash\nIFS= read -r _\nsleep 300\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	err := New(script).Run(ctx, harness.Turn{Workdir: dir}, func(harness.Event) {})
+	if err == nil {
+		t.Fatal("a CLI that produced nothing reported a clean turn")
+	}
+	msg := err.Error()
+	if !strings.Contains(msg, "stopped before it answered") {
+		t.Fatalf("the error does not say the CLI never answered: %q", msg)
+	}
+	if strings.Contains(msg, "pi:pi:") {
+		t.Fatalf("the prefix is doubled: %q", msg)
+	}
+}
+
+// TestReasonNamesWhatIsKnown checks the fallback chain: a killed run with
+// no stderr and no wait error still has to say something true, rather
+// than nothing at all.
+func TestReasonNamesWhatIsKnown(t *testing.T) {
+	var empty strings.Builder
+	if got := piReason(empty, nil, true); got == "" {
+		t.Fatal("a killed run with nothing on stderr produced no reason at all")
+	}
+	if got := piReason(empty, nil, false); got == "" {
+		t.Fatal("a run that exited silently produced no reason at all")
+	}
+	if got := piReason(empty, os.ErrProcessDone, true); !strings.Contains(got, "process") {
+		t.Fatalf("the wait error should win over the generic wording: %q", got)
+	}
+}

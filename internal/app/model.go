@@ -85,7 +85,10 @@ type app struct {
 	settingsSel  string // the provider being edited there
 
 	navOpen bool // the tasks sidebar is shown
-	wsOpen  bool // the workspace panel (file tree + git changes) is shown
+	// Panel widths, DIP, dragged on the dividers between the panels.
+	navWidth float32
+	wsWidth  float32
+	wsOpen   bool // the workspace panel (file tree + git changes) is shown
 
 	viewerOpen bool
 
@@ -171,6 +174,8 @@ func newApp() *app {
 		effort:        1,
 		backend:       "builtin",
 		termHeight:    260,
+		navWidth:      264,
+		wsWidth:       240,
 		navOpen:       true,
 		wsOpen:        false,
 		focusComposer: true,
