@@ -6,6 +6,11 @@ import (
 	"github.com/egoist/mygo/ui"
 )
 
+// mdCacheMax is how many messages' parses are kept live. Past it the
+// cache gives an entry a second chance rather than dropping every live
+// parse at once.
+const mdCacheMax = 256
+
 // MdCache holds the incrementally-parsed markdown of many messages; the
 // host keeps one for the app's lifetime.
 type MdCache struct {
@@ -43,6 +48,7 @@ type mdState struct {
 	lang    string
 	parts   []fencePart
 	cur     fencePart // the part being streamed
+	live    bool      // rendered since the last eviction sweep
 }
 
 // forMsg returns the cached state for a message, extending it when the
@@ -67,11 +73,28 @@ func (m *MdCache) forMsg(id, src string, complete bool) *mdState {
 		st.line(st.pending + "\n")
 		st.pending = ""
 	}
-	if len(m.states) > 256 {
-		clear(m.states)
-		m.states[id] = st
+	st.live = true
+	if len(m.states) > mdCacheMax {
+		m.evict()
 	}
 	return st
+}
+
+// evict frees room by dropping the parses not rendered since the last
+// sweep, giving the rest a second chance. Clearing the whole map here
+// threw away every live parse at once, so a long thread paid for the
+// cache being full by re-parsing its whole conversation.
+func (m *MdCache) evict() {
+	for id, s := range m.states {
+		if len(m.states) <= mdCacheMax {
+			return
+		}
+		if s.live {
+			s.live = false
+			continue
+		}
+		delete(m.states, id)
+	}
 }
 
 // feed consumes the new source suffix line by line, keeping the
@@ -120,37 +143,6 @@ func (st *mdState) flush() {
 	st.cur = fencePart{code: st.inCode, lang: st.lang}
 }
 
-// renderMD draws every completed part and the live tail.
-func (md markdownRenderer) renderMD(c *ui.Context, st *mdState, t *ui.Theme) {
-	for _, p := range st.parts {
-		md.renderFencePart(c, p, t)
-	}
-	live := st.cur.text + st.pending
-	if live == "" {
-		return
-	}
-	ui.Column(c).Gap(6).Children(func() {
-		lines := strings.Split(live, "\n")
-		body := strings.Join(lines[:max(len(lines)-1, 0)], "\n")
-		if body != "" {
-			md.renderLines(c, body, t)
-		}
-		// The trailing line may be incomplete mid-stream: render it as
-		// inline text only.
-		last := lines[len(lines)-1]
-		if strings.TrimSpace(last) == "" {
-			return
-		}
-		if st.inCode {
-			ui.Text(c, last).Font("monospace").FontSize(12)
-			return
-		}
-		ui.RichText(c).FontSize(14).LineHeight(1.6).Children(func() {
-			md.renderInline(c, strings.TrimLeft(last, " "), t)
-		})
-	})
-}
-
 // renderFencePart renders one completed part: a code card or a block
 // of prose lines with the full markdown dispatch.
 func (md markdownRenderer) renderFencePart(c *ui.Context, p fencePart, t *ui.Theme) {
@@ -161,13 +153,38 @@ func (md markdownRenderer) renderFencePart(c *ui.Context, p fencePart, t *ui.The
 	md.renderLines(c, p.text, t)
 }
 
-// renderLines is the markdown line dispatch: tables, headings, lists,
-// quotes, rules and paragraphs with inline formatting.
+// renderLines is the markdown line dispatch: indented code blocks,
+// tables, headings, lists, quotes, rules and paragraphs with inline
+// formatting. The leading indent is kept rather than trimmed, because
+// it is the only thing that says how deep a list item sits and whether
+// a run of lines is an indented code block.
 func (md markdownRenderer) renderLines(c *ui.Context, text string, t *ui.Theme) {
 	lines := strings.Split(strings.TrimRight(text, "\n"), "\n")
+	// The content indent of the list being read, -1 outside one: a line
+	// indented past it is that item's own text, so a nested item stays
+	// a list instead of turning into an indented code block.
+	listBase := -1
 	for li := 0; li < len(lines); li++ {
-		line := strings.TrimLeft(lines[li], " ")
+		line := lines[li]
+		ind := indentOf(line)
 		trimmed := strings.TrimSpace(line)
+
+		// Four columns of indent outside a list item is an indented code
+		// block. Collect the whole run so it renders as one card.
+		if trimmed != "" && ind >= 4 && (listBase < 0 || ind < listBase) {
+			run := []string{trimmed}
+			for li+1 < len(lines) {
+				next := lines[li+1]
+				if strings.TrimSpace(next) == "" || indentOf(next) < 4 {
+					break
+				}
+				li++
+				run = append(run, strings.TrimSpace(lines[li]))
+			}
+			md.codeCard(c, fencePart{text: strings.Join(run, "\n")})
+			continue
+		}
+
 		switch {
 		case trimmed == "":
 			continue
@@ -197,7 +214,8 @@ func (md markdownRenderer) renderLines(c *ui.Context, text string, t *ui.Theme) 
 				}).TextColor(t.TextMuted)
 			})
 		case strings.HasPrefix(trimmed, "- "), strings.HasPrefix(trimmed, "* "):
-			ui.Row(c).Gap(8).AlignItems(ui.Start).Children(func() {
+			openList(&listBase, ind)
+			ui.Row(c).Gap(8).AlignItems(ui.Start).Margin(0, 0, 0, depthIndent(ind)).Children(func() {
 				ui.Text(c, "•").FontSize(14).LineHeight(1.6).TextColor(md.pal.TextMuted)
 				ui.RichText(c).Grow(1).MinWidth(0).FontSize(14).LineHeight(1.6).Children(func() {
 					md.renderInline(c, strings.TrimPrefix(strings.TrimPrefix(trimmed, "- "), "* "), t)
@@ -205,7 +223,8 @@ func (md markdownRenderer) renderLines(c *ui.Context, text string, t *ui.Theme) 
 			})
 		default:
 			if n, rest := numberedItem(trimmed); n != "" {
-				ui.Row(c).Gap(8).AlignItems(ui.Start).Children(func() {
+				openList(&listBase, ind)
+				ui.Row(c).Gap(8).AlignItems(ui.Start).Margin(0, 0, 0, depthIndent(ind)).Children(func() {
 					ui.Text(c, n+".").Font("monospace").FontSize(12).TextColor(md.pal.TextMuted).
 						Width(22).TextAlign(ui.End)
 					ui.RichText(c).Grow(1).MinWidth(0).FontSize(14).LineHeight(1.6).Children(func() {
@@ -221,10 +240,44 @@ func (md markdownRenderer) renderLines(c *ui.Context, text string, t *ui.Theme) 
 	}
 }
 
-// numberedItem recognises "12. text" list lines and splits them.
+// indentOf is the width of a line's leading indent, a tab counting as
+// the four columns markdown measures it as.
+func indentOf(line string) int {
+	n := 0
+	for _, r := range line {
+		switch r {
+		case ' ':
+			n++
+		case '\t':
+			n += 4
+		default:
+			return n
+		}
+	}
+	return n
+}
+
+// depthIndent is how far in a list item at indent ind sits, two columns
+// of indent per level.
+func depthIndent(ind int) float32 { return float32(ind/2) * 18 }
+
+// openList notes the content indent of the list an item at indent ind
+// belongs to, so the lines inside it are read as its text.
+func openList(listBase *int, ind int) {
+	if *listBase < 0 || ind < *listBase {
+		*listBase = ind + 2
+	}
+}
+
+// numberedItem recognises "12. text" list lines and splits them. The
+// separator has to open the item — "3.14 is pi" is prose, not the item
+// "3." followed by "14 is pi".
 func numberedItem(line string) (num, rest string) {
 	i := strings.IndexAny(line, ".)")
 	if i <= 0 || i > 4 {
+		return "", ""
+	}
+	if i+1 >= len(line) || (line[i+1] != ' ' && line[i+1] != '\t') {
 		return "", ""
 	}
 	for _, r := range line[:i] {
@@ -232,7 +285,7 @@ func numberedItem(line string) (num, rest string) {
 			return "", ""
 		}
 	}
-	return line[:i], strings.TrimLeft(line[i+1:], " ")
+	return line[:i], strings.TrimLeft(line[i+1:], " \t")
 }
 
 // isTableSeparator reports whether a line is the |---|---| divider of a
@@ -387,38 +440,6 @@ type fencePart struct {
 	text string
 }
 
-// splitFences splits src into prose and fenced code parts (used by the
-// incremental parser's callers and tests).
-func splitFences(src string) []fencePart {
-	var parts []fencePart
-	var buf []string
-	inCode := false
-	lang := ""
-	flush := func() {
-		if len(buf) > 0 {
-			parts = append(parts, fencePart{code: inCode, lang: lang, text: strings.Join(buf, "\n")})
-			buf = nil
-		}
-	}
-	for line := range strings.SplitSeq(src, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "```") {
-			flush()
-			if inCode {
-				inCode = false
-				lang = ""
-			} else {
-				inCode = true
-				lang = strings.TrimPrefix(trimmed, "```")
-			}
-			continue
-		}
-		buf = append(buf, line)
-	}
-	flush()
-	return parts
-}
-
 // codeCard is a fenced block: the language, a copy button, and the code.
 func (md markdownRenderer) codeCard(c *ui.Context, p fencePart) {
 	t := c.Theme()
@@ -446,32 +467,35 @@ func (md markdownRenderer) codeCard(c *ui.Context, p fencePart) {
 	})
 }
 
-// renderLive draws the part being streamed: its complete lines get the
-// markdown dispatch and the trailing partial line renders as inline
-// text.
+// renderLive draws the part being streamed: an open fence as the same
+// card a closed one is, height cap included, so a streaming block looks
+// like the finished one and cannot grow the reply without limit; a
+// prose tail as blocks, its trailing partial line as inline text.
 func (md markdownRenderer) renderLive(c *ui.Context, st *mdState, t *ui.Theme) {
 	live := st.cur.text + st.pending
 	if live == "" {
 		return
 	}
+	if st.inCode {
+		md.codeCard(c, fencePart{code: true, lang: st.lang, text: live})
+		return
+	}
+	// The complete lines go through the block dispatch as one run, so a
+	// table, a list or an indented code block still in the tail is read
+	// as a block; only the trailing partial line — the one still
+	// arriving — renders as inline text.
+	lines := strings.Split(live, "\n")
+	body := strings.Join(lines[:max(0, len(lines)-1)], "\n")
 	ui.Column(c).Gap(6).Children(func() {
-		lines := strings.Split(live, "\n")
-		for li, line := range lines {
-			trimmed := strings.TrimSpace(line)
-			if trimmed == "" {
-				continue
-			}
-			if st.inCode {
-				ui.Text(c, line).Font("monospace").FontSize(12)
-				continue
-			}
-			if li == len(lines)-1 {
-				ui.RichText(c).FontSize(14).LineHeight(1.6).Children(func() {
-					md.renderInline(c, trimmed, t)
-				})
-				continue
-			}
-			md.renderLines(c, line, t)
+		if strings.TrimSpace(body) != "" {
+			md.renderLines(c, body, t)
 		}
+		last := strings.TrimSpace(lines[len(lines)-1])
+		if last == "" {
+			return
+		}
+		ui.RichText(c).FontSize(14).LineHeight(1.6).Children(func() {
+			md.renderInline(c, last, t)
+		})
 	})
 }
