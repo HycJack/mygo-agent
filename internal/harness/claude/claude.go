@@ -104,8 +104,17 @@ func (h *Harness) Run(ctx context.Context, turn harness.Turn, emit func(harness.
 	}
 	waitErr, killed := cli.Reap(cmd, stdin)
 
+	// A cancelled turn is only a clean stop when the CLI had actually got
+	// on with it. A run that produced nothing at all and was then cut off
+	// — a CLI that hung before its first line, or died without saying why
+	// — reports itself as a finished turn otherwise, and the user is left
+	// with an empty reply and no reason for it. The events that did arrive
+	// still stand; what is missing is said out loud.
 	if ctx.Err() != nil {
-		return nil // stopped by the user; keep whatever arrived
+		if r.sawEvent {
+			return nil // stopped by the user; keep whatever arrived
+		}
+		return fmt.Errorf("claude: stopped before it answered — %s", cli.Trunc(claudeReason(stderr, waitErr, killed), 400))
 	}
 	if r.sawEvent && (waitErr == nil || killed) {
 		// A CLI we had to stop after it already settled is not a failed
@@ -120,6 +129,24 @@ func (h *Harness) Run(ctx context.Context, turn harness.Turn, emit func(harness.
 		return nil
 	}
 	return fmt.Errorf("claude: %s", tail)
+}
+
+// claudeReason is the best available account of a run that produced
+// nothing: the CLI's own words if it left any, then the wait error, then
+// what is actually known. The last is not decoration — a CLI that hangs
+// and is killed has no stderr and often no wait error either, and "the
+// CLI produced no output" is the fact that has to reach the user.
+func claudeReason(stderr strings.Builder, waitErr error, killed bool) string {
+	if tail := strings.TrimSpace(stderr.String()); tail != "" {
+		return tail
+	}
+	if waitErr != nil {
+		return waitErr.Error()
+	}
+	if killed {
+		return "it was still running and had to be stopped"
+	}
+	return "it exited without answering"
 }
 
 // run carries one Claude Code run's state between events.
