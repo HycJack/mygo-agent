@@ -282,16 +282,21 @@ func (h *Harness) interact(ctx context.Context, run *run, c *app, method string,
 			Reason  string `json:"reason"`
 		}
 		_ = json.Unmarshal(params, &p)
-		req.Summary = "$ " + cli.Trunc(p.Command, 200)
-		req.Reason = p.Reason
+		// Redact before truncating (permissions.go): the card is drawn on
+		// screen and persisted into the thread file, and a cut can hide a
+		// secret's tail behind the ellipsis. The summary is model-proposed
+		// text — a `curl -H "Authorization: Bearer …"` must not survive
+		// either way.
+		req.Summary = "$ " + cli.Trunc(cli.Redact(p.Command), 200)
+		req.Reason = cli.Redact(p.Reason)
 	case "item/fileChange/requestApproval":
 		var p struct {
 			GrantRoot string `json:"grantRoot"`
 			Reason    string `json:"reason"`
 		}
 		_ = json.Unmarshal(params, &p)
-		req.Summary = "apply file changes: " + cli.Trunc(p.GrantRoot, 160)
-		req.Reason = p.Reason
+		req.Summary = "apply file changes: " + cli.Trunc(cli.Redact(p.GrantRoot), 160)
+		req.Reason = cli.Redact(p.Reason)
 	default:
 		// Permission-profile escalation is answered with the empty
 		// profile — a deny — and surfaced as a note (spec/cli-backends.md).

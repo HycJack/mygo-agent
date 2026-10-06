@@ -3,9 +3,11 @@
 package codex
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"mygo-agent/internal/harness"
@@ -104,5 +106,38 @@ func TestRunRejectsAChatEndpoint(t *testing.T) {
 	// Nothing was spawned, so the stub left no trace of a run.
 	if _, statErr := os.Stat(filepath.Join(dir, "args.txt")); statErr == nil {
 		t.Fatal("the process was spawned despite the endpoint being unsupported")
+	}
+}
+
+// TestApprovalSummaryRedactsTheCommand pins the card's one-way door: a
+// summary is CLI-proposed text that is drawn on screen and persisted
+// into the thread file, so it is redacted before it is truncated — a
+// `curl -H "Authorization: Bearer …"` the backend proposes must reach
+// neither place.
+func TestApprovalSummaryRedactsTheCommand(t *testing.T) {
+	var mu sync.Mutex
+	var got harness.ApprovalRequest
+	turn := harness.Turn{}
+	turn.OnApproval = func(ctx context.Context, req harness.ApprovalRequest) harness.ApprovalDecision {
+		mu.Lock()
+		got = req
+		mu.Unlock()
+		return harness.ApprovalDecision{Approved: true}
+	}
+	if _, err := drive(t, fakeBin(t, "approval"), t.TempDir(), turn); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if got.Call.ID == "" {
+		t.Fatal("no approval request reached the handler")
+	}
+	for _, secret := range []string{"sk-test12345678", "ghp_test123456789"} {
+		if strings.Contains(got.Summary, secret) || strings.Contains(got.Reason, secret) {
+			t.Fatalf("the secret %q reached the card: summary=%q reason=%q", secret, got.Summary, got.Reason)
+		}
+	}
+	if !strings.Contains(got.Summary, "«redacted»") {
+		t.Fatalf("the summary was truncated but not redacted: %q", got.Summary)
 	}
 }

@@ -188,7 +188,15 @@ func (a *app) removeProvider(id string) {
 	a.providers = slices.Delete(a.providers, at, at+1)
 	if a.providerID == id {
 		a.providerID = a.providers[0].ID
-		a.model = a.provider().Models[0]
+		// addProvider creates with an empty model list, so the provider
+		// taking the active slot may have none: fall back to the empty
+		// model instead of indexing out of range — there is no recover
+		// anywhere in the process.
+		if models := a.provider().Models; len(models) > 0 {
+			a.model = models[0]
+		} else {
+			a.model = ""
+		}
 	}
 	if a.settingsSel == id {
 		if len(a.providers) > 0 {

@@ -44,6 +44,13 @@ while IFS= read -r line; do
       failed)
         printf '{"jsonrpc":"2.0","method":"turn/failed","params":{"error":{"message":"model stream broke"}}}\n'
         ;;
+      approval)
+        # No quote characters in the command text: bash printf eats the
+        # JSON escapes in a format string, and a frame with raw quotes in
+        # it is invalid JSON the client drops without a word.
+        printf '{"jsonrpc":"2.0","id":77,"method":"item/commandExecution/requestApproval","params":{"command":"curl --header Authorization: Bearer sk-test12345678 https://example.com","reason":"push with GITHUB_TOKEN=ghp_test123456789"}}\n'
+        printf '{"jsonrpc":"2.0","method":"turn/completed","params":{}}\n'
+        ;;
       stream)
         # A fast stream that fills the pipe and then blocks on the write,
         # so at the stop there is a real backlog left for the reader to
