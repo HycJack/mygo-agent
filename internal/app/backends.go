@@ -156,12 +156,7 @@ func (a *app) resolveAgent(ag *Agent) agentOverlay {
 	// its connection from there, the codex adapter maps it onto the
 	// model_providers override. A CLI provider (no base URL) leaves it
 	// nil — the CLI's own sign-in applies.
-	if p := a.providerByID(ov.providerID); p != nil && p.BaseURL != "" {
-		ov.endpoint = &harness.Endpoint{
-			ID: p.ID, Name: p.Name, BaseURL: p.BaseURL, APIKey: p.APIKey,
-			Wire: p.Wire, ContextWindow: p.ContextWindow,
-		}
-	}
+	ov.endpoint = a.endpointFor(ov.providerID)
 	// MCP: the agent names a subset of the effective servers; an empty
 	// list mounts all of them (spec/agents.md).
 	ov.mcpServers = a.effectiveMCPServers()
@@ -204,6 +199,20 @@ func (a *app) panelFor(ag *Agent) []*Agent {
 	return out
 }
 
+// endpointFor resolves one provider id to the turn's Endpoint: the
+// built-in loop reads its connection from there, the codex adapter maps
+// it onto the model_providers override. A CLI provider (no base URL)
+// yields nil — the CLI's own sign-in applies.
+func (a *app) endpointFor(id string) *harness.Endpoint {
+	if p := a.providerByID(id); p != nil && p.BaseURL != "" {
+		return &harness.Endpoint{
+			ID: p.ID, Name: p.Name, BaseURL: p.BaseURL, APIKey: p.APIKey,
+			Wire: p.Wire, ContextWindow: p.ContextWindow,
+		}
+	}
+	return nil
+}
+
 // planTurn assembles the turn from the thread's agent over the
 // app-level defaults. Everything is snapshotted here, on the main
 // thread — the snapshot, not a live reference: config may change
@@ -226,6 +235,17 @@ func (a *app) planTurnFor(th *Thread, prompt string, ag *Agent) turnPlan {
 		}
 	}
 	ov := a.resolveAgent(ag)
+	// The thread's own model override — what the composer's picker
+	// writes — outranks the agent's, which outranks the app's.
+	if th.Provider != "" || th.Model != "" {
+		if th.Provider != "" {
+			ov.providerID = th.Provider
+			ov.endpoint = a.endpointFor(ov.providerID)
+		}
+		if th.Model != "" {
+			ov.model = th.Model
+		}
+	}
 	// Clamp at the boundary: mode and effort index arrays and flag lists
 	// inside the adapters, and there is no recover() anywhere in the app.
 	mode := clampMode(ov.mode)

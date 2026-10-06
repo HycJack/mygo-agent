@@ -639,3 +639,60 @@ func TestAgentSegmentsClickThrough(t *testing.T) {
 	// the modal, so its click is covered by the round-trip test above
 	// rather than by an ambiguous text click here.
 }
+
+// TestThreadModelOverrideWins pins the composer's model semantics
+// (spec/agents.md): the picker writes the thread, and the thread's
+// override outranks the agent's, which outranks the app's.
+func TestThreadModelOverrideWins(t *testing.T) {
+	a := newTestApp(t)
+	a.backend = "builtin"
+	a.model = "app-model"
+	a.providers = []Provider{{ID: "p1", Name: "one", BaseURL: "https://one.test", APIKey: "k",
+		Models: []string{"p1-model-a", "p1-model-b"}, Wire: harness.WireChat}}
+	agentModel := "agent-model"
+	a.agents = append(a.agents, Agent{ID: "ag-1", Name: "X", Provider: "p1", Model: agentModel})
+	th := &Thread{ID: "t1", ProjectID: "default", AgentID: "ag-1"}
+	a.threads = append(a.threads, th)
+	a.current = "t1" // the picker writes the thread on screen
+
+	// No override: the agent's model runs.
+	if got := a.planTurn(th, "hi").turn.Model; got != agentModel {
+		t.Fatalf("agent model = %q", got)
+	}
+	// The picker writes the thread; the thread wins.
+	h := homeActions{a: a}
+	h.PickModel("p1", "p1-model-b")
+	if th.Model != "p1-model-b" || th.Provider != "p1" {
+		t.Fatalf("pick did not write the thread: %q/%q", th.Provider, th.Model)
+	}
+	if got := a.planTurn(th, "hi").turn.Model; got != "p1-model-b" {
+		t.Fatalf("thread override lost: %q", got)
+	}
+	if a.model != "app-model" {
+		t.Fatalf("the pick leaked into the app default: %q", a.model)
+	}
+	// The endpoint followed the override's provider.
+	if ep := a.planTurn(th, "hi").turn.Endpoint; ep == nil || ep.ID != "p1" {
+		t.Fatalf("endpoint = %+v", ep)
+	}
+}
+
+// TestPickModelOnHomeWritesDefaults pins the home-screen half: with no
+// thread, the picker writes the app defaults a new task will inherit —
+// and a CLI backend id as the provider selects that backend too.
+func TestPickModelOnHomeWritesDefaults(t *testing.T) {
+	a := newTestApp(t)
+	a.providers = []Provider{{ID: "p1", Name: "one", BaseURL: "https://one.test", APIKey: "k",
+		Models: []string{"p1-model"}, Wire: harness.WireChat}}
+	a.current = "" // the home screen: no thread to write on
+
+	h := homeActions{a: a}
+	h.PickModel("p1", "p1-model")
+	if a.providerID != "p1" || a.model != "p1-model" {
+		t.Fatalf("home pick: %q/%q", a.providerID, a.model)
+	}
+	h.PickModel("claude", "claude-sonnet-4-5")
+	if a.backend != "claude" || a.model != "claude-sonnet-4-5" {
+		t.Fatalf("cli pick: backend %q model %q", a.backend, a.model)
+	}
+}

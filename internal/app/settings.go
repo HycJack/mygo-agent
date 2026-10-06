@@ -90,7 +90,7 @@ func (a *app) settingsVM() *uipkg.SettingsVM {
 		vm.Providers = append(vm.Providers, uipkg.ProviderEditVM{
 			ID: p.ID, Name: p.Name, BaseURL: p.BaseURL, APIKey: p.APIKey,
 			Wire: p.Wire, Models: slices.Clone(p.Models),
-			Codex: p.ID == "codex", RunsAs: runsAs,
+			RunsAs:    runsAs,
 			Available: a.fetchedModels[p.ID], FetchErr: a.fetchErrs[p.ID],
 		})
 	}
@@ -304,7 +304,7 @@ func (h settingsActions) RemoveMCP(i int) {
 // mirror applies it to the host and saves.
 func (h settingsActions) ApplyPreset(id string, preset int) {
 	p := h.providerVM(id)
-	if p == nil || p.ID == "codex" || preset < 0 || preset >= len(providerPresets) {
+	if p == nil || preset < 0 || preset >= len(providerPresets) {
 		return
 	}
 	ps := providerPresets[preset]
@@ -317,15 +317,6 @@ func (h settingsActions) SetWire(id, wire string) {
 	if p := h.providerVM(id); p != nil {
 		p.Wire = wire
 	}
-}
-
-func (h settingsActions) AddModel(id string) {
-	p := h.a.providerByID(id)
-	if p == nil {
-		return
-	}
-	p.Models = append(p.Models, fmt.Sprintf("gpt-5.2-codex-%s", uid()))
-	h.a.saveConfig()
 }
 
 // addMCPServer parses the draft line into a server and saves it. The

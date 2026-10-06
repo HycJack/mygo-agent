@@ -127,6 +127,12 @@ type Thread struct {
 	// Empty resolves to the default agent; the resolution is stamped
 	// back here the next time the thread is saved.
 	AgentID string
+	// Provider / Model are the thread's model override (spec/agents.md):
+	// picking a model in the composer writes here — the thread, not the
+	// agent profile — and they win over the agent's, which win over the
+	// app's. Empty follows the agent.
+	Provider string
+	Model    string
 
 	// The full-text search cache: the haystack is computed only while a
 	// search is active, invalidated when the message list changes shape.

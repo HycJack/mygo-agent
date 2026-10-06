@@ -102,12 +102,17 @@ type threadMeta struct {
 	// empty resolves to the default agent on use and is stamped here on
 	// the next save.
 	AgentID string `json:"agent_id,omitempty"`
+	// Provider / Model are the thread's model override, written by the
+	// composer's model picker; empty follows the agent (spec/agents.md).
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
 }
 
 func metaOf(th *Thread) threadMeta {
 	return threadMeta{ID: th.ID, ProjectID: th.ProjectID, Title: th.Title,
 		Created: th.Created, Updated: th.Updated,
-		CodexID: th.CodexID, ClaudeID: th.ClaudeID, PiID: th.PiID, AgentID: th.AgentID}
+		CodexID: th.CodexID, ClaudeID: th.ClaudeID, PiID: th.PiID, AgentID: th.AgentID,
+		Provider: th.Provider, Model: th.Model}
 }
 
 // saveThread writes one thread's file atomically. The thread's Messages
@@ -239,6 +244,7 @@ func decodeThreadFile(path string) (*Thread, error) {
 		Created: tf.Meta.Created, Updated: tf.Meta.Updated,
 		CodexID: tf.Meta.CodexID, ClaudeID: tf.Meta.ClaudeID, PiID: tf.Meta.PiID,
 		AgentID:  tf.Meta.AgentID,
+		Provider: tf.Meta.Provider, Model: tf.Meta.Model,
 		Messages: tf.Messages, ChatLog: tf.ChatLog,
 		// The diff count is derived state; the zero value already means
 		// "never counted", so the first read scans.

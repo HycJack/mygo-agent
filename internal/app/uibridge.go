@@ -41,11 +41,6 @@ func (a *app) homeViewModel() *uipkg.ViewModel {
 	vm.ModelMenu = a.modelMenu
 	vm.AgentMenu = a.agentMenu
 	vm.Pal = a.pal
-	vm.Providers = vm.Providers[:0]
-	for i := range a.providers {
-		p := &a.providers[i]
-		vm.Providers = append(vm.Providers, uipkg.ProviderVM{ID: p.ID, Name: p.Name, Models: p.Models})
-	}
 	// The agent the composer shows: the current thread's binding on a
 	// thread, the active selection on the home screen (spec/agents.md).
 	agID := a.activeAgentID()
@@ -59,13 +54,39 @@ func (a *app) homeViewModel() *uipkg.ViewModel {
 	}
 	// The model line names what the next turn will actually run: the
 	// bound agent's override when it has one (spec/agents.md).
-	vm.Model, vm.ProviderID = a.model, a.providerID
+	// The model line resolves thread > agent > app — the same order
+	// planTurn uses — and the picker groups by the backend that order
+	// resolves to (spec/agents.md).
+	th := a.currentThread()
+	backend, providerID, model := a.backend, a.providerID, a.model
 	if ag := a.agentByID(agID); ag != nil {
-		if ag.Model != "" {
-			vm.Model = ag.Model
+		ov := a.resolveAgent(ag)
+		backend, providerID, model = ov.backend, ov.providerID, ov.model
+	}
+	if th != nil {
+		if th.Provider != "" {
+			providerID = th.Provider
 		}
-		if ag.Provider != "" {
-			vm.ProviderID = ag.Provider
+		if th.Model != "" {
+			model = th.Model
+		}
+	}
+	vm.Model, vm.ProviderID = model, providerID
+	vm.Providers = vm.Providers[:0]
+	switch backend {
+	case "codex":
+		vm.Providers = append(vm.Providers, uipkg.ProviderVM{ID: "codex", Name: "Codex CLI", Models: defaultModels})
+	case "claude":
+		vm.Providers = append(vm.Providers, uipkg.ProviderVM{ID: "claude", Name: "Claude Code", Models: claudeModels})
+	case "pi":
+		// pi resolves models from its own configuration; nothing to pick.
+	default:
+		for i := range a.providers {
+			p := &a.providers[i]
+			if p.BaseURL == "" {
+				continue // a CLI pseudo-provider, not a real endpoint
+			}
+			vm.Providers = append(vm.Providers, uipkg.ProviderVM{ID: p.ID, Name: p.Name, Models: p.Models})
 		}
 	}
 	vm.Agents = vm.Agents[:0]
@@ -135,7 +156,29 @@ func (h homeActions) SetEffort(e int) {
 	h.a.effort = clampInt(e, 0, 2)
 	h.a.saveConfig()
 }
+
+// PickModel writes the model the way the composer displays it: on the
+// current thread (spec/agents.md — the override lives with the task,
+// not the agent profile), or onto the app defaults from the home
+// screen. A CLI backend id as the provider means the CLI's own model
+// table was picked, which also selects that backend.
 func (h homeActions) PickModel(pid, m string) {
+	switch pid {
+	case "codex", "claude", "pi":
+		h.a.backend = pid
+		h.a.model = m
+		if th := h.a.currentThread(); th != nil {
+			th.Provider, th.Model = "", m
+			h.a.saveThread(th)
+		}
+		h.a.saveConfig()
+		return
+	}
+	if th := h.a.currentThread(); th != nil {
+		th.Provider, th.Model = pid, m
+		h.a.saveThread(th)
+		return
+	}
 	h.a.providerID, h.a.model = pid, m
 	h.a.saveConfig()
 }

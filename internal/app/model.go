@@ -181,6 +181,10 @@ type app struct {
 // defaultModels are the models of the built-in Codex CLI provider.
 var defaultModels = []string{"gpt-5.2-codex", "gpt-5.2", "gpt-5.1-codex-max", "gpt-5.1-codex-mini"}
 
+// claudeModels are the Claude Code backend's well-known models, shown
+// by the composer's picker when that backend is the one running.
+var claudeModels = []string{"claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"}
+
 func newApp() *app {
 	a := &app{
 		theme:         codexTheme(),
@@ -282,17 +286,15 @@ func (a *app) loadConfig() {
 	if cfg.MaxTurns > 0 {
 		a.maxTurns = cfg.MaxTurns
 	}
-	// Migrate the pre-providers config: its model and custom models
-	// fold into the built-in Codex CLI provider.
-	if len(a.providers) == 0 && (len(cfg.CustomModels) > 0 || cfg.Model != "") {
-		ms := slices.Clone(defaultModels)
-		for _, m := range append([]string{cfg.Model}, cfg.CustomModels...) {
-			if m != "" && !slices.Contains(ms, m) {
-				ms = append(ms, m)
+	// Migrate the pre-providers config: its custom models join the
+	// codex CLI's well-known table, reachable from the picker's codex
+	// group — there is no codex provider to host them anymore.
+	if len(cfg.CustomModels) > 0 {
+		for _, m := range cfg.CustomModels {
+			if m != "" && !slices.Contains(defaultModels, m) {
+				defaultModels = append(defaultModels, m)
 			}
 		}
-		a.providers = []Provider{{ID: "codex", Name: "Codex CLI", Wire: harness.WireResponses, Models: ms}}
-		a.providerID = "codex"
 	}
 }
 
@@ -403,24 +405,20 @@ func (a *app) ensureDefaults() {
 		a.projects = []Project{{ID: "default", Path: a.workdir}}
 	}
 	a.activeProject = a.activeID()
-	for _, want := range []Provider{
-		{ID: "codex", Name: "Codex CLI", Wire: harness.WireResponses, Models: slices.Clone(defaultModels)},
-		{ID: "claude", Name: "Claude Code", Models: []string{"claude-sonnet-4-5", "claude-opus-4-1", "claude-haiku-4-5"}},
-	} {
-		if a.providerByID(want.ID) == nil {
-			a.providers = append(a.providers, want)
-		}
-	}
-	if len(a.providers) == 0 {
-		a.providers = []Provider{{ID: "codex", Name: "Codex CLI", Models: slices.Clone(defaultModels)}}
-	}
-	if a.providerByID(a.providerID) == nil {
+	// The codex and claude pseudo-providers of the pre-agents configs
+	// are gone: they were never vendors, just the CLI backends wearing a
+	// provider costume. Their ids are filtered out on load, and the CLI
+	// backends run their own sign-in without a provider.
+	a.providers = slices.DeleteFunc(a.providers, func(p Provider) bool {
+		return p.ID == "codex" || p.ID == "claude"
+	})
+	if a.providerByID(a.providerID) == nil && len(a.providers) > 0 {
 		a.providerID = a.providers[0].ID
 	}
-	if !slices.Contains(a.provider().Models, a.model) {
-		if ms := a.provider().Models; len(ms) > 0 {
-			a.model = ms[0]
-		}
+	// A model that no provider serves is a CLI backend's model name —
+	// keep it instead of snapping to the first provider's first model.
+	if p := a.providerByID(a.providerID); p != nil && len(p.Models) > 0 && !slices.Contains(p.Models, a.model) {
+		a.model = p.Models[0]
 	}
 	// The v1→v2 migration (spec/data.md): a config with no agents folds
 	// into a single Default agent. An empty profile inherits the app's

@@ -231,13 +231,15 @@ func TestConfigMigratesLegacyModels(t *testing.T) {
 	a.configPath = dir + "/config.json"
 	a.loadConfig()
 	a.ensureDefaults()
-	p := a.providerByID("codex")
-	if p == nil {
-		t.Fatal("the built-in codex provider is missing after migration")
+	// The legacy custom models join the codex backend's well-known
+	// table, reachable from the picker's codex group — there is no codex
+	// provider to host them anymore. The configured model survives.
+	if a.model != "old-model" {
+		t.Fatalf("model = %q, want the configured one", a.model)
 	}
-	for _, m := range []string{"old-model", "legacy-model", "gpt-5.2-codex"} {
-		if !slices.Contains(p.Models, m) {
-			t.Fatalf("migrated models lack %q: %v", m, p.Models)
+	for _, m := range []string{"legacy-model", "gpt-5.2-codex"} {
+		if !slices.Contains(defaultModels, m) {
+			t.Fatalf("migrated models lack %q: %v", m, defaultModels)
 		}
 	}
 }

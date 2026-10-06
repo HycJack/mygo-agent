@@ -35,9 +35,6 @@ type ProviderEditVM struct {
 	Wire    string
 	Models  []string
 
-	// Codex marks the built-in provider: it uses the codex CLI's own
-	// sign-in and shows a read-only view.
-	Codex bool
 	// RunsAs is the display hint of how the CLI runs this provider.
 	RunsAs string
 	// Fetching / FetchErr / Available are the model-fetch state: the
@@ -146,8 +143,6 @@ type SettingsActions interface {
 	// FetchModels queries the provider's own /models listing so models
 	// can be picked instead of typed.
 	FetchModels(id string)
-	// AddModel appends a placeholder model to the codex provider.
-	AddModel(id string)
 	// AddMCP parses the synced draft lines into a server.
 	AddMCP()
 	// RemoveMCP deletes the server at i.
@@ -333,27 +328,8 @@ func settingsProviders(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 		p := &vm.Providers[pi]
 		ui.Scroll(c).Grow(1).Children(func() {
 			ui.Column(c).FillWidth().Padding(20, 24, 24).Gap(14).Children(func() {
-				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, p.Name).FontSize(16).Bold().SingleLine().Grow(1).MinWidth(0)
-					if p.Codex {
-						ui.Text(c, "uses the codex CLI's own sign-in").FontSize(11).TextColor(c.Theme().TextMuted)
-					}
-				})
-				if !p.Codex {
-					settingsForm(c, vm, acts, p)
-				} else {
-					ui.Text(c, "The models below come from the codex CLI's own sign-in — no key needed. "+
-						"Add a provider to use any OpenAI-compatible endpoint.").FontSize(12.5).TextColor(c.Theme().TextMuted)
-					ui.Row(c).Gap(6).Wrap().Children(func() {
-						for _, m := range p.Models {
-							ui.Text(c, m).Font("monospace").FontSize(12).Padding(4, 10).Radius(999).
-								Background(vm.Pal.Card).Border(1, vm.Pal.Border)
-						}
-					})
-					if ui.Button(c, "Add model").Clicked() {
-						acts.AddModel(p.ID)
-					}
-				}
+				ui.Text(c, p.Name).FontSize(16).Bold().SingleLine().Grow(1).MinWidth(0)
+				settingsForm(c, vm, acts, p)
 			})
 		})
 	})
