@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
@@ -91,7 +92,11 @@ func (a *app) waitForOutsideDirs(ctx context.Context, th *Thread, at int, req ha
 	dirs := append([]string(nil), req.Dirs...)
 	call := harness.ToolCall{ID: "outside-dirs"}
 	call.Function.Name = "access"
-	call.Function.Arguments = `{"path":"` + strings.Join(dirs, ", ") + `"}`
+	// Marshalled, not concatenated: a directory name with a quote in it
+	// must not turn the card's arguments into invalid JSON.
+	if b, err := json.Marshal(map[string]string{"path": strings.Join(dirs, ", ")}); err == nil {
+		call.Function.Arguments = string(b)
+	}
 	decision := a.waitForApproval(ctx, th, at, harness.ApprovalRequest{
 		Call: call,
 		Summary: "read outside the workspace: " +

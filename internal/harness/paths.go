@@ -20,16 +20,15 @@ import (
 // filesystem location to be considered at all.
 
 // pathInText matches an absolute path as it appears in prose or in
-// code, keeping whether it was written with a trailing slash: "look in
-// /srv" names a directory, "/srv/a.txt" names a file inside one, and
-// only the second grants /srv's parent as well.
-//
-// The slash has to be preceded by something that can start a path —
-// the beginning of the text, whitespace, or a quote. Without that,
-// "a/b/c" reads as the absolute /b/c and a prompt about ratios ends up
-// asking for a grant on /b. The first segment must also look like a
-// name rather than a number, which rules out "3/4".
-var pathInText = regexp.MustCompile(`(?:^|[\s"'` + "`" + `(=\[])/(?:[A-Za-z0-9_.~-]+/)*(?:[A-Za-z0-9_.~-]+/)?`)
+// code: a slash that can start a path — the beginning of the text,
+// whitespace, an opening quote or bracket — followed by whole path
+// segments. The whole-segment shape is what makes every match a
+// directory: "/tmp/a.txt" matches only "/tmp/", so the grant is the
+// file's directory, and a name with no leading boundary ("3/4",
+// "a/b/c") never matches at all. A bare "/" matches too, and the scan
+// below decides whether it is the root being named or an arithmetic
+// separator.
+var pathInText = regexp.MustCompile(`(?:^|[\s"'` + "`" + `(=\[])/(?:[A-Za-z0-9_.~-]+/)*`)
 
 // homeRelative matches ~/... , the other way a path is written in a
 // prompt that a person is thinking about their own machine. It is
@@ -107,24 +106,49 @@ func dirsOutsideWorkdir(text, workdir string) []string {
 			continue
 		}
 		text = strings.Replace(text, m, " ", 1)
-		add(filepath.Join(home, strings.TrimPrefix(m, "~")))
+		p := filepath.Join(home, strings.TrimPrefix(m, "~"))
+		if !strings.HasSuffix(m, "/") {
+			// The ~ form captures the whole path, so its last name may
+			// be a directory the user named as one ("tidy up
+			// ~/Downloads") or a file ("open ~/notes/todo.md") — and
+			// --add-dir takes directories only. The disk decides: a
+			// directory is granted as named, anything else — a file,
+			// or a path not there yet — grants the directory that
+			// holds it. A bare Dir() would widen "~/notes" to the
+			// whole home, the exact over-reach this scan exists to
+			// prevent.
+			p = narrowGrant(p)
+		}
+		add(p)
 	}
-	for _, m := range pathInText.FindAllString(text, -1) {
-		// Drop the delimiter the match kept, then the sentence period:
-		// "see /tmp/a.txt." means /tmp, not /tmp/a.txt.
-		m = strings.TrimLeft(m, " \t\n\"'`(=[]")
-		m = strings.TrimRight(m, ".")
-		if m == "" {
+	for _, loc := range pathInText.FindAllStringIndex(text, -1) {
+		// Every match ends in a slash — the regex keeps whole segments
+		// only — so the grant is the directory those segments name. A
+		// bare final name is never part of the match: "see
+		// /tmp/a.txt." and "check /srv/data" both grant the directory
+		// above the last name, which is the documented ambiguity, in
+		// the safe direction for a file.
+		m := strings.TrimLeft(text[loc[0]:loc[1]], " \t\n\"'`(=[]")
+		if m == "/" {
+			// "search everything under /" names the root; "100 / 4"
+			// and "high / low" are arithmetic. The slash is the root
+			// only where the sentence can end after it — a word
+			// following it means it was a separator, and granting the
+			// root (or, before this check, the process's working
+			// directory) for one of those would be a card about
+			// nothing. A number before it at the very end ("what is
+			// 100 /") is a division missing its right operand, not
+			// the root.
+			if rest := strings.TrimLeft(text[loc[1]:], " \t"); rest != "" {
+				continue
+			}
+			if trailingNumber(text[:loc[0]]) {
+				continue
+			}
+			add("/")
 			continue
 		}
-		if m == "/" || strings.HasSuffix(m, "/") {
-			// A trailing slash names the directory itself, so the grant
-			// is that directory and not its parent.
-			add(strings.TrimRight(m, "/"))
-			continue
-		}
-		// No trailing slash means a file, so the grant is its directory.
-		add(filepath.Dir(m))
+		add(m[:len(m)-1])
 	}
 
 	// The prompt is prose, so the order paths came in is an accident of
@@ -136,6 +160,35 @@ func dirsOutsideWorkdir(text, workdir string) []string {
 	}
 	sort.Strings(out)
 	return out
+}
+
+// narrowGrant is the file-or-directory decision one named path gets: a
+// path the disk says is a directory is granted as named, anything else —
+// a file, or a path that does not exist yet — narrows to the directory
+// that holds it, because --add-dir takes directories only.
+func narrowGrant(p string) string {
+	if st, err := os.Stat(p); err == nil && st.IsDir() {
+		return p
+	}
+	return filepath.Dir(p)
+}
+
+// trailingNumber reports whether s ends in a whitespace-delimited run of
+// digits: the left operand of a division whose right operand never came.
+func trailingNumber(s string) bool {
+	s = strings.TrimRight(s, " \t\n")
+	if i := strings.LastIndexAny(s, " \t\n"); i >= 0 {
+		s = s[i+1:]
+	}
+	if s == "" {
+		return false
+	}
+	for _, r := range s {
+		if r < '0' || r > '9' {
+			return false
+		}
+	}
+	return true
 }
 
 // withinAny reports whether p is inside root. Both paths are compared

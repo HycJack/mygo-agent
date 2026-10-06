@@ -74,12 +74,17 @@ func TestDirsOutsideWorkdirCatchesTheParentItClimbsTo(t *testing.T) {
 func TestDirsOutsideWorkdirDoesNotFireOnProse(t *testing.T) {
 	ws := t.TempDir()
 	// None of these is a path. Firing on them would ask the user about
-	// nothing, which teaches them to click through the card.
+	// nothing, which teaches them to click through the card. The two
+	// arithmetic slashes are the shape that once granted the process's
+	// working directory: a bare "/" with a word after it is a separator,
+	// not a location.
 	for _, text := range []string{
 		"please fix the parser and run the tests",
 		"what does 3/4 evaluate to?",
 		"add a --flag=value option",
 		"the a/b/c ratio is wrong",
+		"compare high / low quality settings",
+		"what is 100 / 4",
 		"",
 	} {
 		if got := dirsOutsideWorkdir(text, ws); len(got) != 0 {
@@ -119,6 +124,26 @@ func TestDirsOutsideWorkdirResolvesHomeRelative(t *testing.T) {
 	}
 }
 
+// TestDirsOutsideWorkdirHomeRelativeFileGrantsItsDirectory pins the
+// same narrowing for the ~ form: --add-dir takes directories only, so a
+// file under ~ grants the directory that holds it. The old code granted
+// the file itself — an ask the user could approve and still get nothing.
+func TestDirsOutsideWorkdirHomeRelativeFileGrantsItsDirectory(t *testing.T) {
+	ws := t.TempDir()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home directory")
+	}
+	if within(ws, home) {
+		t.Skip("the workspace is inside the home directory")
+	}
+	got := dirsOutsideWorkdir("look at ~/src/project/main.go", ws)
+	want := filepath.Join(home, "src", "project")
+	if len(got) != 1 || got[0] != want {
+		t.Fatalf("got %v, want [%s] — the grant is the file's directory, not the file", got, want)
+	}
+}
+
 func TestDirsOutsideWorkdirDeduplicatesAndSorts(t *testing.T) {
 	ws := t.TempDir()
 	text := "compare /var/log/a.txt, /etc/hosts and /var/log/b.txt and /etc/hosts again"
@@ -144,5 +169,62 @@ func TestDirsOutsideWorkdirKeepsTheRootItself(t *testing.T) {
 	// and hiding it would mean the card understates what is being asked.
 	if got := dirsOutsideWorkdir("search everything under /", ws); len(got) != 1 {
 		t.Fatalf("got %v, want one entry", got)
+	}
+}
+
+// TestNarrowGrantDecidesByTheDisk pins the file-or-directory decision the
+// ~ form needs: a directory named without a slash is granted as named,
+// a file — and a path that does not exist yet — grants its directory.
+// A bare Dir() widened "~/notes" to the whole home directory.
+func TestNarrowGrantDecidesByTheDisk(t *testing.T) {
+	dir := t.TempDir()
+	sub := filepath.Join(dir, "sub")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	file := filepath.Join(sub, "a.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if got := narrowGrant(sub); got != sub {
+		t.Fatalf("a named directory was narrowed away: %q", got)
+	}
+	if got := narrowGrant(file); got != sub {
+		t.Fatalf("a file must grant its directory: got %q, want %q", got, sub)
+	}
+	if got := narrowGrant(filepath.Join(dir, "not", "there", "x.md")); got != filepath.Join(dir, "not", "there") {
+		t.Fatalf("a path not there yet must grant its would-be directory: %q", got)
+	}
+}
+
+// TestDirsOutsideWorkdirKeepsANamedHomeDirectory pins the directory form
+// of the ~ reference: "check ~/Documents" must grant ~/Documents, not
+// widen to the whole home.
+func TestDirsOutsideWorkdirKeepsANamedHomeDirectory(t *testing.T) {
+	ws := t.TempDir()
+	home, err := os.UserHomeDir()
+	if err != nil || home == "" {
+		t.Skip("no home directory")
+	}
+	if within(ws, home) {
+		t.Skip("the workspace is inside the home directory")
+	}
+	named := filepath.Join(home, "Documents")
+	if st, err := os.Stat(named); err != nil || !st.IsDir() {
+		t.Skip("no ~/Documents on this machine")
+	}
+	got := dirsOutsideWorkdir("check ~/Documents for the files", ws)
+	if len(got) != 1 || got[0] != named {
+		t.Fatalf("got %v, want [%s] — a named home directory was narrowed or widened", got, named)
+	}
+}
+
+// TestDirsOutsideWorkdirTrailingSlashOfArithmetic pins the sentence-end
+// edge of the bare-slash rule: "what is 100 /" is a division missing its
+// right operand, not the root being named.
+func TestDirsOutsideWorkdirTrailingSlashOfArithmetic(t *testing.T) {
+	ws := t.TempDir()
+	if got := dirsOutsideWorkdir("what is 100 /", ws); len(got) != 0 {
+		t.Fatalf("a trailing arithmetic slash produced %v, want nothing", got)
 	}
 }
