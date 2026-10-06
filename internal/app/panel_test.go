@@ -120,17 +120,29 @@ func TestPanelStopMidChain(t *testing.T) {
 	th := &Thread{ID: "t1", ProjectID: "default", AgentID: "ag-team", Created: now, Updated: now}
 	a.threads = append(a.threads, th)
 	a.startTurn(th, "go")
-	waitFor(t, 5*time.Second, func() bool {
+	for deadline := time.Now().Add(5 * time.Second); ; {
 		running := false
 		a.update(func() { running = a.isRunning("t1") })
-		return running
-	})
+		if running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the relay never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	a.stopThread("t1")
-	waitFor(t, 5*time.Second, func() bool {
+	for deadline := time.Now().Add(5 * time.Second); ; {
 		done := false
 		a.update(func() { done = !a.isRunning("t1") })
-		return done
-	})
+		if done {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the stop never settled")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 	// A stopped relay does not continue: no second reply may appear.
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
