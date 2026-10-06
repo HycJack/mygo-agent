@@ -90,15 +90,48 @@ func parseSkill(dir, content string) Skill {
 	if len(lines) == 0 || strings.TrimSpace(lines[0]) != "---" {
 		return s
 	}
+	// description may be a YAML folded block (">" or "|"): its text
+	// lives on the indented lines that follow the key, so continuation
+	// lines are collected until a top-level key ends the block. Without
+	// this half the skill list is full of ">" and "|" instead of what
+	// the skill does.
+	inDesc := false
 	for _, line := range lines[1:] {
 		if strings.TrimSpace(line) == "---" {
 			break
 		}
 		if v, ok := strings.CutPrefix(line, "name:"); ok {
 			s.Name = strings.TrimSpace(v)
+			inDesc = false
+			continue
 		}
 		if v, ok := strings.CutPrefix(line, "description:"); ok {
 			s.Description = strings.TrimSpace(v)
+			// A bare folding indicator means the text is in the
+			// indented block below, not on this line.
+			switch s.Description {
+			case ">", "|", ">-", "|-", "+", ">+", "|+":
+				s.Description = ""
+				inDesc = true
+			default:
+				inDesc = false
+			}
+			continue
+		}
+		if inDesc {
+			trimmed := strings.TrimSpace(line)
+			if trimmed == "" {
+				continue
+			}
+			if !strings.HasPrefix(line, " ") && !strings.HasPrefix(line, "\t") {
+				inDesc = false // a new top-level key ends the block
+				continue
+			}
+			if s.Description == "" {
+				s.Description = trimmed
+			} else {
+				s.Description += " " + trimmed
+			}
 		}
 	}
 	return s

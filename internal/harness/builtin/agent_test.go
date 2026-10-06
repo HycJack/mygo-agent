@@ -298,3 +298,25 @@ func TestStreamChatAccumulatesFragmentedStringArgs(t *testing.T) {
 		t.Fatalf("fragmented accumulation: %+v", res.ToolCalls)
 	}
 }
+
+// TestParseSkillFoldedDescription pins the multi-line YAML folded
+// description (">" / "|"): the indented lines after the key join the
+// description until a top-level key ends the block.
+func TestParseSkillFoldedDescription(t *testing.T) {
+	s := parseSkill("/tmp/skill", `---
+name: team-relay
+description: >
+  Coordinate a panel of agents
+  answering one thread in order.
+  Second paragraph too.
+version: 2
+---
+body text`)
+	if s.Name != "team-relay" {
+		t.Fatalf("name = %q", s.Name)
+	}
+	want := "Coordinate a panel of agents answering one thread in order. Second paragraph too."
+	if s.Description != want {
+		t.Fatalf("description = %q, want %q", s.Description, want)
+	}
+}

@@ -77,18 +77,12 @@ type SkillVM struct {
 // (spec/agents.md). Effort and Mode are offset by one: 0 means "follow
 // the app", so a selector can express the inheritance.
 type AgentEditVM struct {
-	ID       string
-	Name     string
-	Emoji    string
-	Backend  string // "" follows the app's switch
-	Provider string // provider id; "" follows the app's selection
-	Model    string // "" follows the app's selection
-	// ProviderOpts are the real configured providers (the Provider row
-	// picks from these), and ModelOptions are the models of whichever
-	// provider this agent resolves to — or the pinned CLI backend's own
-	// table (spec/agents.md).
-	ProviderOpts []ProviderVM
-	ModelOptions []string
+	ID           string
+	Name         string
+	Emoji        string
+	Backend      string // "" follows the app's switch
+	Provider     string // provider id; "" follows the app's selection
+	Model        string // "" follows the app's selection
 	Effort       int    // 0 follow the app, else 1 + effort
 	Mode         int    // 0 follow the app, else 1 + mode
 	MaxTurns     string // "" follows the app
@@ -101,7 +95,13 @@ type AgentEditVM struct {
 	// Panel is the group relay's member names, in answer order
 	// (spec/agents.md); empty means a solo agent.
 	Panel []string
-	// Sub is the resolved backend·model (or "panel · N agents") the
+	// ProviderOpts are the real configured providers (the Provider row
+	// picks from these), and ModelOptions are the models of whichever
+	// provider this agent resolves to — or the pinned CLI backend's own
+	// table (spec/agents.md).
+	ProviderOpts []ProviderVM
+	ModelOptions []string
+	// Sub is the resolved backend-model (or "panel - N agents") the
 	// pickers show; the rail row uses the same.
 	Sub string
 }
@@ -152,7 +152,7 @@ type SettingsActions interface {
 	RemoveMCP(i int)
 	// The agent half (spec/agents.md): AddAgent appends a blank profile,
 	// RemoveAgent deletes one (never the last). AddGroup appends a group
-	// profile and opens its form — the visible entry to the relay. The
+	// profile and opens its form - the visible entry to the relay. The
 	// backend pills bind into the snapshot like every other value field.
 	AddAgent()
 	RemoveAgent(id string)
@@ -177,10 +177,10 @@ func settingsTabs(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 			on := vm.Tab == tab.id
 			pill := ui.ButtonBase(c).Padding(5, 12).Radius(999)
 			if on {
-				pill.Background(c.Theme().Text)
+				pill.Background(t.Text)
 				pill.Children(func() { ui.Text(c, tab.label).FontSize(12).TextColor(t.AccentText) })
 			} else {
-				pill.Border(1, c.Theme().Border)
+				pill.Border(1, t.Border)
 				pill.Children(func() { ui.Text(c, tab.label).FontSize(12).TextColor(t.TextMuted) })
 			}
 			if pill.Clicked() {
@@ -224,7 +224,7 @@ func railRow(c *ui.Context, vm *SettingsVM, chosen bool, title, sub string, clic
 	})
 }
 
-// railAdd is the rail's "+ Add …" row.
+// railAdd is the rail's "+ Add ..." row.
 func railAdd(c *ui.Context, vm *SettingsVM, label string, click func()) {
 	add := ui.ButtonBase(c).Fill().Padding(7, 10).Radius(7).Gap(8)
 	if add.Hovered() {
@@ -236,6 +236,13 @@ func railAdd(c *ui.Context, vm *SettingsVM, label string, click func()) {
 	add.Children(func() {
 		ui.Icon(c, IconPlus).FontSize(13).TextColor(c.Theme().TextMuted)
 		ui.Text(c, label).FontSize(12.5).TextColor(c.Theme().TextMuted)
+	})
+}
+
+func emptyPane(c *ui.Context, title, sub string) {
+	ui.Column(c).Fill().Center().Gap(8).Children(func() {
+		ui.Text(c, title).FontSize(13).TextColor(c.Theme().TextMuted)
+		ui.Text(c, sub).FontSize(12).TextColor(c.Theme().TextMuted)
 	})
 }
 
@@ -289,7 +296,7 @@ func settingsAgents(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 					func() { acts.Select(ag.ID) }, "Remove agent", func() { acts.RemoveAgent(ag.ID) })
 			}
 			railAdd(c, vm, "Add agent", acts.AddAgent)
-			railAdd(c, vm, "New group…", acts.AddGroup)
+			railAdd(c, vm, "New group...", acts.AddGroup)
 		})
 	})
 	ui.Column(c).Grow(1).MinWidth(0).Children(func() {
@@ -338,7 +345,7 @@ func settingsProviders(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 	})
 }
 
-// settingsTools is the tools tab: the built-in registry, read-only —
+// settingsTools is the tools tab: the built-in registry, read-only -
 // what each tool does and what it is allowed to do. Per-agent enabling
 // lives on the agent form.
 func settingsTools(c *ui.Context, vm *SettingsVM) {
@@ -374,9 +381,9 @@ func settingsSkills(c *ui.Context, vm *SettingsVM) {
 		ui.Scroll(c).Grow(1).Children(func() {
 			ui.Column(c).FillWidth().Padding(20, 24, 24).Gap(10).Children(func() {
 				ui.Text(c, "Skills").FontSize(16).Bold()
-				ui.Text(c, "Discovered for the active project (.agents/skills up the tree, plus your user directories). The system prompt advertises names and descriptions; agents load the full skill on demand. An agent's form narrows these to an allow list.").FontSize(12).TextColor(c.Theme().TextMuted)
+				ui.Text(c, "Discovered for the active project (.agents/skills up the tree, plus your user directories: ~/.agents/skills, ~/.aimanager/skills, ~/.codex-go/skills). The system prompt advertises names and descriptions; agents load the full skill on demand. An agent's form narrows these to an allow list.").FontSize(12).TextColor(t.TextMuted)
 				if len(vm.Skills) == 0 {
-					ui.Text(c, "No skills discovered. Put a SKILL.md directory under .agents/skills/ in the project (or ~/.agents/skills/).").FontSize(12).TextColor(c.Theme().TextMuted)
+					ui.Text(c, "No skills discovered yet. Put a SKILL.md directory under .agents/skills/ in the project, or in one of the user skill directories.").FontSize(12).TextColor(t.TextMuted)
 				}
 				for _, sk := range vm.Skills {
 					card := ui.Column(c).FillWidth().Padding(12, 14).Radius(8).
@@ -399,15 +406,8 @@ func settingsSkills(c *ui.Context, vm *SettingsVM) {
 	})
 }
 
-func emptyPane(c *ui.Context, title, sub string) {
-	ui.Column(c).Fill().Center().Gap(8).Children(func() {
-		ui.Text(c, title).FontSize(13).TextColor(c.Theme().TextMuted)
-		ui.Text(c, sub).FontSize(12).TextColor(c.Theme().TextMuted)
-	})
-}
-
 // settingsForm is the editable half of the form for a non-codex
-// provider: presets, the connection fields, the wire, and the models —
+// provider: presets, the connection fields, the wire, and the models -
 // with the provider's own listing to pick from.
 func settingsForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, p *ProviderEditVM) {
 	t := c.Theme()
@@ -441,7 +441,7 @@ func settingsForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, p *Provid
 			if p.Fetching {
 				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 					ui.Spinner(c)
-					ui.Text(c, "Fetching…").FontSize(11).TextColor(t.TextMuted)
+					ui.Text(c, "Fetching...").FontSize(11).TextColor(t.TextMuted)
 				})
 			} else if ui.Button(c, "Fetch available").Clicked() {
 				acts.FetchModels(p.ID)
@@ -449,7 +449,7 @@ func settingsForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, p *Provid
 		})
 		ui.TokenField(c, &p.Models, nil)
 		if p.FetchErr != "" {
-			ui.Text(c, "Fetch failed: "+p.FetchErr).FontSize(11).TextColor(c.Theme().Warning)
+			ui.Text(c, "Fetch failed: "+p.FetchErr).FontSize(11).TextColor(t.Warning)
 		} else {
 			ui.Text(c, "Enter or comma adds a model; Backspace removes the last.").FontSize(11).TextColor(t.TextMuted)
 		}
@@ -481,7 +481,7 @@ func settingsForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, p *Provid
 		}
 	})
 	// The codex-runtime hint only shows when a codex backend can
-	// actually reach this provider — for the built-in loop it is noise.
+	// actually reach this provider - for the built-in loop it is noise.
 	if p.RunsAs != "" {
 		ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(10, 12).Radius(8).
 			Background(vm.Pal.Card).Children(func() {
@@ -503,7 +503,7 @@ type pillOpt struct {
 }
 
 // pillRow is the form's single-choice row: one labelled pill per
-// option. The choice binds into the snapshot — the host mirrors it
+// option. The choice binds into the snapshot - the host mirrors it
 // after the frame; a host action here would be overwritten by that same
 // mirror with this frame's stale snapshot. currentFn resolves the
 // snapshot's effective current value (empty wire means chat, say).
@@ -677,7 +677,7 @@ func mcpSection(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 	})
 }
 
-// toggleInList adds name to the list when on removes it when off — and
+// toggleInList adds name to the list when on removes it when off - and
 // unwinds to nil when the list comes to cover everything, because an
 // empty list is the config's "all of them / discover as usual".
 func toggleInList(list []string, all []string, name string, on bool) []string {
@@ -724,7 +724,7 @@ func agentForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, ag *AgentEdi
 	switch ag.Backend {
 	case "claude", "codex":
 		// A pinned CLI backend signs in with the CLI's own account and
-		// picks from its own model table — no provider involved.
+		// picks from its own model table - no provider involved.
 		ui.Textf(c, "Runs the %s binary with its own sign-in; no provider needed.", strings.Title(ag.Backend)).FontSize(11).TextColor(t.TextMuted)
 	case "pi":
 		ui.Text(c, "Pi resolves models from its own configuration; nothing to pick here.").FontSize(11).TextColor(t.TextMuted)
@@ -753,13 +753,13 @@ func agentForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, ag *AgentEdi
 	ui.Text(c, "Unchecked tools are removed from this agent's registry.").FontSize(11).TextColor(t.TextMuted)
 	for _, ti := range vm.Catalog {
 		enabled := !slices.Contains(ag.ToolsDisabled, ti.Name)
-		toolCheckbox(c, vm.Pal, ti.Name, ti.Description, enabled, func(on bool) {
-			if on {
+		if checkboxRow(c, vm.Pal, ti.Name, ti.Description, "", &enabled) {
+			if enabled {
 				ag.ToolsDisabled = slices.DeleteFunc(ag.ToolsDisabled, func(s string) bool { return s == ti.Name })
 			} else {
 				ag.ToolsDisabled = append(ag.ToolsDisabled, ti.Name)
 			}
-		})
+		}
 	}
 
 	sectionLabel(c, "MCP SERVERS")
@@ -770,30 +770,30 @@ func agentForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, ag *AgentEdi
 	}
 	for _, name := range allNames {
 		on := ag.MCPServers == nil || slices.Contains(ag.MCPServers, name)
-		mcpCheckbox(c, vm.Pal, name, on, func(on bool) {
+		if checkboxRow(c, vm.Pal, name, "Mounted for this agent", "", &on) {
 			ag.MCPServers = toggleInList(ag.MCPServers, allNames, name, on)
-		})
+		}
 	}
 
 	sectionLabel(c, "SKILLS")
 	ui.Text(c, "Checked skills are this agent's allow list; leave all checked (or none touched) to discover as usual.").FontSize(11).TextColor(t.TextMuted)
 	for _, sk := range vm.Skills {
 		on := ag.SkillsAllow == nil || slices.Contains(ag.SkillsAllow, sk.Name)
-		skillCheckbox(c, vm.Pal, sk.Name, sk.Description, sk.Source, on, func(on bool) {
-			all := make([]string, 0, len(vm.Skills))
-			for _, s := range vm.Skills {
-				all = append(all, s.Name)
-			}
+		all := make([]string, 0, len(vm.Skills))
+		for _, s := range vm.Skills {
+			all = append(all, s.Name)
+		}
+		if checkboxRow(c, vm.Pal, sk.Name, sk.Description, sk.Source, &on) {
 			ag.SkillsAllow = toggleInList(ag.SkillsAllow, all, sk.Name, on)
-		})
+		}
 	}
 
 	sectionLabel(c, "GROUP RELAY")
 	ui.Column(c).Gap(4).Children(func() {
 		ui.Text(c, "Panel members").FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
 		ui.TokenField(c, &ag.Panel, nil)
-		ui.Textf(c, "Agent names, in answer order (%s): each member sees the earlier replies in the shared conversation. Available: %s",
-			"this agent is excluded", vm.AgentNames).FontSize(11).TextColor(t.TextMuted)
+		ui.Textf(c, "Agent names, in answer order: each member sees the earlier replies in the shared conversation. Available: %s",
+			vm.AgentNames).FontSize(11).TextColor(t.TextMuted)
 	})
 
 	ui.Row(c).Justify(ui.End).Children(func() {
@@ -801,7 +801,6 @@ func agentForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, ag *AgentEdi
 			acts.RemoveAgent(ag.ID)
 		}
 	})
-	_ = t
 }
 
 // sectionLabel is a form section divider.
@@ -811,51 +810,49 @@ func sectionLabel(c *ui.Context, label string) {
 		Margin(8, 0, 0).LetterSpacing(0.6)
 }
 
-// toolCheckbox is one registry row of the agent form: checked means the
-// tool is IN this agent's set.
-func toolCheckbox(c *ui.Context, pal Palette, name, desc string, enabled bool, apply func(on bool)) {
-	checked, was := enabled, enabled
-	checkboxRow(c, pal, name, desc, "", &checked)
-	if checked != was {
-		apply(checked)
-	}
-}
-
-// mcpCheckbox is one configured server row: checked means mounted.
-func mcpCheckbox(c *ui.Context, pal Palette, name string, on bool, apply func(on bool)) {
-	checked, was := on, on
-	checkboxRow(c, pal, name, "", "", &checked)
-	if checked != was {
-		apply(checked)
-	}
-}
-
-// skillCheckbox is one discovered skill row: checked means allowed.
-func skillCheckbox(c *ui.Context, pal Palette, name, desc, source string, on bool, apply func(on bool)) {
-	checked, was := on, on
-	checkboxRow(c, pal, name, desc, source, &checked)
-	if checked != was {
-		apply(checked)
-	}
-}
-
-// checkboxRow is one row with a live checkbox: checked flips in-frame,
-// and the change is applied to the snapshot through apply immediately.
-// The title rides the checkbox label — the whole line reads as the
-// click target, not just the 16px box.
-func checkboxRow(c *ui.Context, pal Palette, title, sub, badge string, checked *bool) {
+// checkboxRow is one row with a live checkbox: the WHOLE row is the
+// click target (a bare Checkbox's is its 16px box - the title text next
+// to it sits in a plain row and eats the click into the modal backdrop).
+// It flips *checked in-frame and reports the flip, for the caller to
+// apply to the snapshot.
+func checkboxRow(c *ui.Context, pal Palette, title, sub, badge string, checked *bool) bool {
 	t := c.Theme()
-	row := ui.Row(c).Gap(10).AlignItems(ui.Center).Padding(8, 12).Radius(8).
-		Background(t.Surface)
-	row.Children(func() {
-		cb := ui.Checkbox(c, checked, title).FontSize(12.5)
-		cb.Grow(1).MinWidth(0)
-		if badge != "" {
-			ui.Text(c, badge).FontSize(10).Padding(1, 7).Radius(999).
-				Background(pal.Bg).Border(1, t.Border).TextColor(t.TextMuted)
-		}
-	})
-	if sub != "" {
-		ui.Text(c, sub).FontSize(11).TextColor(t.TextMuted).Padding(0, 0, 0, 34)
+	flipped := false
+	row := ui.ButtonBase(c).FillWidth().Padding(8, 12).Radius(8).Gap(10).
+		AlignItems(ui.Center).Cursor(ui.CursorPointer)
+	if *checked {
+		row.Background(pal.Card)
+	} else {
+		row.Background(t.Surface)
 	}
+	if row.Clicked() {
+		*checked = !*checked
+		flipped = true
+	}
+	row.Children(func() {
+		box := ui.Box(c).Size(16, 16).Radius(4).Center().Shrink(0)
+		if *checked {
+			box.Background(t.Accent)
+		} else {
+			box.Background(t.Background).Border(1, t.Border)
+		}
+		box.Children(func() {
+			if *checked {
+				ui.Icon(c, IconCheck).FontSize(11).TextColor(t.AccentText)
+			}
+		})
+		ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
+			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+				ui.Text(c, title).FontSize(12.5)
+				if badge != "" {
+					ui.Text(c, badge).FontSize(10).Padding(1, 7).Radius(999).
+						Background(pal.Bg).Border(1, t.Border).TextColor(t.TextMuted)
+				}
+			})
+			if sub != "" {
+				ui.Text(c, sub).FontSize(11).TextColor(t.TextMuted)
+			}
+		})
+	})
+	return flipped
 }

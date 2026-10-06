@@ -105,9 +105,9 @@ type app struct {
 	groupDraftName   string
 	groupDraftOn     map[string]bool // member id -> checked
 	dialogSkills     []builtin.Skill
+	settingsWereOpen bool // the settings dialog was open last frame
 	fetchedModels    map[string][]string
 	fetchErrs        map[string]string
-	settingsWereOpen bool
 
 	navOpen bool // the tasks sidebar is shown
 	// Panel widths, DIP, dragged on the dividers between the panels.

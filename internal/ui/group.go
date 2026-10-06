@@ -23,6 +23,10 @@ type GroupVM struct {
 	Open    bool
 	Name    string
 	Members []GroupMemberVM
+	// CanStart is computed by the host from its own draft state — the
+	// members' Checked flags in the snapshot are stale the moment a
+	// checkbox flips (the flip reaches the host through ToggleMember).
+	CanStart bool
 	// Err says why Start would not take (no members picked, say).
 	Err string
 
@@ -52,6 +56,7 @@ func GroupDialog(c *ui.Context, vm *GroupVM, acts GroupActions) {
 			if len(vm.Members) == 0 {
 				ui.Text(c, "No agents to invite — create agent profiles in settings first.").FontSize(12).TextColor(t.TextMuted)
 			}
+			_ = t
 			ui.Column(c).Gap(6).Children(func() {
 				for i := range vm.Members {
 					m := &vm.Members[i]
@@ -73,15 +78,15 @@ func GroupDialog(c *ui.Context, vm *GroupVM, acts GroupActions) {
 			if vm.Err != "" {
 				ui.Text(c, vm.Err).FontSize(11.5).TextColor(t.Warning)
 			}
-			ui.Row(c).Gap(8).Justify(ui.End).Children(func() {
-				if ui.Button(c, "Cancel").Clicked() {
-					acts.Cancel()
+			ui.Row(c).Gap(8).Justify(ui.End).AlignItems(ui.Center).Children(func() {
+				if vm.Err != "" {
+					ui.Text(c, vm.Err).FontSize(11.5).TextColor(t.Warning).Grow(1)
 				}
 				start := ui.Button(c, "Start chat")
-				if len(vm.Members) > 0 {
-					start.Background(t.Accent)
-				} else {
+				if !vm.CanStart {
 					start.Disabled(true).Opacity(0.4)
+				} else {
+					start.Background(t.Accent)
 				}
 				if start.Clicked() {
 					acts.Start()

@@ -47,8 +47,16 @@ func (a *app) settingsModal(c *ui.Context) {
 	// unconditionally made the common case (a closed dialog) the most
 	// expensive thing in the frame.
 	if !a.settingsOpen {
+		a.settingsWereOpen = false
 		return
 	}
+	if !a.settingsWereOpen {
+		// Opening the dialog refreshes its per-open data: the skills
+		// discovery for the active project (it walks directories), so a
+		// skill added since last time is there.
+		a.dialogSkills = builtin.DiscoverSkills(a.workdir).Skills
+	}
+	a.settingsWereOpen = true
 	vm := a.settingsVM()
 	uipkg.Settings(c, vm, settingsActions{a: a, vm: vm})
 	a.settingsOpen = vm.Open // the backdrop and Escape close it view-side
@@ -79,6 +87,10 @@ func (a *app) settingsVM() *uipkg.SettingsVM {
 		}
 	}
 	ids := make([]string, 0, len(a.providers))
+	agentNames := make([]string, 0, len(a.agents))
+	for i := range a.agents {
+		agentNames = append(agentNames, a.agents[i].Name)
+	}
 	for i := range a.providers {
 		p := &a.providers[i]
 		runsAs := ""
@@ -94,6 +106,9 @@ func (a *app) settingsVM() *uipkg.SettingsVM {
 			Available: a.fetchedModels[p.ID], FetchErr: a.fetchErrs[p.ID],
 		})
 	}
+	vm.Catalog = a.catalogVM()
+	vm.Skills = a.skillsVM()
+	vm.AgentNames = strings.Join(agentNames, ", ")
 	for _, ps := range providerPresets {
 		vm.Presets = append(vm.Presets, uipkg.PresetVM{Name: ps.name})
 	}

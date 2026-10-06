@@ -107,6 +107,14 @@ func TestScreenshots(t *testing.T) {
 	a.settingsSel = "ag-review"
 	tt.Frame()
 	writeShot(t, tt, dir, "05-settings-agent")
+
+	// 5b. Settings: the tools and skills tabs.
+	a.settingsTab = "tools"
+	tt.Frame()
+	writeShot(t, tt, dir, "05b-settings-tools")
+	a.settingsTab = "skills"
+	tt.Frame()
+	writeShot(t, tt, dir, "05c-settings-skills")
 	a.settingsOpen = false
 
 	// 6. The composer's agent popover.
