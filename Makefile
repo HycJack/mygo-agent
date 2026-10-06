@@ -14,6 +14,10 @@ build:
 run:
 	go run .
 
+## dashboard: run the MyGo dashboard example
+dashboard:
+	go run ./examples/dashboard
+
 ## test: all packages
 test:
 	go test ./...

@@ -153,6 +153,8 @@ internal/providers/sandbox  macOS Seatbelt · Linux bubblewrap ·
                          a missing backend is reported, never faked
 internal/config          persisted config (strict, versioned)
 packaging/               Info.plist for the macOS .app
+examples/dashboard       a generic dashboard example over the same UI
+                         toolkit — run it with `make dashboard`
 ```
 
 ## Build
