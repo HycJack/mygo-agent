@@ -47,11 +47,17 @@ func (a *app) newHarness(backend string, th *Thread, turn harness.Turn) harness.
 	return newBuiltinHarness(a, th, turn)
 }
 
-// dispatch hands a turn to the selected harness in the background. The
-// host owns the run's context (stop() cancels it) and its end: adapters
-// stream events and return, they never touch thread state themselves.
+// dispatch hands a turn to the thread's own agent in the background.
+// The host owns the run's context (stopThread cancels it) and its end:
+// adapters stream events and return, they never touch thread state.
 func (a *app) dispatch(th *Thread, prompt string, at int) {
-	plan := a.planTurn(th, prompt)
+	a.dispatchParticipant(th, prompt, at, nil)
+}
+
+// dispatchParticipant is dispatch with an explicit agent — a panel
+// relay's member (spec/agents.md); nil means the thread's own agent.
+func (a *app) dispatchParticipant(th *Thread, prompt string, at int, ag *Agent) {
+	plan := a.planTurnFor(th, prompt, ag)
 	turn := plan.turn
 	turn.OnApproval = func(ctx context.Context, req harness.ApprovalRequest) harness.ApprovalDecision {
 		return a.waitForApproval(ctx, th, at, req)
@@ -180,17 +186,44 @@ func (a *app) resolveAgent(ag *Agent) agentOverlay {
 	return ov
 }
 
+// panelFor resolves an agent's group relay: the configured member
+// names in order, resolved to live profiles. Unknown names and the
+// agent itself are skipped (spec/agents.md).
+func (a *app) panelFor(ag *Agent) []*Agent {
+	if ag == nil || len(ag.Panel) == 0 {
+		return nil
+	}
+	var out []*Agent
+	for _, name := range ag.Panel {
+		member := a.agentByName(name)
+		if member == nil || member.ID == ag.ID {
+			continue
+		}
+		out = append(out, member)
+	}
+	return out
+}
+
 // planTurn assembles the turn from the thread's agent over the
 // app-level defaults. Everything is snapshotted here, on the main
 // thread — the snapshot, not a live reference: config may change
 // mid-run, and a run that changed its endpoint under itself would be a
 // different agent than the one the approval cards were about.
 func (a *app) planTurn(th *Thread, prompt string) turnPlan {
-	ag := a.agentFor(th)
-	// A thread from before the agents block picks up its binding here;
-	// the next save persists it (spec/data.md, agent_id).
-	if th.AgentID == "" && ag != nil {
-		th.AgentID = ag.ID
+	return a.planTurnFor(th, prompt, nil)
+}
+
+// planTurnFor is planTurn with an explicit agent: a panel participant's
+// turn resolves that participant's profile, not the thread's binding.
+// nil resolves the thread's own agent.
+func (a *app) planTurnFor(th *Thread, prompt string, ag *Agent) turnPlan {
+	if ag == nil {
+		ag = a.agentFor(th)
+		// A thread from before the agents block picks up its binding here;
+		// the next save persists it (spec/data.md, agent_id).
+		if th.AgentID == "" && ag != nil {
+			th.AgentID = ag.ID
+		}
 	}
 	ov := a.resolveAgent(ag)
 	// Clamp at the boundary: mode and effort index arrays and flag lists

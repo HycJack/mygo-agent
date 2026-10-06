@@ -90,6 +90,11 @@ type Agent struct {
 	// MCPServers names the servers this agent mounts; empty mounts all
 	// of them (the app-level list merged with the project's .mcp.json).
 	MCPServers []string `json:"mcp_servers,omitempty"`
+	// Panel turns this agent's threads into a group relay (spec/agents.md):
+	// the named agents answer in order, each seeing the earlier members'
+	// replies in the shared conversation. Names, not ids — the same
+	// convention mcp_servers uses. Empty means a solo agent.
+	Panel []string `json:"panel,omitempty"`
 	// Skills narrows the discovered skills.
 	Skills AgentSkills `json:"skills,omitempty"`
 }

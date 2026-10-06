@@ -71,6 +71,12 @@ type app struct {
 	termOpen   bool
 	termHeight float32
 
+	// groupQueue holds a group turn's remaining panel members, keyed by
+	// thread id (spec/agents.md): finish pops the next one and dispatches
+	// it, so a panel runs as one registered run on the main thread.
+	// Cleared by stopThread — a stopped relay does not continue.
+	groupQueue map[string][]string
+
 	// runs maps thread id to its in-flight turn (spec/agents.md P2):
 	// two tasks run at once, and every stop belongs to one thread. The
 	// narrow mutex is the old cancelMu lesson kept: the map is written
@@ -174,6 +180,7 @@ func newApp() *app {
 		lists:         map[string]*ui.ListState{},
 		approvals:     map[string]chan harness.ApprovalDecision{},
 		runs:          map[string]*runState{},
+		groupQueue:    map[string][]string{},
 		sections:      map[string]bool{},
 		dirs:          map[string]bool{},
 		dirCache:      map[string][]fsNode{},
@@ -459,6 +466,17 @@ func (a *app) providerByID(id string) *Provider {
 	return nil
 }
 
+// agentByName finds a configured agent by exact name — the panel
+// membership convention (names, like mcp_servers).
+func (a *app) agentByName(name string) *Agent {
+	for i := range a.agents {
+		if a.agents[i].Name == name {
+			return &a.agents[i]
+		}
+	}
+	return nil
+}
+
 // agentByID finds a configured agent by id.
 func (a *app) agentByID(id string) *Agent {
 	for i := range a.agents {
@@ -689,6 +707,9 @@ func (a *app) stopThread(thID string) {
 	st := a.runs[thID]
 	delete(a.runs, thID)
 	a.runsMu.Unlock()
+	// A stopped relay does not continue: finish finds no queue and ends
+	// the group turn with the participant that was running.
+	delete(a.groupQueue, thID)
 	if st != nil && st.cancel != nil {
 		st.cancel()
 	}

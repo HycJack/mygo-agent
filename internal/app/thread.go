@@ -2,6 +2,7 @@ package app
 
 import (
 	uipkg "mygo-agent/internal/ui"
+	"strings"
 
 	"mygo-agent/internal/harness"
 
@@ -39,9 +40,18 @@ func (a *app) transcriptVM(th *Thread) *uipkg.TranscriptVM {
 		vm.Messages = cached.vm.Messages
 		return vm
 	}
+	group := len(a.panelFor(a.agentFor(th))) > 0
 	for mi := range th.Messages {
 		m := &th.Messages[mi]
 		mv := uipkg.MessageVM{ID: m.ID, Role: m.Role, Text: m.Text, At: m.At, Running: m.Running}
+		// A group thread labels every reply with its member (spec/agents.md);
+		// solo threads keep the clean look.
+		if group && m.Role == "assistant" && m.AgentID != "" {
+			if ag := a.agentByID(m.AgentID); ag != nil {
+				mv.AgentLabel = strings.TrimSpace(ag.Emoji + " " + ag.Name)
+				mv.AgentEmoji = ag.Emoji
+			}
+		}
 		// The ordered sequence is the render input; the flattened cards
 		// stay for the actions that address a block by position.
 		mv.Items = itemize(m)

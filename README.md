@@ -17,8 +17,11 @@ English | [简体中文](README.zh-CN.md)
   filters, an appended system prompt. Pick one from the composer's
   picker or the home launcher, edit them in settings; an empty profile
   follows the app's selection. Tasks run independently — each thread
-  starts, stops and regenerates on its own — and one agent can hand a
-  sub-task to another through the `delegate` tool.
+  starts, stops and regenerates on its own. An agent can hand a
+  sub-task to another through the `delegate` tool, and a **panel** turns
+  a thread into a group relay: its members answer in order, each seeing
+  the earlier replies in the shared conversation, every reply labeled
+  with its agent.
 - **Tracing** — every task keeps an append-only event trace beside its
   file (tool calls with durations and exits, notes, per-turn token and
   cost totals), viewable from the task menu; the sidebar's search

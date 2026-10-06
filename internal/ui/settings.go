@@ -62,6 +62,9 @@ type AgentEditVM struct {
 	MCPServers    []string // names; empty mounts everything
 	SkillsAllow   []string // both empty discovers as usual
 	SkillsDeny    []string
+	// Panel is the group relay's member names, in answer order
+	// (spec/agents.md); empty means a solo agent.
+	Panel []string
 }
 
 // SettingsVM is the render input of the settings dialog. The provider
@@ -484,6 +487,11 @@ func agentForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, ag *AgentEdi
 		ui.TokenField(c, &ag.SkillsAllow, nil)
 		ui.TokenField(c, &ag.SkillsDeny, nil)
 		ui.Text(c, "Names filter the discovered skills; deny wins, both empty discovers as usual.").FontSize(11).TextColor(t.TextMuted)
+	})
+	ui.Column(c).Gap(4).Children(func() {
+		ui.Text(c, "Panel members (group relay)").FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
+		ui.TokenField(c, &ag.Panel, nil)
+		ui.Text(c, "Agent names, in answer order: a thread bound to this agent gets one reply per member, each seeing the earlier ones. Members run in-process.").FontSize(11).TextColor(t.TextMuted)
 	})
 	ui.Row(c).Justify(ui.End).Children(func() {
 		if ui.Button(c, "Delete agent").Clicked() {

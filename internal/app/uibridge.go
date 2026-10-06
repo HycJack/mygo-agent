@@ -1,6 +1,7 @@
 package app
 
 import (
+	"fmt"
 	"strings"
 
 	uipkg "mygo-agent/internal/ui"
@@ -70,6 +71,9 @@ func (a *app) homeViewModel() *uipkg.ViewModel {
 // agent resolves to, which is the app's when the profile leaves them
 // empty.
 func (a *app) agentSub(ag *Agent) string {
+	if n := len(a.panelFor(ag)); n > 0 {
+		return fmt.Sprintf("panel · %d agents", n)
+	}
 	backend, model := ag.Backend, ag.Model
 	if backend == "" {
 		backend = a.backend

@@ -109,6 +109,7 @@ func (a *app) settingsVM() *uipkg.SettingsVM {
 			MCPServers:    slices.Clone(ag.MCPServers),
 			SkillsAllow:   slices.Clone(ag.Skills.Allow),
 			SkillsDeny:    slices.Clone(ag.Skills.Deny),
+			Panel:         slices.Clone(ag.Panel),
 		}
 		// The VM's 0 means "follow the app", so a set value loads
 		// shifted up by one — mirroring syncAgent's minus one on the way
@@ -196,7 +197,8 @@ func (a *app) syncAgent(v *uipkg.AgentEditVM) bool {
 		!slices.Equal(ag.Tools.Disabled, v.ToolsDisabled) ||
 		!slices.Equal(ag.MCPServers, v.MCPServers) ||
 		!slices.Equal(ag.Skills.Allow, v.SkillsAllow) ||
-		!slices.Equal(ag.Skills.Deny, v.SkillsDeny) {
+		!slices.Equal(ag.Skills.Deny, v.SkillsDeny) ||
+		!slices.Equal(ag.Panel, v.Panel) {
 		ag.Name, ag.Emoji, ag.Backend = v.Name, v.Emoji, v.Backend
 		ag.Provider, ag.Model, ag.SystemPrompt = v.Provider, v.Model, v.SystemPrompt
 		ag.MaxTurns = maxTurns
@@ -212,6 +214,7 @@ func (a *app) syncAgent(v *uipkg.AgentEditVM) bool {
 		ag.Tools.Disabled = v.ToolsDisabled
 		ag.MCPServers = v.MCPServers
 		ag.Skills.Allow, ag.Skills.Deny = v.SkillsAllow, v.SkillsDeny
+		ag.Panel = v.Panel
 		return true
 	}
 	return false

@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -248,16 +249,21 @@ func parseToolDiff(out string) []DiffLine {
 // seedTail is what every built-in transcript's system head ends with.
 const seedTail = "\n\nAnswer in the user's language. When you have the result, summarise what you did and stop; do not call tools without a reason."
 
-func (h builtinHarness) seedChatLog(prompt string) []harness.ChatMessage {
-	prior := h.priorMessages
-	// The system head: the built-in prompt, the skills the agent's
-	// selection kept, then the agent's own instructions (spec/agents.md)
-	// — the host seeds the transcript, so this is the injection point.
+// systemHead is the transcript's system message as THIS turn's agent
+// should have it: the built-in prompt, the skills the agent's selection
+// kept, then the agent's own instructions (spec/agents.md) — the host
+// writes the head, so this is the injection point.
+func (h builtinHarness) systemHead() string {
 	sys := builtinSystemPrompt(h.turn.Workdir, builtin.DiscoverSkills(h.turn.Workdir).Select(h.turn.Skills))
 	if h.turn.SystemPrompt != "" {
 		sys += "\n\n" + h.turn.SystemPrompt
 	}
-	msgs := []harness.ChatMessage{{Role: "system", Content: sys + seedTail}}
+	return sys + seedTail
+}
+
+func (h builtinHarness) seedChatLog(prompt string) []harness.ChatMessage {
+	prior := h.priorMessages
+	msgs := []harness.ChatMessage{{Role: "system", Content: h.systemHead()}}
 	for _, m := range prior {
 		switch m.Role {
 		case "user":
@@ -284,6 +290,14 @@ func (h builtinHarness) transcriptFor(prompt string) []harness.ChatMessage {
 	}
 	if len(history) == 0 {
 		return h.seedChatLog(prompt)
+	}
+	// The head belongs to THIS turn's agent: a panel relay hands the
+	// conversation from member to member, and a thread whose agent was
+	// switched must not run under the previous agent's instructions. The
+	// slice is the thread's live ChatLog, so replace through a copy.
+	if history[0].Role == "system" {
+		history = slices.Clone(history)
+		history[0] = harness.ChatMessage{Role: "system", Content: h.systemHead()}
 	}
 	if prompt != "" {
 		history = append(history, harness.ChatMessage{Role: "user", Content: prompt})
