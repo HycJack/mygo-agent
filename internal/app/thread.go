@@ -26,7 +26,7 @@ func (a *app) messages(c *ui.Context, th *Thread) {
 // rewind. Running is stamped separately because it flips on its own.
 func (a *app) transcriptVM(th *Thread) *uipkg.TranscriptVM {
 	vm := &uipkg.TranscriptVM{
-		Running: a.running,
+		Running: a.isRunning(th.ID),
 		List:    a.listState(th.ID),
 		Md:      a.md(),
 		Pal:     a.pal,
@@ -34,8 +34,8 @@ func (a *app) transcriptVM(th *Thread) *uipkg.TranscriptVM {
 	stamp := th.viewStamp()
 	if cached, ok := a.transcriptCache[th.ID]; ok && cached.stamp == stamp {
 		// Only Running is stamped outside the snapshot: it belongs to the
-		// app, not the thread, and flips without touching messages.
-		cached.vm.Running = a.running
+		// thread's run, not its messages, and flips without touching them.
+		cached.vm.Running = a.isRunning(th.ID)
 		vm.Messages = cached.vm.Messages
 		return vm
 	}

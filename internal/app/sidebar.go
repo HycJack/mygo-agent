@@ -44,7 +44,7 @@ func (a *app) sidebarViewModel() *uipkg.SidebarVM {
 			continue
 		}
 		t := uipkg.ThreadVM{ID: th.ID, Title: th.Title, Updated: th.Updated,
-			Running: th.ID == a.current && a.running}
+			Running: a.isRunning(th.ID)}
 		if th.CodexID != "" {
 			t.BackendTag = "codex"
 		}

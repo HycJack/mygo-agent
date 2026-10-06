@@ -62,7 +62,7 @@ func TestBuiltinChatLogRoundTrip(t *testing.T) {
 	a.threads = append(a.threads, th)
 	a.current = "t1"
 
-	a.running = true
+	a.runStart("t1", func() {}) // the run registry is dispatch's; tests seed it
 	go runBackend(a, th, "run the tool", 0)
 	waitTurn(t, a, th, len(th.Messages)-1)
 
@@ -111,7 +111,7 @@ func TestBuiltinChatLogPersistsAcrossRestart(t *testing.T) {
 	a.threads = append(a.threads, th)
 	a.current = "t1"
 
-	a.running = true
+	a.runStart("t1", func() {}) // the run registry is dispatch's; tests seed it
 	go runBackend(a, th, "run the tool", 0)
 	waitTurn(t, a, th, len(th.Messages)-1)
 

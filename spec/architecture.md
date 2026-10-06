@@ -114,6 +114,13 @@ are load-bearing:
   whose reader goroutine outlives its own `Run` therefore cannot write
   into a message that has already been saved.
 
+Runs are registered per thread — `a.runs`, keyed by thread id
+(spec/agents.md) — so two tasks run at once, and a stop is scoped: the
+composer's Stop, Escape and a task's deletion each cancel exactly the
+thread they name, never another's run. The registry takes the old
+cancelMu lesson: its own narrow lock, because the dispatching frame
+writes it while `finish` clears it inside its update.
+
 ## The Harness protocol
 
 A harness is one turn of work. Instances are per-turn (OAC's model: a fresh

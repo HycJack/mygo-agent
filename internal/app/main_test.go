@@ -126,7 +126,7 @@ func TestSendRunsBuiltinAgent(t *testing.T) {
 	}
 	waitUntil(t, tt, func() bool {
 		stopped := false
-		a.update(func() { stopped = !a.running })
+		a.update(func() { stopped = !a.isRunning(th.ID) })
 		return stopped
 	})
 	// The composer is back to Send, and the rail's spinner is gone.

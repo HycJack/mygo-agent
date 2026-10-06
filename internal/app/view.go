@@ -54,8 +54,8 @@ func (a *app) view(c *ui.Context) {
 		switch {
 		case a.viewerOpen:
 			a.viewerOpen = false
-		case a.running:
-			a.stop()
+		case a.currentRunning():
+			a.stopThread(a.current)
 		}
 	}
 
@@ -142,7 +142,7 @@ func (a *app) renderHeader(c *ui.Context, tb ui.TitleBar) {
 	th := a.currentThread()
 	vm := &uipkg.HeaderVM{
 		Title:    "New task",
-		Running:  a.running,
+		Running:  a.currentRunning(),
 		NavOpen:  a.navOpen,
 		WsOpen:   a.wsOpen,
 		TermOpen: a.termOpen,

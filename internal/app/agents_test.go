@@ -5,6 +5,9 @@ package app
 // the settings dialog's mirror.
 
 import (
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"slices"
@@ -317,5 +320,81 @@ func TestThreadFileCarriesAgentID(t *testing.T) {
 	}
 	if got2.AgentID != "default" {
 		t.Fatalf("the stamped binding did not persist: %q", got2.AgentID)
+	}
+}
+
+// TestTwoThreadsRunConcurrently is the P2 acceptance (spec/agents.md):
+// two tasks — bound to different agents — run at the same time, and
+// stopping one leaves the other to finish untouched.
+func TestTwoThreadsRunConcurrently(t *testing.T) {
+	a := newTestApp(t)
+	a.backend = "builtin"
+	// A slow provider: the 400 ms delay is what makes "at the same time"
+	// observable instead of lucky.
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		time.Sleep(400 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.output_text.delta\n"+
+			`data: {"type":"response.output_text.delta","delta":"done"}`+"\n\n"+
+			"event: response.completed\n"+
+			`data: {"type":"response.completed","response":{"output":[]}}`+"\n\n")
+	}))
+	defer srv.Close()
+	a.providers = []Provider{{ID: "p1", Name: "Test", BaseURL: srv.URL, APIKey: "k",
+		Models: []string{"test-model"}, Wire: harness.WireResponses}}
+	a.providerID, a.model = "p1", "test-model"
+
+	readOnly := int(harness.ModeReadOnly)
+	a.agents = append(a.agents,
+		Agent{ID: "ag-a", Name: "A"},
+		Agent{ID: "ag-b", Name: "B", Mode: &readOnly})
+
+	now := time.Now()
+	thA := &Thread{ID: "t-a", ProjectID: "default", AgentID: "ag-a", Created: now, Updated: now}
+	thB := &Thread{ID: "t-b", ProjectID: "default", AgentID: "ag-b", Created: now, Updated: now}
+	for _, th := range []*Thread{thA, thB} {
+		th.Messages = []Message{{ID: "m0", Role: "assistant", Running: true, At: now}}
+		a.threads = append(a.threads, th)
+	}
+	a.current = "t-b"
+
+	go runBackend(a, thA, "one", 0)
+	go runBackend(a, thB, "two", 0)
+
+	// Both in flight at once — the old global running flag could not
+	// even say this.
+	both := false
+	for deadline := time.Now().Add(5 * time.Second); time.Now().Before(deadline); {
+		a.update(func() { both = a.isRunning("t-a") && a.isRunning("t-b") })
+		if both {
+			break
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if !both {
+		t.Fatal("the two turns never ran at the same time")
+	}
+
+	// Stopping A scopes to A.
+	a.stopThread("t-a")
+	a.update(func() {
+		if a.isRunning("t-a") {
+			t.Fatal("the stopped thread is still registered")
+		}
+		if !a.isRunning("t-b") {
+			t.Fatal("the stop leaked into the other thread")
+		}
+	})
+
+	// B finishes on its own; A settles stopped.
+	waitTurn(t, a, thB, 0)
+	waitTurn(t, a, thA, 0)
+	a.update(func() {
+		if a.isRunning("t-a") || a.isRunning("t-b") {
+			t.Fatal("settled turns left entries in the run registry")
+		}
+	})
+	if thB.Messages[0].Text != "done" {
+		t.Fatalf("the untouched thread lost its reply: %q", thB.Messages[0].Text)
 	}
 }

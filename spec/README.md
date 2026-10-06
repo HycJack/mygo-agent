@@ -15,7 +15,7 @@ state invariants; code and tests follow them.
 
 Proposals are not contracts: [agents.md](agents.md) is a staged plan
 (agents as configured entities, a web governance plane, tracing). Its
-P0 and P1 stages have landed — their data contract moved into
+P0, P1 and P2 stages have landed — their data contract moved into
 [data.md](data.md) (config v2, the thread's `agent_id`), their rule
 layering into [permissions.md](permissions.md), and the claude
 mappings into [cli-backends.md](cli-backends.md) — and its "current

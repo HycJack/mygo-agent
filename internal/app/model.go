@@ -71,13 +71,13 @@ type app struct {
 	termOpen   bool
 	termHeight float32
 
-	running   bool
-	runningID string // the thread whose turn is running; a.stop belongs to it
-	cancel    context.CancelFunc
-	// cancelMu guards cancel: dispatch sets it from the frame — which in
-	// headless runs already holds a.mu — while finish clears it under
-	// update; a second, narrower lock avoids re-entering a.mu.
-	cancelMu sync.Mutex
+	// runs maps thread id to its in-flight turn (spec/agents.md P2):
+	// two tasks run at once, and every stop belongs to one thread. The
+	// narrow mutex is the old cancelMu lesson kept: the map is written
+	// from the dispatching frame and from finish's update, and a second
+	// lock avoids re-entering a.mu.
+	runsMu sync.Mutex
+	runs   map[string]*runState
 
 	renaming    bool
 	renameID    string
@@ -174,6 +174,7 @@ func newApp() *app {
 		pal:           codexPalette(),
 		lists:         map[string]*ui.ListState{},
 		approvals:     map[string]chan harness.ApprovalDecision{},
+		runs:          map[string]*runState{},
 		sections:      map[string]bool{},
 		dirs:          map[string]bool{},
 		dirCache:      map[string][]fsNode{},
@@ -633,6 +634,67 @@ func (a *app) byID(id string) *Thread {
 	return nil
 }
 
+// runState is one thread's in-flight turn: everything a stop needs.
+type runState struct {
+	cancel context.CancelFunc
+}
+
+// runStart registers the thread's in-flight turn. A thread runs one
+// turn — the send guards see to that — so a stale entry here means a
+// guard failed somewhere, and the loser is stopped rather than left
+// spending tokens with nobody holding its card.
+func (a *app) runStart(thID string, cancel context.CancelFunc) {
+	a.runsMu.Lock()
+	defer a.runsMu.Unlock()
+	if a.runs == nil {
+		a.runs = map[string]*runState{}
+	}
+	if stale := a.runs[thID]; stale != nil && stale.cancel != nil {
+		stale.cancel()
+	}
+	a.runs[thID] = &runState{cancel: cancel}
+}
+
+// runEnd clears the thread's entry: the turn is over, whatever the
+// outcome, and a late finish must not leave a ghost a stop could hit.
+func (a *app) runEnd(thID string) {
+	a.runsMu.Lock()
+	delete(a.runs, thID)
+	a.runsMu.Unlock()
+}
+
+// isRunning reports whether the thread's turn is in flight. The empty
+// id (the home screen) is never running.
+func (a *app) isRunning(thID string) bool {
+	if thID == "" {
+		return false
+	}
+	a.runsMu.Lock()
+	defer a.runsMu.Unlock()
+	return a.runs[thID] != nil
+}
+
+// currentRunning reports whether the thread on screen is running — the
+// composer's Stop, the header's badge and the transcript's gating all
+// key on it.
+func (a *app) currentRunning() bool {
+	th := a.currentThread()
+	return th != nil && a.isRunning(th.ID)
+}
+
+// stopThread cancels the thread's run and clears the entry. A thread
+// with no run is a no-op, which is what makes deleting or escaping on
+// an idle thread free.
+func (a *app) stopThread(thID string) {
+	a.runsMu.Lock()
+	st := a.runs[thID]
+	delete(a.runs, thID)
+	a.runsMu.Unlock()
+	if st != nil && st.cancel != nil {
+		st.cancel()
+	}
+}
+
 func (a *app) currentThread() *Thread {
 	if a.current == "" {
 		return nil
@@ -694,13 +756,12 @@ func (a *app) deleteThread(c *ui.Context, id string) {
 	removed := a.threads[at]
 	a.threads = append(a.threads[:at], a.threads[at+1:]...)
 	// The stop belongs to the thread that is running, not the one on
-	// screen: current moves freely while a turn runs, so keying on it
+	// screen: current moves freely while turns run, so keying on it
 	// leaked the run — it kept spending tokens, its next event re-saved
 	// the file this delete removed, and its approval card sat pending
-	// until the deadline. Deleting any other thread must not stop it.
-	if a.running && a.runningID == id {
-		a.stop()
-	}
+	// until the deadline. stopThread is already scoped to the id, so
+	// deleting an idle thread is a no-op here.
+	a.stopThread(id)
 	// Events already drained from the CLI can still land before the
 	// cancel takes effect; the flag is what keeps them from resurrecting
 	// the file removeThreadFile is about to delete.

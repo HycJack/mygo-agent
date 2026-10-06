@@ -96,11 +96,11 @@ done
 	}
 
 	// The stop button.
-	a.stop()
+	a.stopThread(th.ID)
 
 	waitFor(t, 8*time.Second, func() bool {
 		stopped := false
-		a.update(func() { stopped = !a.running })
+		a.update(func() { stopped = !a.isRunning(th.ID) })
 		return stopped && !alive(claudePid)
 	})
 	if alive(claudePid) {

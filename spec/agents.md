@@ -1,6 +1,6 @@
 # 方案：Agent 化与多端管理（配置化工具 / MCP / Skills / 模型，单与多 Agent，Web 管理，会话追踪）
 
-状态：**P0、P1 已落地**（✅ 标注）；P2–P7 仍是提案。已落地部分的契约移入正式 spec —— 数据格式在 data.md（config v2、thread `agent_id`）、规则叠加在 permissions.md、claude 的映射在 cli-backends.md；本节的"现状盘点"随代码保持更新。
+状态：**P0、P1、P2 已落地**（✅ 标注）；P3–P7 仍是提案。已落地部分的契约移入正式 spec —— 数据格式在 data.md（config v2、thread `agent_id`）、规则叠加在 permissions.md、claude 的映射在 cli-backends.md；本节的"现状盘点"随代码保持更新。
 
 ## 1. 目标与产品分工
 
@@ -18,7 +18,7 @@
 - **工具**：`harness.Tools(workdir, skills, ToolOptions)` 构建内置 6 件（bash / read_file / edit_file / list_files / grep / read_skill），每个 `Tool{Name, Description, Actions, Parameters, Execute}` —— 天然的注册表素材。
 - **Skills**：`DiscoverSkills(projectDir)` 从项目目录发现，经 `read_skill` 工具暴露。
 - **MCP**：运行时 `a.effectiveMCPServers()`（全局配置 + 项目 `.mcp.json`；stdio 命令或 streamable HTTP `url` 均可）spawn 后把工具并入工具集（仅 builtin）。
-- **运行态**：`a.running`/`a.cancel` **全局单飞** —— 同一时刻只能有一个回合。这是多 Agent 的第一个硬阻塞点。
+- **运行态**：~~`a.running`/`a.cancel` 全局单飞~~ → **已改**（P2 ✅）：`runs map[threadID]*runState`，多个回合并发，composer 的 Stop、Escape 和删除任务都只作用于自己那个线程；sidebar 每行显示各自的转圈。
 - **会话存储**：`threads/<projectID>/<threadID>.json`（meta + messages + chat_log），原子写，版本化（spec/data.md）。无线程 ↔ Agent 绑定，无事件级 trace；用量采集部分就位：builtin 已采集 prompt/completion tokens（驱动水位压缩；chat wire 需声明 `context_window` 才会请求 usage），cost 未采集；claude 的 result 行带 `duration_ms/total_cost_usd/usage`（时长/费用/tokens 均已进完成卡片）；codex 已读 `turn/completed` 的 usage 与 `thread/tokenUsage/updated`（完成卡片显示 tokens），cost 无来源。
 - **UI**：`internal/ui` 已全部 ViewModel+Actions 化（Transcript/Viewer/Settings/Header/Sidebar/Home/Composer）；`internal/app` 只剩状态、分发、持久化与桥接。这个形状就是为"第二个 UI 表面"准备的。
 - **UI 框架**：mygo 支持**两种**窗口：native（当前，GPU 直绘）与 **web page**（系统 webview + 由 Go 服务定义生成的 TS client，typed IPC：bind 服务 / channel 流 / 类型化事件）。二者可混用 —— Web 端有现成路径，不必自起前端脚手架之外的东西。
@@ -169,9 +169,10 @@ config v2 + Default Agent 迁移；`Thread.AgentID`；Host 增 `agents` 状态�
 `ToolCatalog` + `ToolOptions.Enabled`；`Turn` 增 MCPServers/Skills/SystemPrompt；`planTurn`（原 turnFor）按 Agent 组装；桌面 home 增 **Agent 启动器卡片**，composer 增 Agent 选择器；设置页含 Agent CRUD（Agents 区，与 Providers 同面板）。
 验收：建"只读 + 只开 grep/read + 挂 filesystem MCP"的 Agent 并跑通；从启动器选 Agent 开会话；claude 的映射行为与 §4.5 表一致（codex 的 MCP 映射未做，表中已如实标注）。
 
-**P2 并发多会话（2–3 天）**
-`runs map[threadID]…`；全部 `a.running` 读取面切到 per-thread；sidebar/header/composer 显示各自状态。
-验收：两个会话分别用不同 Agent 同时跑、分别停。
+**P2 并发多会话（2–3 天）✅ 已落地**
+`runs map[threadID]*runState`；全部 `a.running` 读取面切到 per-thread；sidebar 每行、header 徽标、composer 的 Stop 各自显示/作用于当前线程。
+验收：两个会话分别用不同 Agent 同时跑、分别停（`TestTwoThreadsRunConcurrently`，含 race 检测）。
+（落地形态：`runState` 只持 `cancel`——计划的 `startedAt` 暂无消费者，未加。）
 
 **P3 会话追踪（3–4 天）**
 projector 写 events.jsonl；三后端 usage 采集与聚合；搜索（文件扫描版）；线程详情 trace 视图。

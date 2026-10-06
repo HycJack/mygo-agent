@@ -75,7 +75,11 @@ func TestSendClearsTheComposer(t *testing.T) {
 		// Enter also sends.
 		tt.TypeKey(0, ui.KeyEnter, "\n")
 	}
-	waitUntil(t, tt, func() bool { return !a.running })
+	waitUntil(t, tt, func() bool {
+		done := false
+		a.update(func() { done = len(a.threads) > 0 && !a.isRunning(a.threads[0].ID) })
+		return done
+	})
 	tt.Frame()
 
 	if a.draft != "" {

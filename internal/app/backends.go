@@ -65,7 +65,7 @@ func (a *app) dispatch(th *Thread, prompt string, at int) {
 	}
 	h := a.newHarness(plan.backend, th, turn)
 	ctx, cancel := context.WithCancel(context.Background())
-	a.setCancel(cancel)
+	a.runStart(th.ID, cancel)
 	go func() {
 		err := h.Run(ctx, turn, func(ev harness.Event) { a.applyEvent(th, at, h.Kind(), ev) })
 		a.finish(th, at, turnErrText(err))
@@ -262,9 +262,8 @@ func (h builtinHarness) Run(ctx context.Context, turn harness.Turn, emit func(ha
 	return h.runBuiltin(ctx, emit)
 }
 
-// runBackend is the test shim: dispatches like send does — running flag
-// included — without touching the composer.
+// runBackend is the test shim: dispatches like send does. The run
+// registers itself in dispatch — there is no separate flag to set.
 func runBackend(a *app, th *Thread, prompt string, at int) {
-	a.update(func() { a.running, a.runningID = true, th.ID })
 	a.dispatch(th, prompt, at)
 }

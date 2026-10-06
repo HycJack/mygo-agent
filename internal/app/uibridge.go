@@ -31,7 +31,7 @@ func (a *app) homeViewModel() *uipkg.ViewModel {
 		a.vm = &uipkg.ViewModel{}
 	}
 	vm := a.vm
-	vm.Running = a.running
+	vm.Running = a.currentRunning()
 	vm.FocusComposer = a.focusComposer
 	vm.Mode = a.mode
 	vm.Effort = a.effort
@@ -112,7 +112,7 @@ func (a *app) setDraft(s string) {
 type homeActions struct{ a *app }
 
 func (h homeActions) Send() { h.a.send() }
-func (h homeActions) Stop() { h.a.stop() }
+func (h homeActions) Stop() { h.a.stopThread(h.a.current) }
 
 // SetDraft fills the composer (the suggestion chips): the bound
 // ViewModel immediately, the host mirror for the frame.

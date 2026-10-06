@@ -1,21 +1,25 @@
 package app
 
 import (
-	"context"
 	"strings"
 	"time"
 
 	"mygo-agent/internal/harness/builtin"
 )
 
-// send takes the draft, appends it to the thread, and starts the harness.
+// send takes the draft, appends it to the thread, and starts the
+// harness. Other threads' turns do not block a send — only this
+// thread's own running turn does (spec/agents.md P2).
 func (a *app) send() {
 	prompt := strings.TrimSpace(a.draft)
-	if prompt == "" || a.running {
+	if prompt == "" {
 		return
 	}
-	a.setDraft("")
 	th := a.currentThread()
+	if th != nil && a.isRunning(th.ID) {
+		return // this thread's turn is still in flight; the draft stays
+	}
+	a.setDraft("")
 	if th == nil {
 		th = a.createThread()
 	}
@@ -24,7 +28,7 @@ func (a *app) send() {
 
 // resend re-runs a prompt the user already sent, as a fresh turn.
 func (a *app) resend(th *Thread, text string) {
-	if a.running || strings.TrimSpace(text) == "" {
+	if a.isRunning(th.ID) || strings.TrimSpace(text) == "" {
 		return
 	}
 	a.startTurn(th, text)
@@ -34,7 +38,7 @@ func (a *app) resend(th *Thread, text string) {
 // turn again. The built-in backend rewinds its ChatLog to where the
 // turn started, so the retry sees the same history.
 func (a *app) regenerate(th *Thread) {
-	if a.running || len(th.Messages) == 0 {
+	if a.isRunning(th.ID) || len(th.Messages) == 0 {
 		return
 	}
 	if th.Messages[len(th.Messages)-1].Role != "assistant" {
@@ -70,8 +74,6 @@ func (a *app) regenerate(th *Thread) {
 	th.invalidateDiffCount() // the messages were rewound
 	now := time.Now()
 	th.Messages = append(th.Messages, Message{ID: uid(), Role: "assistant", Running: true, At: now, LogAt: logAt})
-	a.running = true
-	a.runningID = th.ID
 	a.saveThread(th)
 	at := len(th.Messages) - 1
 	// The built-in transcript already holds the user's turn — re-sending
@@ -84,7 +86,7 @@ func (a *app) regenerate(th *Thread) {
 }
 
 // startTurn appends the user's prompt and a placeholder reply, then
-// dispatches to the backend.
+// dispatches to the backend. The run registers itself in dispatch.
 func (a *app) startTurn(th *Thread, prompt string) {
 	now := time.Now()
 	th.Messages = append(th.Messages, Message{ID: uid(), Role: "user", Text: prompt, At: now})
@@ -93,8 +95,6 @@ func (a *app) startTurn(th *Thread, prompt string) {
 	}
 	th.Updated = now
 	th.Messages = append(th.Messages, Message{ID: uid(), Role: "assistant", Running: true, At: now})
-	a.running = true
-	a.runningID = th.ID
 	a.focusComposer = true
 	at := len(th.Messages) - 1
 	a.saveThread(th)
@@ -104,30 +104,13 @@ func (a *app) startTurn(th *Thread, prompt string) {
 	a.dispatch(th, prompt, at)
 }
 
-// setCancel swaps the run's cancel func (see cancelMu).
-func (a *app) setCancel(c context.CancelFunc) {
-	a.cancelMu.Lock()
-	a.cancel = c
-	a.cancelMu.Unlock()
-}
-
-// stop cancels the run; what the agent said so far stays.
-func (a *app) stop() {
-	a.cancelMu.Lock()
-	c := a.cancel
-	a.cancel = nil
-	a.cancelMu.Unlock()
-	if c != nil {
-		c()
-	}
-}
-
 // finish marks the running reply done and saves the thread.
 func (a *app) finish(th *Thread, at int, errText string) {
 	a.update(func() {
+		// The run is over even if the thread itself is gone: a deleted
+		// task's late finish must not leave a ghost entry.
+		a.runEnd(th.ID)
 		if cur := a.byID(th.ID); cur == nil || at >= len(cur.Messages) {
-			a.running = false
-			a.runningID = ""
 			return
 		}
 		m := &th.Messages[at]
@@ -139,9 +122,6 @@ func (a *app) finish(th *Thread, at int, errText string) {
 			m.Text = "(no response)"
 		}
 		th.Updated = time.Now()
-		a.running = false
-		a.runningID = ""
-		a.setCancel(nil)
 		a.saveThread(th)
 		if a.wsOpen {
 			a.refreshGit() // the agent may have changed files
