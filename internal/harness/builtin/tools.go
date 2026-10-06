@@ -25,7 +25,7 @@ func Tools(workdir string, skills *SkillSet, opts ...ToolOptions) []Tool {
 	if len(opts) > 0 {
 		o = opts[0]
 	}
-	return []Tool{
+	tools := []Tool{
 		bashTool(workdir, o),
 		readFileTool(workdir),
 		editFileTool(workdir, o),
@@ -33,6 +33,49 @@ func Tools(workdir string, skills *SkillSet, opts ...ToolOptions) []Tool {
 		grepTool(workdir),
 		readSkillTool(workdir, skills),
 	}
+	return filterEnabled(tools, o.Enabled)
+}
+
+// filterEnabled drops the tools the options disable (spec/agents.md): an
+// entry set to false removes the tool; absent or true keeps it; nil
+// keeps everything. MCP tools never pass through here — the turn's
+// server list governs them.
+func filterEnabled(tools []Tool, enabled map[string]bool) []Tool {
+	if enabled == nil {
+		return tools
+	}
+	out := make([]Tool, 0, len(tools))
+	for _, t := range tools {
+		if on, ok := enabled[t.Name]; ok && !on {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out
+}
+
+// ToolInfo is one row of the built-in tool registry: what a tool is,
+// without binding it to a working directory (spec/agents.md).
+type ToolInfo struct {
+	Name        string
+	Description string
+	Actions     []string
+}
+
+// ToolCatalog describes the built-in tools for the settings UI and
+// config validation. The tools are closures over their workdir, so the
+// catalog carries the description only — the Execute fields are dropped,
+// and nothing here can touch anything.
+func ToolCatalog() []ToolInfo {
+	tools := Tools("", nil, ToolOptions{})
+	out := make([]ToolInfo, len(tools))
+	for i, t := range tools {
+		out[i] = ToolInfo{Name: t.Name, Description: t.Description}
+		for _, a := range t.Actions {
+			out[i].Actions = append(out[i].Actions, string(a))
+		}
+	}
+	return out
 }
 
 func obj(properties string) json.RawMessage {

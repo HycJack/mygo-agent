@@ -53,6 +53,23 @@ func (h *Harness) Run(ctx context.Context, turn harness.Turn, emit func(harness.
 	if turn.SessionID != "" {
 		args = append(args, "--resume", turn.SessionID)
 	}
+	// The agent's own system prompt rides the CLI's append flag: the
+	// CLI's base prompt stays, the agent's instructions join after it
+	// (spec/agents.md, the capability map).
+	if turn.SystemPrompt != "" {
+		args = append(args, "--append-system-prompt", turn.SystemPrompt)
+	}
+	// The turn's MCP servers map onto the CLI's own config file: stdio
+	// servers spawn as the CLI's children, HTTP ones by URL. The file is
+	// deleted when the turn ends. A server that cannot be expressed is
+	// skipped rather than fatal — the mapping is best-effort, and the
+	// model discovers the absent tool and says so.
+	if len(turn.MCPServers) > 0 {
+		if path, err := writeMCPConfig(turn.MCPServers); err == nil {
+			args = append(args, "--mcp-config", path)
+			defer os.Remove(path)
+		}
+	}
 	// A prompt that names a path outside the workspace asks for it here,
 	// once, and the answer goes on the command line as --add-dir. It has
 	// to be asked before the spawn: the grant is the CLI's allow list,
@@ -528,4 +545,45 @@ func outsideDirArgs(ctx context.Context, turn harness.Turn) []string {
 		args = append(args, "--add-dir", d)
 	}
 	return args
+}
+
+// writeMCPConfig writes the turn's MCP servers as the CLI's --mcp-config
+// file (spec/agents.md, the capability map): stdio servers keep their
+// command, URL servers map to the http type. Best-effort by contract —
+// the caller skips the flag when the write fails.
+func writeMCPConfig(servers []harness.MCPServer) (string, error) {
+	cfg := struct {
+		MCPServers map[string]any `json:"mcpServers"`
+	}{MCPServers: map[string]any{}}
+	for _, s := range servers {
+		if s.URL != "" {
+			cfg.MCPServers[s.Name] = map[string]any{"type": "http", "url": s.URL}
+			continue
+		}
+		if s.Command == "" {
+			continue
+		}
+		srv := map[string]any{"command": s.Command}
+		if len(s.Args) > 0 {
+			srv["args"] = s.Args
+		}
+		if len(s.Env) > 0 {
+			srv["env"] = s.Env
+		}
+		cfg.MCPServers[s.Name] = srv
+	}
+	data, err := json.MarshalIndent(cfg, "", "  ")
+	if err != nil {
+		return "", err
+	}
+	f, err := os.CreateTemp("", "mygo-mcp-*.json")
+	if err != nil {
+		return "", err
+	}
+	if _, err := f.Write(data); err != nil {
+		f.Close()
+		os.Remove(f.Name())
+		return "", err
+	}
+	return f.Name(), f.Close()
 }

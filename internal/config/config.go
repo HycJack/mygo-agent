@@ -52,8 +52,67 @@ type MCPServer struct {
 }
 
 // Version is the config.json schema version this binary writes
-// (spec/data.md). Load refuses files from newer schemas.
-const Version = 1
+// (spec/data.md). Load refuses files from newer schemas; version 1
+// files still load and the host migrates them (the agents block is
+// synthesized from the app-level defaults).
+const Version = 2
+
+// Agent is a configured agent profile (spec/agents.md): which backend
+// runs it, which model it uses, which tools, MCP servers and skills it
+// gets, and how it is allowed to act. A profile, not a running thing —
+// a session binds to one and the host assembles its turns from it.
+//
+// Empty fields inherit the app-level selection (the provider, model,
+// effort, mode and backend the composer shows), so the zero Agent
+// behaves exactly like the pre-agents app.
+type Agent struct {
+	ID    string `json:"id"`
+	Name  string `json:"name"`
+	Emoji string `json:"emoji,omitempty"`
+	// Backend runs this agent: builtin | codex | claude | pi. Empty
+	// follows the app's backend switch.
+	Backend string `json:"backend,omitempty"`
+	// Provider is a provider id and Model one of its models; either
+	// empty follows the app's selection.
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+	// Effort and Mode are the reasoning effort (0 low, 1 medium, 2 high)
+	// and the default approval mode (0 read-only, 1 agent, 2 full). nil
+	// follows the app's selection.
+	Effort *int `json:"effort,omitempty"`
+	Mode   *int `json:"mode,omitempty"`
+	// MaxTurns is the tool-round budget; zero follows the app's.
+	MaxTurns     int    `json:"max_turns,omitzero"`
+	SystemPrompt string `json:"system_prompt,omitempty"`
+	// Tools disables built-in tools by name and adds per-tool permission
+	// rules on top of the global ones (spec/permissions.md).
+	Tools AgentTools `json:"tools,omitempty"`
+	// MCPServers names the servers this agent mounts; empty mounts all
+	// of them (the app-level list merged with the project's .mcp.json).
+	MCPServers []string `json:"mcp_servers,omitempty"`
+	// Skills narrows the discovered skills.
+	Skills AgentSkills `json:"skills,omitempty"`
+}
+
+// AgentTools is the tool half of an Agent profile.
+type AgentTools struct {
+	// Disabled names built-in tools the agent does not get (the registry
+	// is the six in spec/permissions.md; MCP tools are governed by the
+	// server list instead).
+	Disabled []string `json:"disabled,omitempty"`
+	// Rules are selector rules layered over the global ones — the more
+	// specific agent rule wins (spec/permissions.md, selector rules).
+	Rules map[string]string `json:"rules,omitempty"`
+}
+
+// AgentSkills narrows which skills an agent sees.
+type AgentSkills struct {
+	// Mode: "" or "project"/"all" discovers as usual; "custom" applies
+	// the allow/deny lists.
+	Mode  string   `json:"mode,omitempty"`
+	Allow []string `json:"allow,omitempty"`
+	Deny  []string `json:"deny,omitempty"`
+}
 
 // Config is the on-disk shape of config.json.
 type Config struct {
@@ -68,6 +127,10 @@ type Config struct {
 	MCPServers    []MCPServer `json:"mcp_servers,omitempty"`
 	Permissions   Permissions `json:"permissions,omitempty"`
 	MaxTurns      int         `json:"max_turns,omitzero"`
+	// Agents are the configured agent profiles and DefaultAgent names
+	// the one new tasks bind to when nothing else chose (spec/agents.md).
+	Agents       []Agent `json:"agents,omitempty"`
+	DefaultAgent string  `json:"default_agent,omitempty"`
 	// CustomModels is the pre-providers field, read only to migrate it.
 	CustomModels []string `json:"custom_models,omitempty"`
 }

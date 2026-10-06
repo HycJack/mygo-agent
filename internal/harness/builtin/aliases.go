@@ -23,6 +23,12 @@ type (
 	Mode       = harness.Mode
 	Permission = harness.Permission
 
+	// MCPServer and SkillSelection live at the protocol root so the Host
+	// can put them on the Turn (spec/agents.md); the loop reads them
+	// through the same alias it reads everything else.
+	MCPServer      = harness.MCPServer
+	SkillSelection = harness.SkillSelection
+
 	ChatMessage      = harness.ChatMessage
 	ApprovalRequest  = harness.ApprovalRequest
 	ApprovalDecision = harness.ApprovalDecision

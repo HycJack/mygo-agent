@@ -34,7 +34,7 @@ because a transcript is thread state and already has one home.
 | Harness → Sandbox | `harness.Sandbox` (harness/sandbox.go) | sandbox.md |
 | Harness → Memory | `harness.Memory` (harness/memory.go) | architecture.md |
 | Harness → approvals | `harness.ApprovalContext` (harness/approvals.go) | approvals.md |
-| Host → config | `config.Config` | permissions.md |
+| Host → config | `config.Config` | permissions.md, agents.md |
 | Host → persistence | `threads/<projectID>/<threadID>.json` via `writeFileAtomic` | data.md |
 
 ## Layers and import rules (machine-checked)
@@ -86,7 +86,7 @@ because a transcript is thread state and already has one home.
 | State | Owner | Persisted by |
 | --- | --- | --- |
 | Threads, messages, blocks | Host | `threads/<projectID>/<threadID>.json`, one atomic write per turn (data.md) |
-| Providers, rules, mode, backend | Host | config.json (atomic write, 0600) |
+| Providers, rules, mode, backend, agents | Host | config.json (atomic write, 0600) |
 | Harness transcripts | Host, via the `harness.Memory` protocol | the thread file's `chat_log` |
 | Sandbox scratch dirs | the harness tool layer | removed when the command ends (sandbox.md) |
 | Approval decisions | Host | never persisted (approvals.md) |
@@ -134,7 +134,8 @@ type Harness interface {
 
 - `Turn` carries everything a harness needs and nothing about Thread/UI:
   prompt, workdir, mode, rules, model, effort, max turns, session id to
-  resume, an endpoint override, the sandbox boundary, memory (its key
+  resume, an endpoint override, the sandbox boundary, the MCP servers,
+  tool and skill selections, an appended system prompt, memory (its key
   plus the initial transcript), and the approval and outside-directory
   callbacks.
 - `Event` is the normalized stream every adapter emits (kinds: text,

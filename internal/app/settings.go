@@ -5,6 +5,7 @@ import (
 
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 
 	"mygo-agent/internal/harness"
@@ -80,11 +81,36 @@ func (a *app) settingsVM() *uipkg.SettingsVM {
 			Name: s.Name, Command: line,
 		})
 	}
+	for i := range a.agents {
+		ag := &a.agents[i]
+		ve := uipkg.AgentEditVM{
+			ID: ag.ID, Name: ag.Name, Emoji: ag.Emoji,
+			Backend: ag.Backend, Provider: ag.Provider, Model: ag.Model,
+			// 0 in the VM means "follow the app"; the config stores nil.
+			Effort:        -1,
+			Mode:          -1,
+			SystemPrompt:  ag.SystemPrompt,
+			ToolsDisabled: slices.Clone(ag.Tools.Disabled),
+			MCPServers:    slices.Clone(ag.MCPServers),
+			SkillsAllow:   slices.Clone(ag.Skills.Allow),
+			SkillsDeny:    slices.Clone(ag.Skills.Deny),
+		}
+		if ag.Effort != nil {
+			ve.Effort = *ag.Effort
+		}
+		if ag.Mode != nil {
+			ve.Mode = *ag.Mode
+		}
+		if ag.MaxTurns > 0 {
+			ve.MaxTurns = strconv.Itoa(ag.MaxTurns)
+		}
+		vm.Agents = append(vm.Agents, ve)
+	}
 	return vm
 }
 
 // syncSettings mirrors the form's bindings into host state and saves
-// when the frame actually changed a provider.
+// when the frame actually changed a provider or an agent.
 func (a *app) syncSettings(vm *uipkg.SettingsVM) {
 	a.mcpDraftName, a.mcpDraftCommand = vm.MCPName, vm.MCPCommand
 	dirty := false
@@ -101,9 +127,75 @@ func (a *app) syncSettings(vm *uipkg.SettingsVM) {
 			dirty = true
 		}
 	}
+	for i := range vm.Agents {
+		dirty = a.syncAgent(&vm.Agents[i]) || dirty
+	}
 	if dirty {
 		a.saveConfig()
 	}
+}
+
+// syncAgent mirrors one agent form's bindings into its profile. The VM
+// carries effort/mode offset by one (0 = follow the app) and the turn
+// budget as text; an unparseable number is ignored rather than guessed.
+func (a *app) syncAgent(v *uipkg.AgentEditVM) bool {
+	ag := a.agentByID(v.ID)
+	if ag == nil {
+		return false // removed while the frame was up
+	}
+	v.Name = strings.TrimSpace(v.Name)
+	if v.Name == "" {
+		v.Name = ag.Name // an agent without a name is not a thing
+	}
+	maxTurns := 0
+	if n, err := strconv.Atoi(strings.TrimSpace(v.MaxTurns)); err == nil && n > 0 {
+		maxTurns = n
+	} else if ag.MaxTurns > 0 {
+		// A typo in one box keeps what the profile had rather than
+		// silently zeroing the budget.
+		v.MaxTurns = strconv.Itoa(ag.MaxTurns)
+		maxTurns = ag.MaxTurns
+	}
+	effort := -1
+	if v.Effort >= 0 {
+		effort = v.Effort - 1
+	}
+	mode := -1
+	if v.Mode >= 0 {
+		mode = v.Mode - 1
+	}
+	sameInt := func(p *int, n int) bool {
+		if (p == nil) != (n < 0) {
+			return false
+		}
+		return p == nil || *p == n
+	}
+	if ag.Name != v.Name || ag.Emoji != v.Emoji || ag.Backend != v.Backend ||
+		ag.Provider != v.Provider || ag.Model != v.Model ||
+		ag.SystemPrompt != v.SystemPrompt || ag.MaxTurns != maxTurns ||
+		!sameInt(ag.Effort, effort) || !sameInt(ag.Mode, mode) ||
+		!slices.Equal(ag.Tools.Disabled, v.ToolsDisabled) ||
+		!slices.Equal(ag.MCPServers, v.MCPServers) ||
+		!slices.Equal(ag.Skills.Allow, v.SkillsAllow) ||
+		!slices.Equal(ag.Skills.Deny, v.SkillsDeny) {
+		ag.Name, ag.Emoji, ag.Backend = v.Name, v.Emoji, v.Backend
+		ag.Provider, ag.Model, ag.SystemPrompt = v.Provider, v.Model, v.SystemPrompt
+		ag.MaxTurns = maxTurns
+		ag.Effort, ag.Mode = nil, nil
+		if effort >= 0 {
+			e := effort
+			ag.Effort = &e
+		}
+		if mode >= 0 {
+			m := mode
+			ag.Mode = &m
+		}
+		ag.Tools.Disabled = v.ToolsDisabled
+		ag.MCPServers = v.MCPServers
+		ag.Skills.Allow, ag.Skills.Deny = v.SkillsAllow, v.SkillsDeny
+		return true
+	}
+	return false
 }
 
 // settingsActions adapts *app to ui.SettingsActions.
@@ -113,6 +205,20 @@ func (h settingsActions) Select(id string)         { h.a.settingsSel = id }
 func (h settingsActions) AddProvider()             { h.a.addProvider() }
 func (h settingsActions) RemoveProvider(id string) { h.a.removeProvider(id) }
 func (h settingsActions) AddMCP()                  { h.a.addMCPServer() }
+func (h settingsActions) AddAgent()                { h.a.addAgent() }
+func (h settingsActions) RemoveAgent(id string)    { h.a.removeAgent(id) }
+
+func (h settingsActions) SetAgentBackend(id, backend string) {
+	ag := h.a.agentByID(id)
+	if ag == nil {
+		return
+	}
+	switch backend {
+	case "", "builtin", "claude", "codex", "pi":
+		ag.Backend = backend
+	}
+	h.a.saveConfig()
+}
 
 func (h settingsActions) RemoveMCP(i int) {
 	if i < 0 || i >= len(h.a.mcpServers) {
@@ -180,6 +286,39 @@ func (a *app) addProvider() {
 	p := Provider{ID: "prov-" + uid(), Name: "New provider"}
 	a.providers = append(a.providers, p)
 	a.settingsSel = p.ID
+	a.saveConfig()
+}
+
+// addAgent appends a blank profile and opens it for editing. An empty
+// profile inherits the app's selection, so it is runnable as-is.
+func (a *app) addAgent() {
+	ag := Agent{ID: "ag-" + uid(), Name: "New agent"}
+	a.agents = append(a.agents, ag)
+	a.settingsSel = ag.ID
+	a.saveConfig()
+}
+
+// removeAgent deletes a profile, repairing every pointer to it: the
+// default, the composer's selection and the dialog's. The last agent
+// stays — the app always has one agent to bind a task to.
+func (a *app) removeAgent(id string) {
+	if len(a.agents) <= 1 {
+		return
+	}
+	at := slices.IndexFunc(a.agents, func(ag Agent) bool { return ag.ID == id })
+	if at < 0 {
+		return
+	}
+	a.agents = slices.Delete(a.agents, at, at+1)
+	if a.defaultAgent == id {
+		a.defaultAgent = a.agents[0].ID
+	}
+	if a.activeAgent == id {
+		a.activeAgent = ""
+	}
+	if a.settingsSel == id {
+		a.settingsSel = a.agents[0].ID
+	}
 	a.saveConfig()
 }
 

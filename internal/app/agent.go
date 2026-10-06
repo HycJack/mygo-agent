@@ -50,7 +50,7 @@ func (a *app) regenerate(th *Thread) {
 			break
 		}
 	}
-	if a.backend == "builtin" {
+	if a.backendFor(th) == "builtin" {
 		cut := min(int(logAt), len(th.ChatLog))
 		// Compaction re-indexes the log, so logAt can point past it —
 		// the clamp above then keeps the whole log, the reply being
@@ -77,7 +77,7 @@ func (a *app) regenerate(th *Thread) {
 	// The built-in transcript already holds the user's turn — re-sending
 	// the prompt would append it twice. The CLI backends start from their
 	// own session and need the prompt again.
-	if a.backend == "builtin" {
+	if a.backendFor(th) == "builtin" {
 		promptForSend = ""
 	}
 	a.dispatch(th, promptForSend, at)

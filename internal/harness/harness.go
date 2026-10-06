@@ -42,6 +42,27 @@ type Turn struct {
 	// Sandbox is the shell execution boundary (nil: full access).
 	Sandbox Sandbox
 
+	// MCPServers are the servers this turn mounts (spec/agents.md). The
+	// built-in adapter spawns them in process; a CLI adapter maps what
+	// its protocol can (spec/cli-backends.md). nil mounts nothing.
+	MCPServers []MCPServer
+
+	// ToolEnabled filters the built-in tool registry by name
+	// (spec/agents.md): an entry set to false removes that tool; absent
+	// or true keeps it; nil keeps everything. The loop hands it to the
+	// tool options; MCP tools are governed by MCPServers instead.
+	ToolEnabled map[string]bool
+
+	// Skills narrows the skills the turn may see; the zero value keeps
+	// everything discovered.
+	Skills SkillSelection
+
+	// SystemPrompt is appended to the adapter's own system prompt when
+	// the adapter can inject one: the built-in seeds it into the
+	// transcript head, claude passes --append-system-prompt, codex has
+	// no injection point and ignores it.
+	SystemPrompt string
+
 	// Memory loads the thread's transcript before the turn and receives
 	// the final one after; nil means no memory (a fresh transcript).
 	Memory Memory
@@ -71,6 +92,29 @@ type Endpoint struct {
 	BaseURL string
 	APIKey  string
 	Wire    string // "chat" or "responses"; empty means the adapter's default (codex: responses, builtin: chat)
+	// ContextWindow is the provider's declared context window in tokens;
+	// the built-in loop reads it to arm the watermark compaction
+	// (spec/architecture.md, tool output budgets). The CLI adapters do
+	// not use it.
+	ContextWindow int
+}
+
+// MCPServer is one Model Context Protocol server the Host resolves and
+// hands the harness on the Turn: a command to spawn and speak JSON-RPC
+// to over stdio, or a streamable HTTP endpoint (URL set, no command).
+type MCPServer struct {
+	Name    string   `json:"name"`
+	Command string   `json:"command,omitempty"`
+	Args    []string `json:"args,omitempty"`
+	Env     []string `json:"env,omitempty"`
+	URL     string   `json:"url,omitempty"`
+}
+
+// SkillSelection narrows the skills a turn may see (spec/agents.md).
+// An empty Allow keeps everything discovered; Deny wins over Allow.
+type SkillSelection struct {
+	Allow []string
+	Deny  []string
 }
 
 // EventKinds are the values of Event.Kind.
@@ -159,6 +203,11 @@ type ToolOptions struct {
 	Sandbox Sandbox
 	// ConfineWrites rejects edit_file targets outside the workdir.
 	ConfineWrites bool
+	// Enabled filters the built-in tool registry by name (spec/agents.md):
+	// an entry set to false removes that tool; absent or true keeps it.
+	// nil keeps everything. MCP tools are not in the registry — the
+	// turn's server list governs them.
+	Enabled map[string]bool
 }
 
 // WireAPI names the two request shapes a provider endpoint may speak.

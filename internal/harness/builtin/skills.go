@@ -3,6 +3,7 @@ package builtin
 import (
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 )
 
@@ -99,6 +100,29 @@ func parseSkill(dir, content string) Skill {
 		}
 	}
 	return s
+}
+
+// Select narrows the set to the selection (spec/agents.md): Deny wins
+// over Allow, and an empty Allow keeps everything not denied. An empty
+// selection (or a nil set) returns the receiver unchanged. The original
+// set is never mutated — it is shared with the system prompt's
+// advertisement built from the unfiltered discovery.
+func (s *SkillSet) Select(sel SkillSelection) *SkillSet {
+	if s == nil || len(sel.Allow) == 0 && len(sel.Deny) == 0 {
+		return s
+	}
+	out := &SkillSet{byName: map[string]*Skill{}}
+	for _, sk := range s.Skills {
+		if slices.Contains(sel.Deny, sk.Name) {
+			continue
+		}
+		if len(sel.Allow) > 0 && !slices.Contains(sel.Allow, sk.Name) {
+			continue
+		}
+		out.Skills = append(out.Skills, sk)
+		out.byName[sk.Name] = &out.Skills[len(out.Skills)-1]
+	}
+	return out
 }
 
 // Load returns a skill's full SKILL.md content.

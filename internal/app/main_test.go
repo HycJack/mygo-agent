@@ -32,6 +32,11 @@ func newTestApp(t *testing.T) *app {
 	a.effort = 1
 	a.backend = "builtin"
 	a.mcpServers = nil
+	// The agents block too: newApp's migration may have folded the real
+	// config into profiles the tests should not see.
+	a.agents = []Agent{{ID: "default", Name: "Default"}}
+	a.defaultAgent = "default"
+	a.activeAgent = ""
 	return a
 }
 

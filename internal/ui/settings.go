@@ -2,6 +2,7 @@ package ui
 
 import (
 	"slices"
+	"strings"
 
 	"mygo-agent/internal/harness"
 
@@ -41,6 +42,28 @@ type PresetVM struct {
 	Name string
 }
 
+// AgentEditVM is one agent row of the list and, chosen, its form. The
+// fields are bindings the host mirrors back after the frame
+// (spec/agents.md). Effort and Mode are offset by one: 0 means "follow
+// the app", so a segment can express the inheritance.
+type AgentEditVM struct {
+	ID           string
+	Name         string
+	Emoji        string
+	Backend      string // "" follows the app's switch
+	Provider     string // provider id; "" follows the app's selection
+	Model        string // "" follows the app's selection
+	Effort       int    // 0 follow the app, else 1 + effort
+	Mode         int    // 0 follow the app, else 1 + mode
+	MaxTurns     string // "" follows the app
+	SystemPrompt string
+
+	ToolsDisabled []string
+	MCPServers    []string // names; empty mounts everything
+	SkillsAllow   []string // both empty discovers as usual
+	SkillsDeny    []string
+}
+
 // SettingsVM is the render input of the settings dialog. The provider
 // fields and the MCP draft lines are bindings: the view writes them, the
 // host mirrors them back after the frame.
@@ -51,6 +74,7 @@ type SettingsVM struct {
 	Providers []ProviderEditVM
 	Presets   []PresetVM
 	MCPServer []MCPVM
+	Agents    []AgentEditVM
 
 	MCPName, MCPCommand string
 
@@ -59,7 +83,7 @@ type SettingsVM struct {
 
 // SettingsActions is what the settings dialog calls back for.
 type SettingsActions interface {
-	// Select chooses the provider being edited.
+	// Select chooses the provider or agent being edited.
 	Select(id string)
 	AddProvider()
 	RemoveProvider(id string)
@@ -74,6 +98,12 @@ type SettingsActions interface {
 	AddMCP()
 	// RemoveMCP deletes the server at i.
 	RemoveMCP(i int)
+	// The agent half (spec/agents.md): AddAgent appends a blank profile,
+	// RemoveAgent deletes one (never the last), SetAgentBackend pins a
+	// profile to a backend ("" follows the app's switch again).
+	AddAgent()
+	RemoveAgent(id string)
+	SetAgentBackend(id, backend string)
 }
 
 // Settings is the manage-providers dialog: the providers on the left,
@@ -92,7 +122,7 @@ func Settings(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 				BorderColor(vm.Pal.Border).Children(func() {
 				ui.Text(c, "PROVIDERS").FontSize(10.5).FontWeight(600).TextColor(vm.Pal.TextMuted).
 					Padding(14, 14, 6).LetterSpacing(0.6)
-				ui.Scroll(c).Grow(1).Padding(0, 8, 8).Children(func() {
+				ui.Scroll(c).Grow(1).Padding(0, 8, 4).Children(func() {
 					for pi := range vm.Providers {
 						p := &vm.Providers[pi]
 						row := ui.ButtonBase(c).Fill().Padding(7, 10).Radius(7).Gap(8)
@@ -117,7 +147,7 @@ func Settings(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 							})
 						})
 					}
-					add := ui.ButtonBase(c).Fill().Padding(7, 10).Radius(7).Gap(8).Margin(0, 0, 4)
+					add := ui.ButtonBase(c).Fill().Padding(7, 10).Radius(7).Gap(8)
 					if add.Hovered() {
 						add.Background(vm.Pal.Hover)
 					}
@@ -129,9 +159,65 @@ func Settings(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 						ui.Text(c, "Add provider").FontSize(12.5).TextColor(t.TextMuted)
 					})
 				})
+				// The agents (spec/agents.md): profiles a task binds to,
+				// edited in the same pane as the providers.
+				ui.Text(c, "AGENTS").FontSize(10.5).FontWeight(600).TextColor(vm.Pal.TextMuted).
+					Padding(10, 14, 6).LetterSpacing(0.6)
+				ui.Scroll(c).Grow(1).Padding(0, 8, 8).Children(func() {
+					for ai := range vm.Agents {
+						ag := &vm.Agents[ai]
+						row := ui.ButtonBase(c).Fill().Padding(7, 10).Radius(7).Gap(8)
+						chosen := ag.ID == vm.Sel
+						if chosen {
+							row.Background(vm.Pal.Sel)
+						} else if row.Hovered() {
+							row.Background(vm.Pal.Hover)
+						}
+						if row.Clicked() {
+							acts.Select(ag.ID)
+						}
+						row.ContextMenu(func(m *ui.Menu) {
+							if m.Item("Remove agent").Chosen() {
+								acts.RemoveAgent(ag.ID)
+							}
+						})
+						row.Children(func() {
+							ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
+								ui.Text(c, strings.TrimSpace(ag.Emoji+" "+ag.Name)).SingleLine().FontSize(12.5)
+								backend := ag.Backend
+								if backend == "" {
+									backend = "app default"
+								}
+								ui.Text(c, backend).SingleLine().FontSize(10.5).TextColor(vm.Pal.TextMuted)
+							})
+						})
+					}
+					addAgent := ui.ButtonBase(c).Fill().Padding(7, 10).Radius(7).Gap(8).Margin(0, 0, 4)
+					if addAgent.Hovered() {
+						addAgent.Background(vm.Pal.Hover)
+					}
+					if addAgent.Clicked() {
+						acts.AddAgent()
+					}
+					addAgent.Children(func() {
+						ui.Icon(c, IconPlus).FontSize(13).TextColor(t.TextMuted)
+						ui.Text(c, "Add agent").FontSize(12.5).TextColor(t.TextMuted)
+					})
+				})
 			})
-			// The form.
+			// The form: an agent's when one is selected, else the
+			// provider's.
 			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+				ai := slices.IndexFunc(vm.Agents, func(ag AgentEditVM) bool { return ag.ID == vm.Sel })
+				if ai >= 0 {
+					ag := &vm.Agents[ai]
+					ui.Scroll(c).Grow(1).Children(func() {
+						ui.Column(c).FillWidth().Padding(20, 24, 24).Gap(14).Children(func() {
+							agentForm(c, vm, acts, ag)
+						})
+					})
+					return
+				}
 				pi := slices.IndexFunc(vm.Providers, func(p ProviderEditVM) bool { return p.ID == vm.Sel })
 				if pi < 0 {
 					ui.Column(c).Fill().Center().Gap(8).Children(func() {
@@ -289,5 +375,74 @@ func mcpSection(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 				acts.AddMCP()
 			}
 		})
+	})
+}
+
+// agentForm is the editable half for one agent profile (spec/agents.md):
+// what it is, what runs it, what it may do. An empty field means
+// "follow the app's selection", which is what makes the zero agent
+// behave like the pre-agents app.
+func agentForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, ag *AgentEditVM) {
+	t := c.Theme()
+	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, strings.TrimSpace(ag.Emoji+" "+ag.Name)).FontSize(16).Bold().SingleLine().Grow(1).MinWidth(0)
+	})
+	formField(c, "Name", &ag.Name, false)
+	formField(c, "Emoji", &ag.Emoji, false)
+	// Which backend runs the agent; empty follows the app's switch.
+	ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, "Backend").FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
+		for _, b := range []struct{ id, label string }{
+			{"", "App default"}, {"builtin", "Built-in"},
+			{"claude", "Claude Code"}, {"codex", "Codex CLI"}, {"pi", "Pi"},
+		} {
+			pill := ui.ButtonBase(c).Padding(4, 10).Radius(999)
+			if ag.Backend == b.id {
+				pill.Background(t.Text)
+				pill.Children(func() { ui.Text(c, b.label).FontSize(11.5).TextColor(t.AccentText) })
+			} else {
+				pill.Border(1, t.Border)
+				pill.Children(func() { ui.Text(c, b.label).FontSize(11.5).TextColor(t.TextMuted) })
+			}
+			if pill.Clicked() {
+				acts.SetAgentBackend(ag.ID, b.id)
+			}
+		}
+	})
+	formField(c, "Provider id", &ag.Provider, false)
+	ui.Text(c, "Empty follows the app's selection; the ids are the providers on the left.").FontSize(11).TextColor(t.TextMuted)
+	formField(c, "Model", &ag.Model, false)
+	// Effort and Mode carry an extra leading segment: index 0 is
+	// "follow the app", the rest are the real values offset by one.
+	ui.Row(c).Gap(14).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, "Effort").FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
+		Segments(c, ag.Effort+1, []string{"App default", "Low", "Medium", "High"}, func(i int) { ag.Effort = i - 1 }, vm.Pal)
+	})
+	ui.Row(c).Gap(14).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, "Mode").FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
+		Segments(c, ag.Mode+1, []string{"App default", "Read Only", "Agent", "Full Access"}, func(i int) { ag.Mode = i - 1 }, vm.Pal)
+	})
+	formField(c, "Max turns", &ag.MaxTurns, false)
+	formField(c, "System prompt (appended)", &ag.SystemPrompt, false)
+	ui.Column(c).Gap(4).Children(func() {
+		ui.Text(c, "Disabled tools").FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
+		ui.TokenField(c, &ag.ToolsDisabled, nil)
+		ui.Text(c, "Built-in registry: bash, read_file, edit_file, list_files, grep, read_skill.").FontSize(11).TextColor(t.TextMuted)
+	})
+	ui.Column(c).Gap(4).Children(func() {
+		ui.Text(c, "MCP servers").FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
+		ui.TokenField(c, &ag.MCPServers, nil)
+		ui.Text(c, "Names from the MCP list; empty mounts all of them.").FontSize(11).TextColor(t.TextMuted)
+	})
+	ui.Column(c).Gap(4).Children(func() {
+		ui.Text(c, "Skills allow / deny").FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
+		ui.TokenField(c, &ag.SkillsAllow, nil)
+		ui.TokenField(c, &ag.SkillsDeny, nil)
+		ui.Text(c, "Names filter the discovered skills; deny wins, both empty discovers as usual.").FontSize(11).TextColor(t.TextMuted)
+	})
+	ui.Row(c).Justify(ui.End).Children(func() {
+		if ui.Button(c, "Delete agent").Clicked() {
+			acts.RemoveAgent(ag.ID)
+		}
 	})
 }

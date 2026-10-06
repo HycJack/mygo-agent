@@ -32,14 +32,16 @@ func (h builtinHarness) runBuiltin(ctx context.Context, emit func(harness.Event)
 		return errors.New("The built-in agent needs a provider with a base URL and an API key. Open the model picker → Manage providers & models…, fill them in, then pick a model from that provider.")
 	}
 
-	skills := builtin.DiscoverSkills(turn.Workdir)
+	skills := builtin.DiscoverSkills(turn.Workdir).Select(turn.Skills)
 	// The mode tunes how the tools execute (spec/permissions.md): agent
 	// mode runs the shell inside the sandbox and confines writes to the
 	// workspace; full access does neither; read-only denies both before
-	// execution.
+	// execution. The agent's disabled registry names ride the same
+	// options (spec/agents.md).
 	tools := builtin.Tools(turn.Workdir, skills, builtin.ToolOptions{
 		Sandbox:       turn.Sandbox,
 		ConfineWrites: turn.Mode != harness.ModeFull,
+		Enabled:       turn.ToolEnabled,
 	})
 	mcpClients := a.connectMCP(ctx, h.mcpServers)
 	defer func() {
@@ -240,9 +242,16 @@ func parseToolDiff(out string) []DiffLine {
 // at construction, never the live thread.
 func (h builtinHarness) seedChatLog(prompt string) []harness.ChatMessage {
 	prior := h.priorMessages
+	// The system head: the built-in prompt, the skills the agent's
+	// selection kept, then the agent's own instructions (spec/agents.md)
+	// — the host seeds the transcript, so this is the injection point.
+	sys := builtinSystemPrompt(h.turn.Workdir, builtin.DiscoverSkills(h.turn.Workdir).Select(h.turn.Skills))
+	if h.turn.SystemPrompt != "" {
+		sys += "\n\n" + h.turn.SystemPrompt
+	}
 	msgs := []harness.ChatMessage{{
 		Role: "system",
-		Content: builtinSystemPrompt(h.turn.Workdir, builtin.DiscoverSkills(h.turn.Workdir)) +
+		Content: sys +
 			"\n\nAnswer in the user's language. When you have the result, summarise what you did and stop; do not call tools without a reason.",
 	}}
 	for _, m := range prior {

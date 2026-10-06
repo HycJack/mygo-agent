@@ -98,6 +98,11 @@ per tool:
   mode or force `bash: ask` in full mode. There is no rule the UI applies
   that config cannot express — interactive decisions never write back to the
   rules.
+- An agent profile layers its own rules over the global ones
+  (spec/agents.md): the agent's rule is the more specific grant and wins.
+  A profile may also leave tools out of its registry entirely
+  (`tools.disabled`), which is a denial by absence — the gate never sees
+  the call.
 
 ## The gate
 

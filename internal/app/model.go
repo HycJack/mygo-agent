@@ -48,6 +48,13 @@ type app struct {
 	effort     int    // 0 low, 1 medium, 2 high — the model's reasoning effort
 	backend    string // builtin | codex | claude | pi
 
+	// The configured agents (spec/agents.md): new tasks bind to one, the
+	// composer can switch a thread to another, and each turn is
+	// assembled from the agent's profile over the app-level defaults.
+	agents       []Agent
+	defaultAgent string // the config's default; "" resolves to the first agent
+	activeAgent  string // the composer's selection; "" follows defaultAgent
+
 	providers []Provider
 
 	workdir    string // the active project's path
@@ -79,6 +86,7 @@ type app struct {
 	threadMenu   bool
 	backendMenu  bool
 	modelMenu    bool
+	agentMenu    bool // the composer's agent picker popover
 	projectMenu  bool
 	hoverRow     string // the task row the pointer is on, for its delete button
 	pickingDir   bool   // a native directory dialog is out
@@ -245,6 +253,8 @@ func (a *app) loadConfig() {
 		a.backend = cfg.Backend
 	}
 	a.mcpServers = toAgentServers(cfg.MCPServers)
+	a.agents = cfg.Agents
+	a.defaultAgent = cfg.DefaultAgent
 	if len(cfg.Permissions.Rules) > 0 {
 		rules := make(harness.Rules, len(cfg.Permissions.Rules))
 		for sel, perm := range cfg.Permissions.Rules {
@@ -285,6 +295,8 @@ func (a *app) saveConfig() {
 		MCPServers:    fromAgentServers(a.mcpServers),
 		Permissions:   config.Permissions{Rules: permRulesToConfig(a.permRules)},
 		MaxTurns:      a.maxTurns,
+		Agents:        a.agents,
+		DefaultAgent:  a.defaultAgent,
 	})
 	if err == nil {
 		a.configErr = ""
@@ -393,6 +405,20 @@ func (a *app) ensureDefaults() {
 			a.model = ms[0]
 		}
 	}
+	// The v1→v2 migration (spec/data.md): a config with no agents folds
+	// into a single Default agent. An empty profile inherits the app's
+	// selection, so the fold is the identity — an old config behaves
+	// exactly as it did, and now has an agent to edit.
+	if len(a.agents) == 0 {
+		a.agents = []Agent{{ID: "default", Name: "Default"}}
+		a.defaultAgent = "default"
+	}
+	if a.agentByID(a.defaultAgent) == nil {
+		a.defaultAgent = a.agents[0].ID
+	}
+	if a.activeAgentID() == "" {
+		a.activeAgent = a.defaultAgent
+	}
 }
 
 // activeID returns the project id to use: the configured one while it
@@ -431,6 +457,63 @@ func (a *app) providerByID(id string) *Provider {
 		}
 	}
 	return nil
+}
+
+// agentByID finds a configured agent by id.
+func (a *app) agentByID(id string) *Agent {
+	for i := range a.agents {
+		if a.agents[i].ID == id {
+			return &a.agents[i]
+		}
+	}
+	return nil
+}
+
+// agentFor resolves the agent a thread is bound to: its own binding,
+// else the default (spec/agents.md). The v1 migration guarantees at
+// least one agent exists, so this is nil only on a half-built app.
+func (a *app) agentFor(th *Thread) *Agent {
+	if th != nil && th.AgentID != "" {
+		if ag := a.agentByID(th.AgentID); ag != nil {
+			return ag
+		}
+	}
+	if ag := a.agentByID(a.defaultAgent); ag != nil {
+		return ag
+	}
+	if len(a.agents) > 0 {
+		return &a.agents[0]
+	}
+	return nil
+}
+
+// activeAgentID is the agent the composer shows and a new task binds:
+// the user's selection, else the default.
+func (a *app) activeAgentID() string {
+	if ag := a.agentByID(a.activeAgent); ag != nil {
+		return ag.ID
+	}
+	return a.defaultAgentID()
+}
+
+// defaultAgentID resolves the configured default to a real agent.
+func (a *app) defaultAgentID() string {
+	if ag := a.agentByID(a.defaultAgent); ag != nil {
+		return ag.ID
+	}
+	if len(a.agents) > 0 {
+		return a.agents[0].ID
+	}
+	return ""
+}
+
+// backendFor resolves the backend a thread's next turn runs on: the
+// thread's agent's choice, else the app's switch.
+func (a *app) backendFor(th *Thread) string {
+	if ag := a.agentFor(th); ag != nil && ag.Backend != "" {
+		return ag.Backend
+	}
+	return a.backend
 }
 
 // switchProject makes p the active project: the workdir, the file tree,
@@ -584,7 +667,13 @@ func (a *app) update(fn func()) {
 
 func (a *app) createThread() *Thread {
 	now := time.Now()
-	th := &Thread{ID: uid(), ProjectID: a.activeProject, Created: now, Updated: now}
+	th := &Thread{ID: uid(), ProjectID: a.activeProject, Created: now, Updated: now, AgentID: a.activeAgentID()}
+	// A task started from an agent with its own default approval mode
+	// starts in that mode — the composer's selector stays the per-run
+	// override, the agent only seeds it (spec/agents.md).
+	if ag := a.agentByID(th.AgentID); ag != nil && ag.Mode != nil {
+		a.mode = clampMode(*ag.Mode)
+	}
 	// Newest first: the sidebar groups by Updated, newest at the top.
 	a.threads = append([]*Thread{th}, a.threads...)
 	a.current = th.ID

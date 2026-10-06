@@ -1,6 +1,6 @@
 # 方案：Agent 化与多端管理（配置化工具 / MCP / Skills / 模型，单与多 Agent，Web 管理，会话追踪）
 
-状态：提案（待评审拍板后按阶段实施）。本文给出概念模型、与现有代码的衔接点、数据与协议演进、分阶段计划。
+状态：**P0、P1 已落地**（✅ 标注）；P2–P7 仍是提案。已落地部分的契约移入正式 spec —— 数据格式在 data.md（config v2、thread `agent_id`）、规则叠加在 permissions.md、claude 的映射在 cli-backends.md；本节的"现状盘点"随代码保持更新。
 
 ## 1. 目标与产品分工
 
@@ -86,10 +86,10 @@
 | 能力 | builtin | claude CLI | codex app-server |
 | --- | --- | --- | --- |
 | 模型/effort | 全支持 | `--model` | thread/start `model`、`model_reasoning_effort`（已接） |
-| 内置工具启停 | 完整（注册表过滤） | `--allowedTools/--disallowedTools` 映射 | **弱**：仅 sandbox/approval 策略级 |
-| MCP 挂载 | 完整（进程内） | `--mcp-config` | 配置覆盖，按名单映射 |
-| Skills | read_skill + 过滤 | CLI 自读项目 skills | 同左 |
-| 系统提示词 | LoopConfig 追加 | `--append-system-prompt` | 不可注入（写明限制） |
+| 内置工具启停 | 完整（注册表过滤，`ToolOptions.Enabled`） | **弱**：仅 sandbox/approval 策略级 | **弱**：仅 sandbox/approval 策略级 |
+| MCP 挂载 | 完整（进程内，`Turn.MCPServers` 按名单） | `--mcp-config`（已接，stdio+http） | 未映射（配置覆盖为后续工作） |
+| Skills | read_skill + allow/deny 过滤（已接） | CLI 自读项目 skills | 同左 |
+| 系统提示词 | 种子转录追加（已接） | `--append-system-prompt`（已接） | 不可注入（写明限制） |
 | 用量统计 | tokens 已采集（水位压缩用），cost 未采集 | result 行已带（时长/费用/tokens 已展示） | usage 已读（完成卡片显示 tokens），cost 无来源 |
 
 原则：配置统一声明，各适配器**尽力映射**，做不到的在 UI 上标注"该后端不支持"，不静默忽略。
@@ -160,13 +160,14 @@
 
 > 量为专注人日的相对估算；每阶段独立可交付、可停。
 
-**P0 配置地基（2–3 天）**
+**P0 配置地基（2–3 天）✅ 已落地**
 config v2 + Default Agent 迁移；`Thread.AgentID`；Host 增 `agents` 状态与解析。
 验收：旧配置/旧线程无感升级；设置页能读出 Default。
+（落地形态：空 profile 继承应用级选择，v1 折叠为裸 Default agent——与 §3 的快照式迁移略有出入，继承语义让旧配置行为完全不变；迁移契约在 data.md。）
 
-**P1 Agent 配置化 + 桌面使用面（5–6 天，核心）**
-`ToolCatalog` + `ToolOptions.Enabled`；`Turn` 增 MCPServers/Skills/SystemPrompt；turnFor 按 Agent 组装；桌面 home 改 **Agent 启动器**，composer 换 Agent 选择器；设置页放最小 Agent CRUD（过渡，Web 为最终归属）。
-验收：建"只读 + 只开 grep/read + 挂 filesystem MCP"的 Agent 并跑通；从启动器选 Agent 开会话；claude/codex 的映射行为与 §4.5 表一致。
+**P1 Agent 配置化 + 桌面使用面（5–6 天，核心）✅ 已落地**
+`ToolCatalog` + `ToolOptions.Enabled`；`Turn` 增 MCPServers/Skills/SystemPrompt；`planTurn`（原 turnFor）按 Agent 组装；桌面 home 增 **Agent 启动器卡片**，composer 增 Agent 选择器；设置页含 Agent CRUD（Agents 区，与 Providers 同面板）。
+验收：建"只读 + 只开 grep/read + 挂 filesystem MCP"的 Agent 并跑通；从启动器选 Agent 开会话；claude 的映射行为与 §4.5 表一致（codex 的 MCP 映射未做，表中已如实标注）。
 
 **P2 并发多会话（2–3 天）**
 `runs map[threadID]…`；全部 `a.running` 读取面切到 per-thread；sidebar/header/composer 显示各自状态。

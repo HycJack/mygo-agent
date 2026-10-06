@@ -176,7 +176,7 @@ func TestModeAndEffortAreClamped(t *testing.T) {
 
 	for _, mode := range []int{-3, 0, 1, 2, 9, 1 << 20} {
 		a.mode = mode
-		turn := a.turnFor(th, "hi")
+		turn := a.planTurn(th, "hi").turn
 		if turn.Mode < harness.ModeReadOnly || turn.Mode > harness.ModeFull {
 			t.Fatalf("mode %d reached the adapters as %d", mode, turn.Mode)
 		}
@@ -189,7 +189,7 @@ func TestModeAndEffortAreClamped(t *testing.T) {
 	}
 	for _, eff := range []int{-1, 0, 2, 7, 1 << 20} {
 		a.effort = eff
-		turn := a.turnFor(th, "hi")
+		turn := a.planTurn(th, "hi").turn
 		if turn.Effort < 0 || turn.Effort > 2 {
 			t.Fatalf("effort %d reached the adapters as %d", eff, turn.Effort)
 		}
@@ -228,13 +228,17 @@ func TestSetModeClamps(t *testing.T) {
 
 // TestBuiltinHarnessSnapshotsConfig proves a turn reads the provider it
 // started with: changing the provider mid-run must not swap the endpoint
-// underneath the approval cards the user is deciding on.
+// underneath the approval cards the user is deciding on. The provider
+// rides the turn's Endpoint, which planTurn fills from the thread's
+// agent's resolution (spec/agents.md).
 func TestBuiltinHarnessSnapshotsConfig(t *testing.T) {
 	a := newTestApp(t)
 	a.providers = []Provider{{ID: "p1", Name: "one", BaseURL: "https://one.test", APIKey: "k1", Models: []string{"m"}}}
 	a.providerID = "p1"
 
-	h := newBuiltinHarness(a, &Thread{ID: "t1", ProjectID: "default"}, harness.Turn{Workdir: a.workdir})
+	th := &Thread{ID: "t1", ProjectID: "default"}
+	plan := a.planTurn(th, "hi")
+	h := newBuiltinHarness(a, th, plan.turn)
 	if h.provider.BaseURL != "https://one.test" {
 		t.Fatalf("snapshot base URL = %q", h.provider.BaseURL)
 	}

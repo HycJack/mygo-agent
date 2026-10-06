@@ -83,6 +83,10 @@ type Thread struct {
 	CodexID   string // codex exec session id, for resuming
 	ClaudeID  string // Claude Code session id, for resuming
 	PiID      string // pi coding agent session id, for resuming
+	// AgentID binds the thread to a configured agent (spec/agents.md).
+	// Empty resolves to the default agent; the resolution is stamped
+	// back here the next time the thread is saved.
+	AgentID string
 
 	// dropped marks a thread the host has deleted while events from its
 	// last turn could still be in flight. Such an event can still reach
@@ -204,6 +208,7 @@ type (
 	Project   = config.Project
 	Provider  = config.Provider
 	MCPServer = config.MCPServer
+	Agent     = config.Agent
 )
 
 // app is the whole application state; the view is a function of it.

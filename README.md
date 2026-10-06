@@ -12,6 +12,11 @@ English | [简体中文](README.zh-CN.md)
 - **Projects** — switch the working directory at the top of the sidebar;
   threads, the file tree, the git panel and the terminal are all
   project-scoped.
+- **Agents** — configurable profiles a task binds to: backend,
+  provider/model, a default approval mode, tool and MCP subsets, skill
+  filters, an appended system prompt. Pick one from the composer's
+  picker or the home launcher, edit them in settings; an empty profile
+  follows the app's selection.
 - **Four agent backends**, switchable from the menu at the bottom left:
   - *Built-in agent* — an in-process loop (modeled on pi): streaming
     OpenAI-compatible calls (chat completions or the Responses API) +
