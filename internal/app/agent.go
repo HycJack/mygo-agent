@@ -2,9 +2,10 @@ package app
 
 import (
 	"context"
-
 	"strings"
 	"time"
+
+	"mygo-agent/internal/harness/builtin"
 )
 
 // send takes the draft, appends it to the thread, and starts the harness.
@@ -50,12 +51,27 @@ func (a *app) regenerate(th *Thread) {
 		}
 	}
 	if a.backend == "builtin" {
-		th.ChatLog = th.ChatLog[:min(int(logAt), len(th.ChatLog))]
+		cut := min(int(logAt), len(th.ChatLog))
+		// Compaction re-indexes the log, so logAt can point past it —
+		// the clamp above then keeps the whole log, the reply being
+		// regenerated included, and the retry answers a prompt whose
+		// old answer still sits in its history. The summary marker is
+		// the one seam that survives re-indexing: rewinding to just
+		// past it drops exactly the exchange being regenerated.
+		if cut == len(th.ChatLog) {
+			for i, m := range th.ChatLog {
+				if body, _ := m.Content.(string); strings.HasPrefix(body, builtin.CompactedPrefix) {
+					cut = i + 1
+				}
+			}
+		}
+		th.ChatLog = th.ChatLog[:cut]
 	}
 	th.invalidateDiffCount() // the messages were rewound
 	now := time.Now()
 	th.Messages = append(th.Messages, Message{ID: uid(), Role: "assistant", Running: true, At: now, LogAt: logAt})
 	a.running = true
+	a.runningID = th.ID
 	a.saveThread(th)
 	at := len(th.Messages) - 1
 	// The built-in transcript already holds the user's turn — re-sending
@@ -78,6 +94,7 @@ func (a *app) startTurn(th *Thread, prompt string) {
 	th.Updated = now
 	th.Messages = append(th.Messages, Message{ID: uid(), Role: "assistant", Running: true, At: now})
 	a.running = true
+	a.runningID = th.ID
 	a.focusComposer = true
 	at := len(th.Messages) - 1
 	a.saveThread(th)
@@ -110,6 +127,7 @@ func (a *app) finish(th *Thread, at int, errText string) {
 	a.update(func() {
 		if cur := a.byID(th.ID); cur == nil || at >= len(cur.Messages) {
 			a.running = false
+			a.runningID = ""
 			return
 		}
 		m := &th.Messages[at]
@@ -122,6 +140,7 @@ func (a *app) finish(th *Thread, at int, errText string) {
 		}
 		th.Updated = time.Now()
 		a.running = false
+		a.runningID = ""
 		a.setCancel(nil)
 		a.saveThread(th)
 		if a.wsOpen {

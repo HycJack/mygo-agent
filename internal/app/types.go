@@ -84,6 +84,13 @@ type Thread struct {
 	ClaudeID  string // Claude Code session id, for resuming
 	PiID      string // pi coding agent session id, for resuming
 
+	// dropped marks a thread the host has deleted while events from its
+	// last turn could still be in flight. Such an event can still reach
+	// saveThread before the run drains; the flag is what keeps a deleted
+	// task from rewriting the file its deletion removed. Unexported, so
+	// it never reaches the thread file; undo clears it.
+	dropped bool
+
 	// ChatLog is the built-in backend's full transcript, including the
 	// tool round-trips, so a task survives app restarts with context
 	// intact.

@@ -109,6 +109,12 @@ func metaOf(th *Thread) threadMeta {
 // saveThread writes one thread's file atomically. The thread's Messages
 // and ChatLog stay in memory; only their own file is touched.
 func (a *app) saveThread(th *Thread) {
+	if th.dropped {
+		// A thread deleted mid-run stays deleted: an event that lands
+		// after removeThreadFile must not re-create the file. Undo is
+		// the only thing that clears the flag.
+		return
+	}
 	path, ok := a.threadsDir.file(th)
 	if !ok {
 		return

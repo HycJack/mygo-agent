@@ -171,6 +171,6 @@ func (h builtinHarness) Run(ctx context.Context, turn harness.Turn, emit func(ha
 // runBackend is the test shim: dispatches like send does — running flag
 // included — without touching the composer.
 func runBackend(a *app, th *Thread, prompt string, at int) {
-	a.update(func() { a.running = true })
+	a.update(func() { a.running, a.runningID = true, th.ID })
 	a.dispatch(th, prompt, at)
 }

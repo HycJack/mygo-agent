@@ -64,8 +64,9 @@ type app struct {
 	termOpen   bool
 	termHeight float32
 
-	running bool
-	cancel  context.CancelFunc
+	running   bool
+	runningID string // the thread whose turn is running; a.stop belongs to it
+	cancel    context.CancelFunc
 	// cancelMu guards cancel: dispatch sets it from the frame — which in
 	// headless runs already holds a.mu — while finish clears it under
 	// update; a second, narrower lock avoids re-entering a.mu.
@@ -602,9 +603,18 @@ func (a *app) deleteThread(c *ui.Context, id string) {
 	}
 	removed := a.threads[at]
 	a.threads = append(a.threads[:at], a.threads[at+1:]...)
-	if a.running && a.current == id {
+	// The stop belongs to the thread that is running, not the one on
+	// screen: current moves freely while a turn runs, so keying on it
+	// leaked the run — it kept spending tokens, its next event re-saved
+	// the file this delete removed, and its approval card sat pending
+	// until the deadline. Deleting any other thread must not stop it.
+	if a.running && a.runningID == id {
 		a.stop()
 	}
+	// Events already drained from the CLI can still land before the
+	// cancel takes effect; the flag is what keeps them from resurrecting
+	// the file removeThreadFile is about to delete.
+	removed.dropped = true
 	if a.current == id {
 		if len(a.threads) > 0 {
 			a.current = a.threads[0].ID
@@ -634,6 +644,7 @@ func (a *app) deleteThread(c *ui.Context, id string) {
 		}
 		rest := append([]*Thread{removed}, a.threads[removedAt:]...)
 		a.threads = append(a.threads[:removedAt], rest...)
+		removed.dropped = false
 		a.current = removed.ID
 		a.saveThread(removed) // the undo rewrites the removed file
 	})
