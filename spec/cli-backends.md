@@ -94,6 +94,13 @@ stdin stays open until the `result` event (or an error) arrives, then closes.
   `--mcp-config` file — stdio servers keep their command, URL servers
   map to the http type — that is deleted when the turn ends. A server
   the format cannot express is skipped, not fatal.
+- `--include-partial-messages` turns on per-delta streaming: text
+  arrives as wrapped `content_block_delta` frames while it is being
+  generated, and the reply emits those deltas live. The complete
+  assistant message that follows contributes only its un-streamed
+  suffix — the CLI warns the partial stream may duplicate it, so the
+  adapter deduplicates against what the deltas already covered (the
+  stream resets at every tool_use).
 
 - The session id arrives in the `system`/`init` event (`session_id`), as
   today.

@@ -94,7 +94,6 @@ func (a *app) settingsVM() *uipkg.SettingsVM {
 			Available: a.fetchedModels[p.ID], FetchErr: a.fetchErrs[p.ID],
 		})
 	}
-	vm.ProviderIDs = strings.Join(ids, ", ")
 	for _, ps := range providerPresets {
 		vm.Presets = append(vm.Presets, uipkg.PresetVM{Name: ps.name})
 	}
@@ -136,6 +135,30 @@ func (a *app) settingsVM() *uipkg.SettingsVM {
 			ve.MaxTurns = strconv.Itoa(ag.MaxTurns)
 		}
 		ve.Sub = a.agentSub(ag)
+		// The model chips come from whoever will serve this agent: a
+		// pinned CLI backend serves its own table, otherwise the
+		// resolved provider's list (spec/agents.md).
+		switch {
+		case ag.Backend == "claude":
+			ve.ModelOptions = claudeModels
+		case ag.Backend == "codex":
+			ve.ModelOptions = defaultModels
+		default:
+			pid := ag.Provider
+			if pid == "" {
+				pid = a.providerID
+			}
+			if p := a.providerByID(pid); p != nil {
+				ve.ModelOptions = p.Models
+			}
+		}
+		for i := range a.providers {
+			if a.providers[i].BaseURL != "" {
+				ve.ProviderOpts = append(ve.ProviderOpts, uipkg.ProviderVM{
+					ID: a.providers[i].ID, Name: a.providers[i].Name,
+				})
+			}
+		}
 		vm.Agents = append(vm.Agents, ve)
 	}
 	return vm

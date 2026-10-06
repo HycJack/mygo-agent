@@ -48,7 +48,7 @@ func (h *Harness) Run(ctx context.Context, turn harness.Turn, emit func(harness.
 		perm = "bypassPermissions"
 	}
 	args := []string{"-p", "--output-format", "stream-json", "--verbose",
-		"--input-format", "stream-json",
+		"--input-format", "stream-json", "--include-partial-messages",
 		"--permission-mode", perm, "--model", turn.Model}
 	if turn.SessionID != "" {
 		args = append(args, "--resume", turn.SessionID)
@@ -188,6 +188,11 @@ type run struct {
 	cards     map[string]int // tool_use id -> block index
 	sawEvent  bool
 	sawResult bool
+	// streamed is the reply text the partial-message deltas have already
+	// emitted, so the complete assistant message that follows them only
+	// contributes its un-streamed suffix (the CLI warns the partial
+	// stream may duplicate the message).
+	streamed strings.Builder
 
 	// approvalTimeout bounds one approval wait; zero uses the shared
 	// default (harness.ApprovalContext).
@@ -361,6 +366,28 @@ func (r *run) handle(line string) {
 			})
 		}
 
+	case "stream_event":
+		// With --include-partial-messages the CLI wraps its inner
+		// Anthropic stream in these frames: text arrives as deltas as it
+		// is generated, instead of one whole assistant message at the
+		// end. The complete assistant message still follows — the reply
+		// below emits only the suffix the deltas have not covered.
+		var se struct {
+			Event struct {
+				Type  string `json:"type"`
+				Delta struct {
+					Type string `json:"type"`
+					Text string `json:"text"`
+				} `json:"delta"`
+			} `json:"event"`
+		}
+		if json.Unmarshal([]byte(line), &se) != nil {
+			return
+		}
+		if se.Event.Type == "content_block_delta" && se.Event.Delta.Type == "text_delta" && se.Event.Delta.Text != "" {
+			r.streamed.WriteString(se.Event.Delta.Text)
+			r.send(harness.Event{Kind: harness.EventText, TextDelta: se.Event.Delta.Text})
+		}
 	case "assistant":
 		if ev.Message == nil {
 			return
@@ -368,11 +395,29 @@ func (r *run) handle(line string) {
 		for _, blk := range ev.Message.Content {
 			switch blk.Type {
 			case "text":
-				if blk.Text == "" {
+				// Deduplicate against the streamed deltas: the CLI warns
+				// that partial messages may duplicate the assistant
+				// message, so only the un-streamed suffix goes out.
+				whole := r.streamed.String()
+				text := blk.Text
+				if text == "" {
 					continue
 				}
-				r.send(harness.Event{Kind: harness.EventText, TextDelta: blk.Text})
+				if len(text) >= len(whole) {
+					if suffix, ok := strings.CutPrefix(text, whole); ok {
+						text = suffix
+					} else if whole != "" {
+						text = "" // diverged; trust the deltas already sent
+					}
+				} else if strings.HasPrefix(whole, text) {
+					text = ""
+				}
+				r.streamed.Reset()
+				if text != "" {
+					r.send(harness.Event{Kind: harness.EventText, TextDelta: text})
+				}
 			case "tool_use":
+				r.streamed.Reset()
 				r.toolUse(blk.ID, blk.Name, blk.RawInput)
 			}
 		}

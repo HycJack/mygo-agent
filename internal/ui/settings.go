@@ -77,12 +77,18 @@ type SkillVM struct {
 // (spec/agents.md). Effort and Mode are offset by one: 0 means "follow
 // the app", so a selector can express the inheritance.
 type AgentEditVM struct {
-	ID           string
-	Name         string
-	Emoji        string
-	Backend      string // "" follows the app's switch
-	Provider     string // provider id; "" follows the app's selection
-	Model        string // "" follows the app's selection
+	ID       string
+	Name     string
+	Emoji    string
+	Backend  string // "" follows the app's switch
+	Provider string // provider id; "" follows the app's selection
+	Model    string // "" follows the app's selection
+	// ProviderOpts are the real configured providers (the Provider row
+	// picks from these), and ModelOptions are the models of whichever
+	// provider this agent resolves to — or the pinned CLI backend's own
+	// table (spec/agents.md).
+	ProviderOpts []ProviderVM
+	ModelOptions []string
 	Effort       int    // 0 follow the app, else 1 + effort
 	Mode         int    // 0 follow the app, else 1 + mode
 	MaxTurns     string // "" follows the app
@@ -117,11 +123,8 @@ type SettingsVM struct {
 
 	MCPName, MCPCommand string
 
-	// ProviderIDs / AgentNames list the configured ids and names for the
-	// agent form's hints (provider is a free-text id; panel members are
-	// agent names).
-	ProviderIDs string
-	AgentNames  string
+	// AgentNames lists the configured agent names for the panel hint.
+	AgentNames string
 
 	Pal Palette
 }
@@ -555,6 +558,55 @@ func pillRowInt(c *ui.Context, label string, current *int, opts []pillOptInt) {
 	})
 }
 
+func pillOptsFromProviders(ps []ProviderVM) []pillOpt {
+	out := make([]pillOpt, 0, len(ps))
+	for _, p := range ps {
+		out = append(out, pillOpt{v: p.ID, label: p.Name})
+	}
+	return out
+}
+
+// modelChips is the agent's model row: one wrap chip per model of the
+// resolved provider (plus "App default"), single-select, bound into the
+// snapshot like every value field.
+func modelChips(c *ui.Context, label string, current *string, models []string) {
+	t := c.Theme()
+	ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+		ui.Text(c, label).FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
+	})
+	ui.Row(c).Gap(6).Wrap().Children(func() {
+		chip := ui.ButtonBase(c).Padding(3, 10).Radius(999)
+		if *current == "" {
+			chip.Background(t.Text)
+			chip.Children(func() { ui.Text(c, "App default").FontSize(11.5).TextColor(t.AccentText) })
+		} else {
+			chip.Border(1, t.Border)
+			chip.Children(func() { ui.Text(c, "App default").FontSize(11.5).TextColor(t.TextMuted) })
+		}
+		if chip.Clicked() {
+			*current = ""
+		}
+		for _, m := range models {
+			m := m
+			on := *current == m
+			mc := ui.ButtonBase(c).Padding(3, 10).Radius(999).Gap(6)
+			if on {
+				mc.Background(t.Text)
+				mc.Children(func() {
+					ui.Text(c, m).Font("monospace").FontSize(11).TextColor(t.AccentText)
+					ui.Icon(c, IconCheck).FontSize(11).TextColor(t.AccentText)
+				})
+			} else {
+				mc.Border(1, t.Border)
+				mc.Children(func() { ui.Text(c, m).Font("monospace").FontSize(11).TextColor(t.TextMuted) })
+			}
+			if mc.Clicked() {
+				*current = m
+			}
+		}
+	})
+}
+
 // formField is one labeled input of the form; the host saves the
 // mirrored value after the frame.
 func formField(c *ui.Context, label string, value *string, password bool) {
@@ -669,9 +721,20 @@ func agentForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, ag *AgentEdi
 		{v: "codex", label: "Codex CLI"},
 		{v: "pi", label: "Pi"},
 	}, func(next string) { ag.Backend = next })
-	formField(c, "Provider id", &ag.Provider, false)
-	ui.Textf(c, "Empty follows the app's selection. Provider ids: %s", vm.ProviderIDs).FontSize(11).TextColor(t.TextMuted)
-	formField(c, "Model", &ag.Model, false)
+	switch ag.Backend {
+	case "claude", "codex":
+		// A pinned CLI backend signs in with the CLI's own account and
+		// picks from its own model table — no provider involved.
+		ui.Textf(c, "Runs the %s binary with its own sign-in; no provider needed.", strings.Title(ag.Backend)).FontSize(11).TextColor(t.TextMuted)
+	case "pi":
+		ui.Text(c, "Pi resolves models from its own configuration; nothing to pick here.").FontSize(11).TextColor(t.TextMuted)
+	default:
+		// builtin (or following the app): pick the provider, then the
+		// model from that provider's list.
+		opts := append([]pillOpt{{v: "", label: "App default"}}, pillOptsFromProviders(ag.ProviderOpts)...)
+		pillRow(c, "Provider", func() string { return ag.Provider }, opts, func(next string) { ag.Provider = next })
+	}
+	modelChips(c, "Model", &ag.Model, ag.ModelOptions)
 
 	sectionLabel(c, "BEHAVIOR")
 	pillRowInt(c, "Effort", &ag.Effort, []pillOptInt{

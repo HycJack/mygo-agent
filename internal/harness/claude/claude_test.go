@@ -478,3 +478,60 @@ echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"res
 		t.Fatalf("bare turn grew agent flags: %s", raw)
 	}
 }
+
+// TestPartialMessageStreaming pins the per-delta path: with
+// --include-partial-messages the CLI streams text as content_block_delta
+// frames before the complete assistant message, and the reply must be
+// the deltas — the assistant message contributes no duplicate.
+func TestPartialMessageStreaming(t *testing.T) {
+	r, evs := collect(harness.Turn{})
+
+	r.handle(`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"Hel"}}}`)
+	r.handle(`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"lo wor"}}}`)
+	r.handle(`{"type":"stream_event","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"ld"}}}`)
+	r.handle(`{"type":"assistant","message":{"content":[{"type":"text","text":"Hello world"}]}}`)
+
+	texts := kind(evs, harness.EventText)
+	var joined strings.Builder
+	for _, ev := range texts {
+		joined.WriteString(ev.TextDelta)
+	}
+	if joined.String() != "Hello world" {
+		t.Fatalf("streamed text = %q", joined.String())
+	}
+	if len(texts) != 3 {
+		t.Fatalf("text events = %d, want one per delta (no duplicate from the assistant message)", len(texts))
+	}
+	// A tool_use block resets the stream: the next assistant text starts
+	// fresh after it.
+	r.handle(`{"type":"assistant","message":{"content":[{"type":"text","text":"after tools"}]}}`)
+	texts = kind(evs, harness.EventText)
+	if last := texts[len(texts)-1].TextDelta; last != "after tools" {
+		t.Fatalf("post-reset text = %q", last)
+	}
+}
+
+// TestPartialFlagOnArgs pins that the streaming flag rides every spawn.
+func TestPartialFlagOnArgs(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	script := filepath.Join(dir, "fake-claude.sh")
+	body := `#!/bin/bash
+printf '%s\n' "$@" > "` + argsFile + `"
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"result":"done"}'
+`
+	if err := os.WriteFile(script, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := &Harness{Bin: script}
+	if err := h.Run(context.Background(), harness.Turn{Workdir: dir, Model: "m"}, func(harness.Event) {}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), "--include-partial-messages") {
+		t.Fatalf("partial-messages flag missing: %s", raw)
+	}
+}
