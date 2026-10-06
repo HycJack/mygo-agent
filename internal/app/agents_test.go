@@ -696,3 +696,42 @@ func TestPickModelOnHomeWritesDefaults(t *testing.T) {
 		t.Fatalf("cli pick: backend %q model %q", a.backend, a.model)
 	}
 }
+
+// TestAgentFormMCPUncheckFromImplicitAll pins the uncheck half of the
+// mount-list semantics through the dialog: unchecking a server while
+// the profile mounts all of them (nil) must materialize the explicit
+// list minus that entry.
+func TestAgentFormMCPUncheckFromImplicitAll(t *testing.T) {
+	a := newTestApp(t)
+	a.mcpServers = []builtin.MCPServer{
+		{Name: "filesystem", Command: "fs"}, {Name: "github", Command: "gh"}, {Name: "search", Command: "se"},
+	}
+
+	vm := a.settingsVM()
+	ai := slices.IndexFunc(vm.Agents, func(ag uipkg.AgentEditVM) bool { return ag.ID == "default" })
+	ag := &vm.Agents[ai]
+
+	// Uncheck filesystem while nil: the other two become the explicit set.
+	on := ag.MCPServers == nil || slices.Contains(ag.MCPServers, "filesystem")
+	all := []string{"filesystem", "github", "search"}
+	if on {
+		base := ag.MCPServers
+		if base == nil {
+			base = all
+		}
+		ag.MCPServers = slices.DeleteFunc(slices.Clone(base), func(s string) bool { return s == "filesystem" })
+	}
+	a.syncSettings(vm)
+	got := a.agentByID("default")
+	if !slices.Equal(got.MCPServers, []string{"github", "search"}) {
+		t.Fatalf("after uncheck: %v", got.MCPServers)
+	}
+	// Re-checking everything unwinds to nil.
+	vm2 := a.settingsVM()
+	ai2 := slices.IndexFunc(vm2.Agents, func(ag uipkg.AgentEditVM) bool { return ag.ID == "default" })
+	vm2.Agents[ai2].MCPServers = append(vm2.Agents[ai2].MCPServers, "filesystem")
+	a.syncSettings(vm2)
+	if got := a.agentByID("default"); got.MCPServers != nil {
+		t.Fatalf("full re-check = %v, want nil", got.MCPServers)
+	}
+}

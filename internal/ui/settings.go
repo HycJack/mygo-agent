@@ -690,8 +690,14 @@ func toggleInList(list []string, all []string, name string, on bool) []string {
 		}
 		return out
 	}
-	if !on && has {
-		out := slices.DeleteFunc(slices.Clone(list), func(s string) bool { return s == name })
+	if !on {
+		// 取消勾选：从隐式"全部"状态物化出显式列表（全部减去这一项），
+		// 否则第一次取消勾选会被 nil 语义原样吞掉，复选框看着像坏了。
+		base := list
+		if base == nil {
+			base = all
+		}
+		out := slices.DeleteFunc(slices.Clone(base), func(s string) bool { return s == name })
 		if len(out) == 0 {
 			return nil
 		}

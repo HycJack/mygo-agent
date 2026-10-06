@@ -296,6 +296,21 @@ func (a *app) syncAgent(v *uipkg.AgentEditVM) bool {
 		ag.Tools.Disabled = v.ToolsDisabled
 		ag.MCPServers = v.MCPServers
 		ag.Skills.Allow, ag.Skills.Deny = v.SkillsAllow, v.SkillsDeny
+		// A server list covering every configured server is the same
+		// thing as no list - normalize to nil (mount all), keeping the
+		// config clean for servers added later.
+		if len(a.mcpServers) > 0 && len(ag.MCPServers) == len(a.mcpServers) {
+			names := make([]string, 0, len(a.mcpServers))
+			for _, srv := range a.mcpServers {
+				names = append(names, srv.Name)
+			}
+			slices.Sort(names)
+			cover := slices.Clone(ag.MCPServers)
+			slices.Sort(cover)
+			if slices.Equal(names, cover) {
+				ag.MCPServers = nil
+			}
+		}
 		ag.Panel = v.Panel
 		return true
 	}

@@ -72,22 +72,23 @@ func (a *app) homeViewModel() *uipkg.ViewModel {
 		}
 	}
 	vm.Model, vm.ProviderID = model, providerID
+	// The picker groups by provider, showing every configured endpoint's
+	// models first — builtin runs them in process and codex runs them
+	// through its model_providers override — then the effective CLI
+	// backend's own table when there is one (spec/agents.md).
 	vm.Providers = vm.Providers[:0]
+	for i := range a.providers {
+		p := &a.providers[i]
+		if p.BaseURL == "" {
+			continue // a CLI pseudo-provider, not a real endpoint
+		}
+		vm.Providers = append(vm.Providers, uipkg.ProviderVM{ID: p.ID, Name: p.Name, Models: p.Models})
+	}
 	switch backend {
 	case "codex":
 		vm.Providers = append(vm.Providers, uipkg.ProviderVM{ID: "codex", Name: "Codex CLI", Models: defaultModels})
 	case "claude":
 		vm.Providers = append(vm.Providers, uipkg.ProviderVM{ID: "claude", Name: "Claude Code", Models: claudeModels})
-	case "pi":
-		// pi resolves models from its own configuration; nothing to pick.
-	default:
-		for i := range a.providers {
-			p := &a.providers[i]
-			if p.BaseURL == "" {
-				continue // a CLI pseudo-provider, not a real endpoint
-			}
-			vm.Providers = append(vm.Providers, uipkg.ProviderVM{ID: p.ID, Name: p.Name, Models: p.Models})
-		}
 	}
 	vm.Agents = vm.Agents[:0]
 	for i := range a.agents {
