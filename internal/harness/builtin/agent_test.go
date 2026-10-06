@@ -12,6 +12,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 )
@@ -80,6 +81,30 @@ func TestMCPToolName(t *testing.T) {
 	long := mcpToolName(strings.Repeat("s", 80), strings.Repeat("t", 80))
 	if len(long) > 64 {
 		t.Fatalf("name too long: %d", len(long))
+	}
+}
+
+// TestSkillRootsIncludeAimanager pins the user-level discovery roots:
+// the aimanager skills directory is scanned alongside the others
+// (spec/agents.md).
+func TestSkillRootsIncludeAimanager(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skip("no home")
+	}
+	roots := skillRoots(t.TempDir())
+	for _, want := range []string{
+		filepath.Join(home, ".agents", "skills"),
+		filepath.Join(home, ".aimanager", "skills"),
+		filepath.Join(home, ".codex-go", "skills"),
+	} {
+		if !slices.Contains(roots, want) {
+			t.Fatalf("roots lack %q: %v", want, roots)
+		}
+	}
+	// Project roots come first, in walk order.
+	if filepath.Base(roots[0]) != "skills" || filepath.Base(filepath.Dir(roots[0])) != ".agents" {
+		t.Fatalf("roots[0] = %q", roots[0])
 	}
 }
 

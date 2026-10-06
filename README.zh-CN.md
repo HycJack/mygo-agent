@@ -39,8 +39,10 @@
   模型列表与 wire API（chat completions 或 codex/OpenAI 模型所用的
   Responses API）。内置 OpenAI、DeepSeek、OpenRouter、Ollama 预设。
 - **技能（Skills）** —— 遵循 Agent Skills 规范：`.agents/skills/`
-  （项目或用户目录）下的 `SKILL.md` 目录；系统提示只放名称与描述，
-  任务匹配时模型通过 `read_skill` 按需加载。
+  （项目内逐级向上）与用户级目录（`~/.agents/skills/`、
+  `~/.aimanager/skills/`、`~/.codex-go/skills/`）下的 `SKILL.md`
+  目录；系统提示只放名称与描述，任务匹配时模型通过 `read_skill`
+  按需加载。
 - **MCP 服务器** —— 设置弹窗中配置（stdio 命令或 streamable HTTP URL），
   自动合并项目里的 `.mcp.json`（Claude Code / pi 约定）；工具以
   `mcp_<server>_<tool>` 的名字并入 agent 工具集。

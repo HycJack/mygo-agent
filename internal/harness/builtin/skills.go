@@ -22,7 +22,8 @@ type SkillSet struct {
 }
 
 // DiscoverSkills scans the project's .agents/skills (walking up to the
-// repository root), ~/.agents/skills and ~/.codex-go/skills for
+// repository root) and the user-level skill directories —
+// ~/.agents/skills, ~/.aimanager/skills and ~/.codex-go/skills — for
 // directories containing SKILL.md, per the Agent Skills specification.
 func DiscoverSkills(projectDir string) *SkillSet {
 	set := &SkillSet{byName: map[string]*Skill{}}
@@ -74,6 +75,7 @@ func skillRoots(projectDir string) []string {
 	if home, err := os.UserHomeDir(); err == nil {
 		roots = append(roots,
 			filepath.Join(home, ".agents", "skills"),
+			filepath.Join(home, ".aimanager", "skills"),
 			filepath.Join(home, ".codex-go", "skills"),
 		)
 	}

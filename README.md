@@ -51,9 +51,10 @@ English | [简体中文](README.zh-CN.md)
   API the codex/OpenAI models use). Ships with OpenAI, DeepSeek,
   OpenRouter and Ollama presets.
 - **Skills** — follows the Agent Skills spec: `SKILL.md` directories
-  under `.agents/skills/` (project or user); the system prompt carries
-  only names and descriptions; the model loads a skill on demand through
-  `read_skill`.
+  under `.agents/skills/` (project, walking up to the repo root) and the
+  user-level directories (`~/.agents/skills/`, `~/.aimanager/skills/`,
+  `~/.codex-go/skills/`); the system prompt carries only names and
+  descriptions; the model loads a skill on demand through `read_skill`.
 - **MCP servers** — configured in the settings dialog as a stdio command
   or a streamable HTTP URL, merged automatically with the project's
   `.mcp.json` (the Claude Code / pi convention); tools join the agent's
