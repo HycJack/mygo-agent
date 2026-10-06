@@ -246,15 +246,20 @@ func TestFoldedPanels(t *testing.T) {
 	}
 }
 
-// assertVisible checks the page's own headline text.
+// assertVisible checks the page's own headline content.
 func assertVisible(t *testing.T, page string, tt *ui.Tester) {
 	t.Helper()
 	seen := map[string]bool{
-		"Overview": tt.HasText("Revenue") && tt.HasText("Traffic sources"),
-		"Data":     tt.HasText("Orders") && tt.HasText("Regions"),
-		"Controls": tt.HasText("Profile") && tt.HasText("Ranges"),
-		"Overlays": tt.HasText("Board") && tt.HasText("Motion"),
-		"Settings": tt.HasText("Workspace") && tt.HasText("Danger zone"),
+		"Overview":        tt.HasText("Revenue") && tt.HasText("Traffic sources"),
+		"Data":            tt.HasText("Orders") && tt.HasText("Regions"),
+		"Controls":        tt.HasText("Profile") && tt.HasText("Ranges"),
+		"Overlays":        tt.HasText("Board") && tt.HasText("Motion"),
+		"Settings":        tt.HasText("Workspace") && tt.HasText("Danger zone"),
+		"Mujica Forms":    tt.HasText("TextInput") && tt.HasText("WeekPicker"),
+		"Mujica Data":     tt.HasText("DataTable") && tt.HasText("Timeline"),
+		"Mujica Feedback": tt.HasText("Alert") && tt.HasText("Drawer"),
+		"Mujica Charts":   tt.HasText("Candlestick") && tt.HasText("From the wider library"),
+		"Mujica Agent":    tt.HasText("Conversation") && tt.HasText("PromptComposer"),
 	}[page]
 	if !seen {
 		t.Errorf("%s: expected content is missing (texts: %v)", page, tt.Texts())

@@ -88,4 +88,11 @@ var (
 	IconChevronsRight = Icon(`<path d="m6 17 5-5-5-5"/><path d="m13 17 5-5-5-5"/>`)
 	IconChevronLeft   = Icon(`<path d="m15 18-6-6 6-6"/>`)
 	IconChevronRight  = Icon(`<path d="m9 18 6-6-6-6"/>`)
+
+	// The MujicaUI pages' icons, lucide.dev.
+	IconPenLine     = Icon(`<path d="M12 20h9"/><path d="M16.376 3.622a1 1 0 0 1 3.002 3.002L7.368 18.635a2 2 0 0 1-.855.506l-2.872.818a.5.5 0 0 1-.62-.62l.818-2.872a2 2 0 0 1 .506-.854z"/>`)
+	IconTable       = Icon(`<path d="M12 3v18"/><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/><path d="M3 15h18"/>`)
+	IconBellRing    = Icon(`<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/><path d="M4 2C2.8 3.7 2 5.7 2 8"/><path d="M22 8c0-2.3-.8-4.3-2-6"/>`)
+	IconChartSpline = Icon(`<path d="M3 12c1.5 0 2.5-1 3.5-2.5S8.5 6 10 6s2.5 1 3.5 2.5S15.5 12 17 12s2.5-1 3.5-2.5"/>`)
+	IconBot         = Icon(`<path d="M12 8V4H8"/><rect width="16" height="12" x="4" y="8" rx="2"/><path d="M2 14h2"/><path d="M20 14h2"/><path d="M15 13v2"/><path d="M9 13v2"/>`)
 )

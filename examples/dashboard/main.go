@@ -15,25 +15,41 @@ import (
 	"fmt"
 	"log"
 	"math/rand/v2"
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo"
 	"github.com/egoist/mygo/ui"
 )
 
-// pages names the router's pages in order; Cmd+1…5 switch among them.
-var pages = []string{"Overview", "Data", "Controls", "Overlays", "Settings"}
+// pages names the router's pages in order; Cmd+1…9 switch among the
+// first nine (the tenth has no shortcut). The five Mujica pages embed
+// github.com/ZacharyZhang-NY/MujicaUI and showcase its components under
+// the library's own theme.
+var pages = []string{
+	"Overview", "Data", "Controls", "Overlays", "Settings",
+	"Mujica Forms", "Mujica Data", "Mujica Feedback", "Mujica Charts",
+	"Mujica Agent",
+}
 
 // pageIcons names each page's sidebar icon, lucide.dev.
 var pageIcons = map[string]*ui.SVG{
-	"Overview": IconDashboard,
-	"Data":     IconDatabase,
-	"Controls": IconSliders,
-	"Overlays": IconLayers,
-	"Settings": IconGear,
+	"Overview":        IconDashboard,
+	"Data":            IconDatabase,
+	"Controls":        IconSliders,
+	"Overlays":        IconLayers,
+	"Settings":        IconGear,
+	"Mujica Forms":    IconPenLine,
+	"Mujica Data":     IconTable,
+	"Mujica Feedback": IconBellRing,
+	"Mujica Charts":   IconChartSpline,
+	"Mujica Agent":    IconBot,
 }
 
-func pagePath(page string) string { return "/" + lower(page) }
+func pagePath(page string) string {
+	// Spaces would make routes read like two segments; routes dash them.
+	return "/" + strings.ReplaceAll(lower(page), " ", "-")
+}
 
 func pageOf(path string) string {
 	for _, p := range pages {
@@ -127,7 +143,7 @@ type dashboard struct {
 	tint                ui.Color
 	starts              int
 	prefTab             int
-	sections            [3]bool
+	sections            [4]bool
 
 	// Settings
 	split       float32
@@ -190,7 +206,7 @@ func newDashboard() *dashboard {
 		meeting:     time.Date(2026, 10, 15, 9, 30, 0, 0, time.Local),
 		tint:        ui.Hex("#58a6ff"),
 		starts:      4,
-		sections:    [3]bool{true},
+		sections:    [4]bool{true, false, false, false},
 		split:       180,
 		wsName:      "Acme Inc",
 		wsURL:       "acme.analytics.app",
@@ -233,6 +249,21 @@ func (d *dashboard) view(c *ui.Context) {
 					case "Settings":
 						r.Title("Settings")
 						d.settingsPage(c, pal)
+					case "Mujica Forms":
+						r.Title("Mujica Forms")
+						d.mujicaFormsPage(c, pal)
+					case "Mujica Data":
+						r.Title("Mujica Data")
+						d.mujicaDataPage(c, pal)
+					case "Mujica Feedback":
+						r.Title("Mujica Feedback")
+						d.mujicaStatePage(c, pal)
+					case "Mujica Charts":
+						r.Title("Mujica Charts")
+						d.mujicaChartsPage(c, pal)
+					case "Mujica Agent":
+						r.Title("Mujica Agent")
+						d.mujicaAgentPage(c, pal)
 					default:
 						r.Title("Overview")
 						d.overviewPage(c, pal)
@@ -315,6 +346,13 @@ func (d *dashboard) sidebarFull(c *ui.Context, pal Palette) {
 					ui.Textf(c, "%d", d.inbox).FontSize(10.5).TextColor(pal.TextMuted)
 				}
 			})
+		})
+		ui.SidebarSection(c, "MujicaUI", &d.sections[3], func() {
+			ui.SidebarItem(c, "Mujica Forms", pageIcons["Mujica Forms"], "Mujica Forms")
+			ui.SidebarItem(c, "Mujica Data", pageIcons["Mujica Data"], "Mujica Data")
+			ui.SidebarItem(c, "Mujica Feedback", pageIcons["Mujica Feedback"], "Mujica Feedback")
+			ui.SidebarItem(c, "Mujica Charts", pageIcons["Mujica Charts"], "Mujica Charts")
+			ui.SidebarItem(c, "Mujica Agent", pageIcons["Mujica Agent"], "Mujica Agent")
 		})
 	}).Grow(1).MinHeight(0).Label("Pages").Changed() {
 		d.router.Push(pagePath(page))
