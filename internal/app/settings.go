@@ -44,7 +44,7 @@ func (a *app) settingsModal(c *ui.Context) {
 		return
 	}
 	vm := a.settingsVM()
-	uipkg.Settings(c, vm, settingsActions{a: a})
+	uipkg.Settings(c, vm, settingsActions{a: a, vm: vm})
 	a.settingsOpen = vm.Open // the backdrop and Escape close it view-side
 	a.syncSettings(vm)
 }
@@ -110,11 +110,15 @@ func (a *app) settingsVM() *uipkg.SettingsVM {
 			SkillsAllow:   slices.Clone(ag.Skills.Allow),
 			SkillsDeny:    slices.Clone(ag.Skills.Deny),
 		}
+		// The VM's 0 means "follow the app", so a set value loads
+		// shifted up by one — mirroring syncAgent's minus one on the way
+		// back. Without the shift every rendered frame dragged the value
+		// one segment toward the default until it dissolved into it.
 		if ag.Effort != nil {
-			ve.Effort = *ag.Effort
+			ve.Effort = *ag.Effort + 1
 		}
 		if ag.Mode != nil {
-			ve.Mode = *ag.Mode
+			ve.Mode = *ag.Mode + 1
 		}
 		if ag.MaxTurns > 0 {
 			ve.MaxTurns = strconv.Itoa(ag.MaxTurns)
@@ -213,8 +217,25 @@ func (a *app) syncAgent(v *uipkg.AgentEditVM) bool {
 	return false
 }
 
-// settingsActions adapts *app to ui.SettingsActions.
-type settingsActions struct{ a *app }
+// settingsActions adapts *app to ui.SettingsActions. vm is this frame's
+// snapshot: value edits that arrive mid-frame (pills, presets) write
+// into it, and syncSettings mirrors them to host after the frame —
+// mutating host directly here would be overwritten by that mirror with
+// the frame's stale snapshot.
+type settingsActions struct {
+	a  *app
+	vm *uipkg.SettingsVM
+}
+
+// providerVM finds the snapshot row of one provider.
+func (h settingsActions) providerVM(id string) *uipkg.ProviderEditVM {
+	for i := range h.vm.Providers {
+		if h.vm.Providers[i].ID == id {
+			return &h.vm.Providers[i]
+		}
+	}
+	return nil
+}
 
 func (h settingsActions) Select(id string)         { h.a.settingsSel = id }
 func (h settingsActions) AddProvider()             { h.a.addProvider() }
@@ -222,18 +243,6 @@ func (h settingsActions) RemoveProvider(id string) { h.a.removeProvider(id) }
 func (h settingsActions) AddMCP()                  { h.a.addMCPServer() }
 func (h settingsActions) AddAgent()                { h.a.addAgent() }
 func (h settingsActions) RemoveAgent(id string)    { h.a.removeAgent(id) }
-
-func (h settingsActions) SetAgentBackend(id, backend string) {
-	ag := h.a.agentByID(id)
-	if ag == nil {
-		return
-	}
-	switch backend {
-	case "", "builtin", "claude", "codex", "pi":
-		ag.Backend = backend
-	}
-	h.a.saveConfig()
-}
 
 func (h settingsActions) RemoveMCP(i int) {
 	if i < 0 || i >= len(h.a.mcpServers) {
@@ -243,27 +252,23 @@ func (h settingsActions) RemoveMCP(i int) {
 	h.a.saveConfig()
 }
 
+// ApplyPreset fills the snapshot's provider fields from the preset; the
+// mirror applies it to the host and saves.
 func (h settingsActions) ApplyPreset(id string, preset int) {
-	if preset < 0 || preset >= len(providerPresets) {
-		return
-	}
-	p := h.a.providerByID(id)
-	if p == nil || p.ID == "codex" {
+	p := h.providerVM(id)
+	if p == nil || p.ID == "codex" || preset < 0 || preset >= len(providerPresets) {
 		return
 	}
 	ps := providerPresets[preset]
 	p.Name, p.BaseURL, p.Wire = ps.name, ps.baseURL, ps.wire
 	p.Models = slices.Clone(ps.models)
-	h.a.saveConfig()
 }
 
+// SetWire writes the wire choice into the snapshot; the mirror applies.
 func (h settingsActions) SetWire(id, wire string) {
-	p := h.a.providerByID(id)
-	if p == nil {
-		return
+	if p := h.providerVM(id); p != nil {
+		p.Wire = wire
 	}
-	p.Wire = wire
-	h.a.saveConfig()
 }
 
 func (h settingsActions) AddModel(id string) {

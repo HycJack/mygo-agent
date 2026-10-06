@@ -94,7 +94,8 @@ type SettingsActions interface {
 	// ApplyPreset fills provider id with the preset at index i of the
 	// VM's Presets (the host owns the values).
 	ApplyPreset(id string, preset int)
-	// SetWire switches the API a provider speaks.
+	// SetWire switches the API a provider speaks (written into this
+	// frame's snapshot; the host mirrors it after the frame).
 	SetWire(id, wire string)
 	// AddModel appends a placeholder model to the codex provider.
 	AddModel(id string)
@@ -103,11 +104,10 @@ type SettingsActions interface {
 	// RemoveMCP deletes the server at i.
 	RemoveMCP(i int)
 	// The agent half (spec/agents.md): AddAgent appends a blank profile,
-	// RemoveAgent deletes one (never the last), SetAgentBackend pins a
-	// profile to a backend ("" follows the app's switch again).
+	// RemoveAgent deletes one (never the last). The backend pills bind
+	// into the snapshot like every other value field.
 	AddAgent()
 	RemoveAgent(id string)
-	SetAgentBackend(id, backend string)
 }
 
 // Settings is the manage-providers dialog: the providers on the left,
@@ -446,8 +446,11 @@ func agentForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, ag *AgentEdi
 				pill.Border(1, t.Border)
 				pill.Children(func() { ui.Text(c, b.label).FontSize(11.5).TextColor(t.TextMuted) })
 			}
+			// A value edit binds into the snapshot; the host mirrors it
+			// after the frame. A host action here would be overwritten by
+			// that same mirror with this frame's stale snapshot.
 			if pill.Clicked() {
-				acts.SetAgentBackend(ag.ID, b.id)
+				ag.Backend = b.id
 			}
 		}
 	})
@@ -458,11 +461,11 @@ func agentForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, ag *AgentEdi
 	// "follow the app", the rest are the real values offset by one.
 	ui.Row(c).Gap(14).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, "Effort").FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
-		Segments(c, ag.Effort+1, []string{"App default", "Low", "Medium", "High"}, func(i int) { ag.Effort = i - 1 }, vm.Pal)
+		Segments(c, ag.Effort+1, []string{"App default", "Low", "Medium", "High"}, func(i int) { ag.Effort = i }, vm.Pal)
 	})
 	ui.Row(c).Gap(14).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, "Mode").FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
-		Segments(c, ag.Mode+1, []string{"App default", "Read Only", "Agent", "Full Access"}, func(i int) { ag.Mode = i - 1 }, vm.Pal)
+		Segments(c, ag.Mode+1, []string{"App default", "Read Only", "Agent", "Full Access"}, func(i int) { ag.Mode = i }, vm.Pal)
 	})
 	formField(c, "Max turns", &ag.MaxTurns, false)
 	formField(c, "System prompt (appended)", &ag.SystemPrompt, false)

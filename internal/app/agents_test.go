@@ -19,6 +19,8 @@ import (
 	uipkg "mygo-agent/internal/ui"
 
 	"mygo-agent/internal/config"
+
+	"github.com/egoist/mygo/ui"
 	"mygo-agent/internal/harness"
 	"mygo-agent/internal/harness/builtin"
 )
@@ -567,4 +569,73 @@ func TestDelegateRunsTheSubAgent(t *testing.T) {
 	if !strings.Contains(th.Messages[0].Text, "wrapped ok") {
 		t.Fatalf("parent reply: %q", th.Messages[0].Text)
 	}
+}
+
+// TestAgentSettingsRoundTripStable pins the mirror's symmetry
+// (spec/agents.md): loading a profile into the dialog and syncing it
+// back must be the identity. The VM's 0 means "follow the app", so the
+// load shifts a set value up by one and the sync shifts it back down —
+// an unshifted load dragged the value one segment toward the default on
+// every rendered frame until it dissolved into it, which is why the
+// effort and mode segments looked like they would not click.
+func TestAgentSettingsRoundTripStable(t *testing.T) {
+	a := newTestApp(t)
+	effort, mode := 1, 2
+	a.agents = append(a.agents, Agent{ID: "ag-1", Name: "X", Effort: &effort, Mode: &mode})
+
+	for range 3 { // any number of rendered frames must not drift
+		vm := a.settingsVM()
+		ai := slices.IndexFunc(vm.Agents, func(ag uipkg.AgentEditVM) bool { return ag.ID == "ag-1" })
+		if ai < 0 {
+			t.Fatalf("the profile is missing from the dialog: %+v", vm.Agents)
+		}
+		ag := &vm.Agents[ai]
+		if ag.Effort != 2 { // displays as "Medium"
+			t.Fatalf("loaded effort = %d, want 2 (the shifted Medium)", ag.Effort)
+		}
+		if ag.Mode != 3 { // displays as "Full Access"
+			t.Fatalf("loaded mode = %d, want 3 (the shifted Full Access)", ag.Mode)
+		}
+		a.syncSettings(vm)
+	}
+	if got := a.agentByID("ag-1"); *got.Effort != 1 || *got.Mode != 2 {
+		t.Fatalf("round trip drifted: effort %v mode %v", got.Effort, got.Mode)
+	}
+}
+
+// TestAgentSegmentsClickThrough drives the dialog's segment rows the way
+// a user does — a real click through the rendered frame, then extra
+// frames — and requires the choice to survive them.
+func TestAgentSegmentsClickThrough(t *testing.T) {
+	a := newTestApp(t)
+	a.agents = append(a.agents, Agent{ID: "ag-review", Name: "Reviewer"})
+	tt := ui.NewTester(a.view, 1440, 900)
+	a.settingsOpen = true
+	a.settingsSel = "ag-review"
+	tt.Frame()
+
+	if err := tt.Click("Medium"); err != nil {
+		t.Fatalf("click Medium: %v", err)
+	}
+	tt.Frame()
+	tt.Frame() // the drift used to eat the value on exactly this frame
+	if ag := a.agentByID("ag-review"); ag.Effort == nil || *ag.Effort != 1 {
+		t.Fatalf("the Medium click did not survive the frames: %v", ag.Effort)
+	}
+
+	// The backend pills had their own failure mode: a host action that
+	// the same frame's mirror overwrote with the stale snapshot.
+	// "Built-in" is unique on screen (the mode segments behind the modal
+	// share the mode names, so those clicks are ambiguous in a test).
+	if err := tt.Click("Built-in"); err != nil {
+		t.Fatalf("click Built-in: %v", err)
+	}
+	tt.Frame()
+	tt.Frame()
+	if ag := a.agentByID("ag-review"); ag.Backend != "builtin" {
+		t.Fatalf("the Built-in pill did not survive the frames: %q", ag.Backend)
+	}
+	// The mode row shares its names with the composer's segments behind
+	// the modal, so its click is covered by the round-trip test above
+	// rather than by an ambiguous text click here.
 }
