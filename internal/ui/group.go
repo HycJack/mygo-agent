@@ -60,18 +60,35 @@ func GroupDialog(c *ui.Context, vm *GroupVM, acts GroupActions) {
 			ui.Column(c).Gap(6).Children(func() {
 				for i := range vm.Members {
 					m := &vm.Members[i]
-					row := ui.Row(c).Gap(10).AlignItems(ui.Center).Padding(8, 12).Radius(8).
-						Background(vm.Pal.Card).Border(1, vm.Pal.Border)
+					// The WHOLE row is the click target: a bare Checkbox
+					// only answers clicks on its 16px box, and the name
+					// next to it swallowed the click into the backdrop.
+					row := ui.ButtonBase(c).FillWidth().Padding(8, 12).Radius(8).Gap(10).
+						AlignItems(ui.Center).Cursor(ui.CursorPointer)
+					if m.Checked {
+						row.Background(vm.Pal.Card)
+					} else {
+						row.Background(t.Surface)
+					}
+					if row.Clicked() {
+						acts.ToggleMember(m.ID, !m.Checked)
+					}
 					row.Children(func() {
-						// The name rides the checkbox label: the whole
-						// name is the click target, not the 16px box.
-						checked := m.Checked
-						was := checked
-						ui.Checkbox(c, &checked, m.Name).FontSize(12.5)
-						if checked != was {
-							acts.ToggleMember(m.ID, checked)
+						box := ui.Box(c).Size(16, 16).Radius(4).Center().Shrink(0)
+						if m.Checked {
+							box.Background(t.Accent)
+						} else {
+							box.Background(t.Background).Border(1, t.Border)
 						}
-						ui.Text(c, m.Emoji).FontSize(13)
+						box.Children(func() {
+							if m.Checked {
+								ui.Icon(c, IconCheck).FontSize(11).TextColor(t.AccentText)
+							}
+						})
+						if m.Emoji != "" {
+							ui.Text(c, m.Emoji).FontSize(13)
+						}
+						ui.Text(c, m.Name).FontSize(12.5).Grow(1).MinWidth(0)
 					})
 				}
 			})
