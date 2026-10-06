@@ -200,8 +200,6 @@ func (h headerActions) Trace() {
 	}
 }
 
-func (h headerActions) OpenSettings() { h.a.settingsOpen = true }
-
 // threadMeta is the header's "who answers" line: the bound agent when
 // the task has one worth naming, then the resolved backend, model and
 // mode — the same resolution a turn will use (spec/agents.md).

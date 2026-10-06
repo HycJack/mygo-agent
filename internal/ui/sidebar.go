@@ -67,6 +67,8 @@ type SidebarActions interface {
 	SwitchProject(id string)
 	RemoveProject(id string)
 	PickProjectDir()
+	// OpenSettings opens the settings dialog (the rail's gear, or ⌘,).
+	OpenSettings()
 }
 
 // ThreadGroup is one date section of the task list.
@@ -185,8 +187,24 @@ func Sidebar(c *ui.Context, vm *SidebarVM, acts SidebarActions, top float32) {
 		ui.Scroll(c).Grow(1).Padding(2, 8, 12).Gap(2).Children(func() {
 			threadList(c, vm, acts)
 		})
-		ui.Column(c).Padding(10).BorderWidth(1, 0, 0, 0).BorderColor(vm.Pal.Border).Children(func() {
-			backendPicker(c, vm, acts)
+		// The rail's bottom-left corner: the backend switcher, with
+		// settings one click beside it (and ⌘, behind it).
+		ui.Row(c).Padding(10).Gap(6).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).
+			BorderColor(vm.Pal.Border).Children(func() {
+			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+				backendPicker(c, vm, acts)
+			})
+			gear := ui.ButtonBase(c).Label("Settings").Tooltip("Settings (⌘,)").
+				Size(28, 28).Radius(8).Center().Cursor(ui.CursorPointer)
+			if gear.Hovered() {
+				gear.Background(vm.Pal.Hover)
+			}
+			if gear.Clicked() {
+				acts.OpenSettings()
+			}
+			gear.Children(func() {
+				ui.Icon(c, IconSliders).FontSize(15).TextColor(vm.Pal.TextMuted)
+			})
 		})
 	})
 }

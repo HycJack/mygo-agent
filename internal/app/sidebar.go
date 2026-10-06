@@ -106,6 +106,7 @@ func (h sidebarActions) SetBackend(kind string) {
 func (h sidebarActions) SwitchProject(id string) { h.a.switchProject(id) }
 func (h sidebarActions) RemoveProject(id string) { h.a.removeProject(id) }
 func (h sidebarActions) PickProjectDir()         { h.a.pickProjectDir() }
+func (h sidebarActions) OpenSettings()           { h.a.settingsOpen = true }
 
 // renderSidebar assembles the snapshot, renders, and syncs back.
 func (a *app) renderSidebar(c *ui.Context, top float32) {
