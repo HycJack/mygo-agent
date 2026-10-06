@@ -25,7 +25,7 @@ func Home(c *ui.Context, vm *ViewModel, acts Actions, suggestions []string) {
 				ui.Icon(c, IconSparkles).FontSize(26).TextColor(vm.Pal.Text)
 			})
 			ui.Text(c, "What are we coding next?").FontSize(25).Bold()
-			ui.Text(c, "Codex runs in the background while you keep working.").FontSize(13).TextColor(t.TextMuted)
+			ui.Text(c, "Your agent runs in the background while you keep working.").FontSize(13).TextColor(t.TextMuted)
 			Composer(c, vm, acts)
 			// The agent launcher (spec/agents.md): one card per configured
 			// agent, the chosen one highlighted. Picking one binds it to

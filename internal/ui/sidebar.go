@@ -48,6 +48,9 @@ type ThreadVM struct {
 	Updated    time.Time
 	BackendTag string // non-empty appends " · <tag>" under the title
 	Running    bool
+	// AgentEmoji is the bound agent's emoji, prefixed to the title so a
+	// task's owner is recognizable at a glance (spec/agents.md).
+	AgentEmoji string
 	// Search is the row's full-text haystack (title + messages), filled
 	// by the host only while a search is active; empty matches on the
 	// title alone.
@@ -234,6 +237,9 @@ func threadRow(c *ui.Context, vm *SidebarVM, acts SidebarActions, th ThreadVM) {
 			title := th.Title
 			if title == "" {
 				title = "New task"
+			}
+			if th.AgentEmoji != "" {
+				ui.Text(c, th.AgentEmoji).FontSize(12)
 			}
 			ui.Text(c, title).SingleLine().FontSize(13)
 			sub := RelTime(th.Updated)

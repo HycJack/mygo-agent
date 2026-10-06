@@ -78,6 +78,10 @@ type SettingsVM struct {
 
 	MCPName, MCPCommand string
 
+	// ProviderIDs lists the configured provider ids for the agent
+	// form's hint (the form's provider field is a free-text id).
+	ProviderIDs string
+
 	Pal Palette
 }
 
@@ -115,7 +119,7 @@ func Settings(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 	ui.Modal(c, &vm.Open, func() {
 		// Modal's panel already paints the look; keep only the fixed
 		// size and the clip for the two-pane layout inside.
-		ui.Row(c).Width(780).Height(480).Clip().
+		ui.Row(c).Width(880).Height(560).Clip().
 			AlignItems(ui.Stretch).Children(func() {
 			// The provider list.
 			ui.Column(c).Width(220).Background(vm.Pal.SidebarBG).BorderWidth(0, 1, 0, 0).
@@ -184,15 +188,21 @@ func Settings(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 						row.Children(func() {
 							ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
 								ui.Text(c, strings.TrimSpace(ag.Emoji+" "+ag.Name)).SingleLine().FontSize(12.5)
-								backend := ag.Backend
-								if backend == "" {
-									backend = "app default"
+								sub := ag.Model
+								if sub == "" {
+									sub = ag.Backend
 								}
-								ui.Text(c, backend).SingleLine().FontSize(10.5).TextColor(vm.Pal.TextMuted)
+								if sub == "" {
+									sub = "app default"
+								}
+								if ag.Model != "" && ag.Backend != "" {
+									sub = ag.Backend + " · " + sub
+								}
+								ui.Text(c, sub).SingleLine().FontSize(10.5).TextColor(vm.Pal.TextMuted)
 							})
 						})
 					}
-					addAgent := ui.ButtonBase(c).Fill().Padding(7, 10).Radius(7).Gap(8).Margin(0, 0, 4)
+					addAgent := ui.ButtonBase(c).Fill().Padding(7, 10).Radius(7).Gap(8)
 					if addAgent.Hovered() {
 						addAgent.Background(vm.Pal.Hover)
 					}
@@ -203,11 +213,40 @@ func Settings(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 						ui.Icon(c, IconPlus).FontSize(13).TextColor(t.TextMuted)
 						ui.Text(c, "Add agent").FontSize(12.5).TextColor(t.TextMuted)
 					})
+					// MCP lives in its own section: global servers have
+					// nothing to do with whichever provider is selected.
+					ui.Text(c, "MCP").FontSize(10.5).FontWeight(600).TextColor(vm.Pal.TextMuted).
+						Padding(10, 14, 6).LetterSpacing(0.6)
+					mcpRow := ui.ButtonBase(c).Fill().Padding(7, 10).Radius(7).Gap(8).Margin(0, 0, 4)
+					if vm.Sel == "mcp" {
+						mcpRow.Background(vm.Pal.Sel)
+					} else if mcpRow.Hovered() {
+						mcpRow.Background(vm.Pal.Hover)
+					}
+					if mcpRow.Clicked() {
+						acts.Select("mcp")
+					}
+					mcpRow.Children(func() {
+						ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
+							ui.Text(c, "Servers").SingleLine().FontSize(12.5)
+							ui.Textf(c, "%d configured", len(vm.MCPServer)).SingleLine().FontSize(10.5).TextColor(vm.Pal.TextMuted)
+						})
+					})
 				})
 			})
-			// The form: an agent's when one is selected, else the
+			// The form: MCP's when selected, then an agent's, then the
 			// provider's.
 			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+				if vm.Sel == "mcp" {
+					ui.Scroll(c).Grow(1).Children(func() {
+						ui.Column(c).FillWidth().Padding(20, 24, 24).Gap(14).Children(func() {
+							ui.Text(c, "MCP servers").FontSize(16).Bold()
+							ui.Text(c, "Global servers every project gets; a project's own .mcp.json merges in at run time. A server is a stdio command or an https:// URL.").FontSize(12).TextColor(t.TextMuted)
+							mcpSection(c, vm, acts)
+						})
+					})
+					return
+				}
 				ai := slices.IndexFunc(vm.Agents, func(ag AgentEditVM) bool { return ag.ID == vm.Sel })
 				if ai >= 0 {
 					ag := &vm.Agents[ai]
@@ -250,7 +289,6 @@ func Settings(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 								acts.AddModel(p.ID)
 							}
 						}
-						mcpSection(c, vm, acts)
 					})
 				})
 			})
@@ -308,11 +346,15 @@ func settingsForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, p *Provid
 		ui.TokenField(c, &p.Models, nil)
 		ui.Text(c, "Enter or comma adds a model; Backspace removes the last.").FontSize(11).TextColor(t.TextMuted)
 	})
-	ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(10, 12).Radius(8).
-		Background(vm.Pal.Card).Children(func() {
-		ui.Icon(c, IconTerminal).FontSize(13).TextColor(vm.Pal.TextMuted)
-		ui.Text(c, p.RunsAs).FontSize(11).TextColor(vm.Pal.TextMuted).Grow(1).MinWidth(0)
-	})
+	// The codex-runtime hint only shows when a codex backend can
+	// actually reach this provider — for the built-in loop it is noise.
+	if p.RunsAs != "" {
+		ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(10, 12).Radius(8).
+			Background(vm.Pal.Card).Children(func() {
+			ui.Icon(c, IconTerminal).FontSize(13).TextColor(vm.Pal.TextMuted)
+			ui.Text(c, p.RunsAs).FontSize(11).TextColor(vm.Pal.TextMuted).Grow(1).MinWidth(0)
+		})
+	}
 	ui.Row(c).Justify(ui.End).Children(func() {
 		if ui.Button(c, "Delete provider").Clicked() {
 			acts.RemoveProvider(p.ID)
@@ -410,7 +452,7 @@ func agentForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, ag *AgentEdi
 		}
 	})
 	formField(c, "Provider id", &ag.Provider, false)
-	ui.Text(c, "Empty follows the app's selection; the ids are the providers on the left.").FontSize(11).TextColor(t.TextMuted)
+	ui.Textf(c, "Empty follows the app's selection. Provider ids: %s", vm.ProviderIDs).FontSize(11).TextColor(t.TextMuted)
 	formField(c, "Model", &ag.Model, false)
 	// Effort and Mode carry an extra leading segment: index 0 is
 	// "follow the app", the rest are the real values offset by one.

@@ -24,14 +24,15 @@ type HeaderActions interface {
 	ToggleNav()
 	ToggleWorkspace()
 	ToggleTerminal()
-	// Trace opens the thread's event trace in the viewer; Export writes
-	// the thread out as
-	// Markdown; Delete removes the task.
 	Rename()
+	// Export writes the thread out as Markdown.
 	Export()
 	// Trace opens the thread's event trace in the viewer.
 	Trace()
+	// Delete removes the task (the undo toast is the way back).
 	Delete()
+	// OpenSettings opens the settings dialog (the gear and ⌘,).
+	OpenSettings()
 }
 
 // Header is the custom title bar of the main column: the panel toggles,
@@ -86,6 +87,18 @@ func Header(c *ui.Context, tb ui.TitleBar, vm *HeaderVM, acts HeaderActions) {
 				col = vm.Pal.Text
 			}
 			ui.Icon(c, IconTerminal).FontSize(15).TextColor(col)
+		})
+		// Settings: always one click away (the gear and ⌘,).
+		gear := ui.ButtonBase(c).Label("Settings").Tooltip("Settings (⌘,)").
+			Size(28, 28).Radius(7).Center().Cursor(ui.CursorPointer)
+		if gear.Hovered() {
+			gear.Background(vm.Pal.Hover)
+		}
+		if gear.Clicked() {
+			acts.OpenSettings()
+		}
+		gear.Children(func() {
+			ui.Icon(c, IconSliders).FontSize(15).TextColor(vm.Pal.TextMuted)
 		})
 		if vm.HasTask {
 			taskMenu(c, vm, acts)

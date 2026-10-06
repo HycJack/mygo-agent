@@ -48,6 +48,9 @@ func (a *app) sidebarViewModel() *uipkg.SidebarVM {
 		if a.search != "" {
 			t.Search = th.searchHaystack()
 		}
+		if ag := a.agentFor(th); ag != nil {
+			t.AgentEmoji = ag.Emoji
+		}
 		if th.CodexID != "" {
 			t.BackendTag = "codex"
 		}

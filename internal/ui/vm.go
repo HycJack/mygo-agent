@@ -231,7 +231,7 @@ func modelButton(c *ui.Context, vm *ViewModel, acts Actions) {
 			}
 			mng.Children(func() {
 				ui.Icon(c, IconSliders).FontSize(13).TextColor(t.TextMuted)
-				ui.Text(c, "Manage providers & models…").FontSize(12).Grow(1)
+				ui.Text(c, "Settings…").FontSize(12).Grow(1)
 			})
 			Segments(c, vm.Effort, EffortNames, acts.SetEffort, vm.Pal)
 			if vm.Effort != prev {

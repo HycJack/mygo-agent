@@ -59,16 +59,31 @@ func (a *app) settingsVM() *uipkg.SettingsVM {
 		Pal:  a.pal,
 	}
 	vm.MCPName, vm.MCPCommand = a.mcpDraftName, a.mcpDraftCommand
+	// The codex-runtime hint only matters when something actually runs
+	// the codex CLI against this provider: the app's backend switch, or
+	// an agent pinned to codex.
+	codexInUse := a.backend == "codex"
+	for i := range a.agents {
+		if a.agents[i].Backend == "codex" {
+			codexInUse = true
+		}
+	}
+	ids := make([]string, 0, len(a.providers))
 	for i := range a.providers {
 		p := &a.providers[i]
+		runsAs := ""
+		if codexInUse && p.ID != "codex" {
+			runsAs = fmt.Sprintf("Runs as: codex exec -c model_provider=%s -m <model>, API key via $%s",
+				p.ID, codex.EnvKey(p.ID))
+		}
+		ids = append(ids, p.ID)
 		vm.Providers = append(vm.Providers, uipkg.ProviderEditVM{
 			ID: p.ID, Name: p.Name, BaseURL: p.BaseURL, APIKey: p.APIKey,
 			Wire: p.Wire, Models: slices.Clone(p.Models),
-			Codex: p.ID == "codex",
-			RunsAs: fmt.Sprintf("Runs as: codex exec -c model_provider=%s -m <model>, API key via $%s",
-				p.ID, codex.EnvKey(p.ID)),
+			Codex: p.ID == "codex", RunsAs: runsAs,
 		})
 	}
+	vm.ProviderIDs = strings.Join(ids, ", ")
 	for _, ps := range providerPresets {
 		vm.Presets = append(vm.Presets, uipkg.PresetVM{Name: ps.name})
 	}
