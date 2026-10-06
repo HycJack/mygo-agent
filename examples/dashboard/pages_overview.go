@@ -4,9 +4,6 @@ package main
 // live card. Everything the eye lands on first.
 
 import (
-	"fmt"
-	"time"
-
 	"github.com/egoist/mygo/ui"
 )
 
@@ -63,35 +60,15 @@ func (d *dashboard) overviewPage(c *ui.Context, pal Palette) {
 		}).Grow(1).MaxWidth(340)
 	})
 
-	// Revenue by weekday and the live system health.
-	ui.Row(c).Gap(14).AlignItems(ui.Stretch).Children(func() {
+	// Revenue by weekday, with the system health and the import zone
+	// stacked beside it.
+	ui.Row(c).Gap(14).AlignItems(ui.Start).Children(func() {
 		Card(c, pal, "Revenue by day", "this week", func() {
 			barChart(c, pal, revenueByDay())
-		}).Grow(2)
-		Card(c, pal, "System health", "live", func() {
-			d.healthCards(c, pal)
-		}).Grow(1).MaxWidth(340)
-	})
-
-	// The activity feed beside the live card and the CSV drop zone.
-	ui.Row(c).Gap(14).AlignItems(ui.Start).Children(func() {
-		Card(c, pal, "Recent activity", "right-click a row", func() {
-			d.activityFeed(c, pal)
-		}).Grow(2)
+		}).Grow(3)
 		ui.Column(c).Grow(1).MaxWidth(340).Gap(14).Children(func() {
-			Card(c, pal, "Live requests", "a sample a second", func() {
-				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-					ui.Textf(c, "%s /s", formatCompact(d.live[len(d.live)-1])).FontSize(22).FontWeight(700)
-					ui.Spacer(c)
-					ui.Row(c).Gap(6).AlignItems(ui.Center).Padding(2, 8).Radius(999).
-						Background(pal.Success.Alpha(0.15)).Children(func() {
-						ui.Spinner(c)
-						ui.Text(c, "streaming").FontSize(11).TextColor(pal.Success)
-					})
-				})
-				sparkline(c, d.live, pal.Series[1]).Height(56).Grow(1)
-				ui.Textf(c, "peak %s /s · floor %s /s", formatCompact(maxOf(d.live)), formatCompact(minOf(d.live))).
-					FontSize(11).TextColor(pal.TextMuted)
+			Card(c, pal, "System health", "live", func() {
+				d.healthCards(c, pal)
 			})
 			Card(c, pal, "Import", "", func() {
 				zone := ui.Column(c).MinHeight(84).Padding(10).Radius(8).Gap(4).
@@ -144,35 +121,6 @@ func (d *dashboard) healthCards(c *ui.Context, pal Palette) {
 			ui.Text(c, "41d 12h").FontSize(12).FontWeight(600)
 		})
 	})
-}
-
-// activityFeed is the Recent activity list: one virtualized row per
-// event, with an avatar, the text, a level pill and a relative time.
-func (d *dashboard) activityFeed(c *ui.Context, pal Palette) {
-	events := makeEvents(40)
-	labels := map[string]string{"deploy": "deploy", "alert": "alert", "signup": "signup", "payment": "billing"}
-	d.feedRows.Key = func(i int) any { return events[i].Seq }
-	ui.List(c, &d.feedRows, len(events), func(i int) {
-		e := events[i]
-		ui.Row(c).Key(e.Seq).Padding(7, 4).Gap(10).AlignItems(ui.Center).Children(func() {
-			ui.Avatar(c, eventActor(e.Seq), nil)
-			ui.Column(c).Gap(0).Grow(1).MinWidth(0).Children(func() {
-				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
-					ui.Text(c, labels[e.Kind]).FontSize(11).FontWeight(700).TextColor(pal.TextMuted)
-					ui.Text(c, e.What).FontSize(12.5).SingleLine().Grow(1).MinWidth(0)
-				})
-				ui.Text(c, relativeTime(e.At, d.now)).FontSize(10.5).TextColor(pal.TextMuted)
-			})
-			Pill(c, pal, e.Level, statusColor(pal, e.Level))
-		}).ContextMenu(func(m *ui.Menu) {
-			if m.Item("Copy details").Chosen() {
-				mygoClipboard(fmt.Sprintf("%s: %s", e.Kind, e.What))
-			}
-			if m.Item("Copy time").Chosen() {
-				mygoClipboard(e.At.Format(time.RFC3339))
-			}
-		})
-	}).Height(250).Padding(4).Gap(0)
 }
 
 // scale returns samples scaled to fit a KPI card's sparkline shape.

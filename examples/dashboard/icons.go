@@ -5,6 +5,17 @@ import "github.com/egoist/mygo/ui"
 // Icon parses a 24×24 stroked icon, abstracted from the agent's
 // internal/ui/icons.go: the shapes are Lucide icon paths (ISC licensed),
 // drawn in currentColor at stroke width 2 with round caps and joins.
+//
+// Icon sourcing, in the order the project prefers them:
+//  1. lucide.dev — the default set; every icon below comes from there.
+//  2. icon-sets.iconify.design — the supplement when Lucide lacks a
+//     metaphor or another style fits the screen (its thousands of sets
+//     paste straight into this same wrapper).
+//  3. lobehub.com/icons — brand and LLM vendor logos (OpenAI, Claude,
+//     Gemini…) for model pickers; filled multi-color logos, so they
+//     would take their own MustParseSVG rather than currentColor.
+//
+// Anything still missing gets a pass in Sketch and lands here as paths.
 func Icon(shapes string) *ui.SVG {
 	return ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` + shapes + `</svg>`))
 }
@@ -50,4 +61,18 @@ var (
 	IconLogout   = Icon(`<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/><polyline points="16 17 21 12 16 7"/><line x1="21" x2="9" y1="12" y2="12"/>`)
 	IconExternal = Icon(`<path d="M15 3h6v6"/><path d="M10 14 21 3"/><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/>`)
 	IconPackage  = Icon(`<path d="M11 21.73a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73z"/><path d="M12 22V12"/><path d="m3.3 7 8.7 5 8.7-5"/>`)
+
+	// Panel toggles, lucide.dev: panel-left/-right plus their open and
+	// close variants — the chevron points the way the edge travels.
+	IconPanelLeft       = Icon(`<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 3v18"/>`)
+	IconPanelLeftOpen   = Icon(`<rect width="18" height="18" x="3" y="3" rx="2"/><path d="m14 9-3 3 3 3"/>`)
+	IconPanelLeftClose  = Icon(`<rect width="18" height="18" x="3" y="3" rx="2"/><path d="m10 9 3 3-3 3"/>`)
+	IconPanelRight      = Icon(`<rect width="18" height="18" x="3" y="3" rx="2"/><path d="M15 3v18"/>`)
+	IconPanelRightOpen  = Icon(`<rect width="18" height="18" x="3" y="3" rx="2"/><path d="m10 9-3 3 3 3"/>`)
+	IconPanelRightClose = Icon(`<rect width="18" height="18" x="3" y="3" rx="2"/><path d="m14 9 3 3-3 3"/>`)
+
+	IconChevronsLeft  = Icon(`<path d="m11 17-5-5 5-5"/><path d="m18 17-5-5 5-5"/>`)
+	IconChevronsRight = Icon(`<path d="m6 17 5-5-5-5"/><path d="m13 17 5-5-5-5"/>`)
+	IconChevronLeft   = Icon(`<path d="m15 18-6-6 6-6"/>`)
+	IconChevronRight  = Icon(`<path d="m9 18 6-6-6-6"/>`)
 )

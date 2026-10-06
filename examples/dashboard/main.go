@@ -1,16 +1,18 @@
 // Dashboard tours the components MyGo's UI toolkit ships, arranged the
 // way a product dashboard would use them — the dark look, the cards and
 // the shell are abstracted from this repository's own agent UI. It shows
-// the app shell (a router-driven sidebar), KPI cards and Painter-drawn
-// charts, virtualized lists and sortable tables, every form control,
-// overlays (dialogs, popovers, toasts, drag & drop) and a settings page,
-// with live data pushed from a goroutine. Light and dark themes swap at
-// runtime through Context.SetTheme.
+// the app shell (a router-driven sidebar that folds to an icon rail, an
+// activity panel that slides away on the right), KPI cards and
+// Painter-drawn charts, virtualized lists and sortable tables, every
+// form control, overlays (dialogs, popovers, toasts, drag & drop) and a
+// settings page, with live data pushed from a goroutine. Light and dark
+// themes swap at runtime through Context.SetTheme.
 //
 //	go run ./examples/dashboard
 package main
 
 import (
+	"fmt"
 	"log"
 	"math/rand/v2"
 	"time"
@@ -21,6 +23,15 @@ import (
 
 // pages names the router's pages in order; Cmd+1…5 switch among them.
 var pages = []string{"Overview", "Data", "Controls", "Overlays", "Settings"}
+
+// pageIcons names each page's sidebar icon, lucide.dev.
+var pageIcons = map[string]*ui.SVG{
+	"Overview": IconDashboard,
+	"Data":     IconDatabase,
+	"Controls": IconSliders,
+	"Overlays": IconLayers,
+	"Settings": IconGear,
+}
 
 func pagePath(page string) string { return "/" + lower(page) }
 
@@ -49,14 +60,16 @@ type dashboard struct {
 	win    *mygo.Window
 	router *ui.Router
 
-	dark     bool // the theme toggle
-	live     []float64
-	now      time.Time
-	notifs   int
-	notes    int
-	inbox    int
-	crumb    int
-	csvFiles []string
+	dark      bool // the theme toggle
+	navOpen   bool // the left sidebar: full or the icon rail
+	inspector bool // the right activity panel: open or folded away
+	live      []float64
+	now       time.Time
+	notifs    int
+	notes     int
+	inbox     int
+	crumb     int
+	csvFiles  []string
 
 	// Overview
 	theRange int // 24h / 7d / 30d, an index into rangeNames
@@ -139,6 +152,8 @@ func newDashboard() *dashboard {
 	d := &dashboard{
 		router:      ui.NewRouter("/overview"),
 		dark:        true,
+		navOpen:     true,
+		inspector:   true,
 		now:         time.Now(),
 		notifs:      3,
 		notes:       7,
@@ -173,8 +188,8 @@ func newDashboard() *dashboard {
 	return d
 }
 
-// view is the whole UI: the shell — sidebar, top bar, routed pages —
-// with the palette applied through the theme.
+// view is the whole UI: the shell — a collapsible sidebar on each side
+// of the routed pages — with the palette applied through the theme.
 func (d *dashboard) view(c *ui.Context) {
 	pal := d.palette()
 	c.SetTheme(pal.Theme())
@@ -204,77 +219,241 @@ func (d *dashboard) view(c *ui.Context) {
 				})
 			})
 		})
+		d.inspectorPanel(c, pal)
 	})
-	// ⌘1…5 (Ctrl elsewhere) switch pages.
+	// ⌘1…5 (Ctrl elsewhere) switch pages; ⌘B folds the sidebar, ⌘J the
+	// activity panel.
 	for i, p := range pages {
 		if c.Shortcut(ui.Cmd, ui.Key1+ui.Key(i)) {
 			d.router.Push(pagePath(p))
 		}
 	}
+	if c.Shortcut(ui.Cmd, ui.KeyB) {
+		d.navOpen = !d.navOpen
+	}
+	if c.Shortcut(ui.Cmd, ui.KeyJ) {
+		d.inspector = !d.inspector
+	}
 }
 
-// sidebar is the app's navigation rail: brand, two sections of pages and
-// the user footer.
+// sidebarWidthsFull and sidebarWidthRail are the sidebar's two widths;
+// the transition between them is animated.
+const (
+	sidebarWidthFull = 212
+	sidebarWidthRail = 58
+	panelWidth       = 292
+	slideDuration    = 200 * time.Millisecond
+)
+
+// sidebar is the left navigation: the full rail (brand, sections,
+// badges, user footer) or a 58px column of icons. The width animates
+// between the two — Size transition — while the content swaps to its
+// shape and ClipX keeps the slide clean.
 func (d *dashboard) sidebar(c *ui.Context, pal Palette) {
-	ui.Column(c).Width(210).Shrink(0).Padding(14, 10).Gap(10).Background(pal.SidebarBG).Children(func() {
-		ui.Row(c).Gap(9).AlignItems(ui.Center).Padding(4, 8).Children(func() {
-			ui.Box(c).Size(26, 26).Radius(8).Background(pal.Series[0]).Center().Children(func() {
-				ui.Icon(c, IconZap).FontSize(15).TextColor(ui.RGB(255, 255, 255))
-			})
-			ui.Column(c).Gap(0).Children(func() {
-				ui.Text(c, "Acme Analytics").FontSize(13).FontWeight(700).SingleLine()
-				ui.Text(c, "workspace: acme-inc").FontSize(10.5).TextColor(pal.TextMuted).SingleLine()
+	w := float32(sidebarWidthRail)
+	if d.navOpen {
+		w = sidebarWidthFull
+	}
+	body := ui.Column(c).Width(w).Shrink(0).PaddingY(12).Gap(8).Background(pal.SidebarBG).
+		ClipX().Transition(ui.ElementTransition{Size: true, Duration: slideDuration, Ease: ui.EaseInOut})
+	body.Children(func() {
+		if d.navOpen {
+			d.sidebarFull(c, pal)
+			return
+		}
+		d.sidebarRail(c, pal)
+	})
+}
+
+// sidebarFull is the expanded sidebar: brand row with its collapse
+// button, the sections, and the user footer.
+func (d *dashboard) sidebarFull(c *ui.Context, pal Palette) {
+	ui.Row(c).Gap(9).AlignItems(ui.Center).Padding(4, 6, 4, 10).Children(func() {
+		ui.Box(c).Size(26, 26).Radius(8).Background(pal.Series[0]).Center().Children(func() {
+			ui.Icon(c, IconZap).FontSize(15).TextColor(ui.RGB(255, 255, 255))
+		})
+		ui.Column(c).Gap(0).Grow(1).MinWidth(0).Children(func() {
+			ui.Text(c, "Acme Analytics").FontSize(13).FontWeight(700).SingleLine()
+			ui.Text(c, "workspace: acme-inc").FontSize(10.5).TextColor(pal.TextMuted).SingleLine()
+		})
+		iconToggle(c, pal, "Collapse sidebar (⌘B)", false, IconPanelLeftClose, func() { d.navOpen = false })
+	})
+	page := pageOf(d.router.Path())
+	if ui.Sidebar(c, &page, func() {
+		ui.SidebarSection(c, "Analytics", &d.sections[0], func() {
+			ui.SidebarItem(c, "Overview", pageIcons["Overview"], "Overview")
+			ui.SidebarItem(c, "Data", pageIcons["Data"], "Data").Children(func() { ui.Badge(c, "10k") })
+		})
+		ui.SidebarSection(c, "Toolkit", &d.sections[1], func() {
+			ui.SidebarItem(c, "Controls", pageIcons["Controls"], "Controls")
+			ui.SidebarItem(c, "Overlays", pageIcons["Overlays"], "Overlays")
+		})
+		ui.SidebarSection(c, "Workspace", &d.sections[2], func() {
+			ui.SidebarItem(c, "Settings", pageIcons["Settings"], "Settings").Children(func() {
+				if d.inbox > 0 {
+					ui.Textf(c, "%d", d.inbox).FontSize(10.5).TextColor(pal.TextMuted)
+				}
 			})
 		})
-		page := pageOf(d.router.Path())
-		if ui.Sidebar(c, &page, func() {
-			ui.SidebarSection(c, "Analytics", &d.sections[0], func() {
-				ui.SidebarItem(c, "Overview", IconDashboard, "Overview")
-				ui.SidebarItem(c, "Data", IconDatabase, "Data").Children(func() { ui.Badge(c, "10k") })
+	}).Grow(1).MinHeight(0).Label("Pages").Changed() {
+		d.router.Push(pagePath(page))
+	}
+	d.userFooter(c, pal)
+}
+
+// sidebarRail is the collapsed sidebar: the brand (a click expands),
+// the pages as bare icons with tooltips and dot badges, the avatar.
+func (d *dashboard) sidebarRail(c *ui.Context, pal Palette) {
+	page := pageOf(d.router.Path())
+	brand := ui.ButtonBase(c).Label("Expand sidebar").Tooltip("Expand sidebar (⌘B)").
+		Size(36, 36).Radius(9).Center().Margin(0, ui.Auto).Cursor(ui.CursorPointer)
+	brand.Background(pal.Series[0])
+	if brand.Clicked() {
+		d.navOpen = true
+	}
+	brand.Children(func() { ui.Icon(c, IconZap).FontSize(17).TextColor(ui.RGB(255, 255, 255)) })
+	for _, p := range pages {
+		p := p
+		active := p == page
+		b := ui.ButtonBase(c).Key("rail-"+p).Label(p).Tooltip(p).Size(36, 36).Radius(9).
+			Center().Margin(0, ui.Auto).Cursor(ui.CursorPointer)
+		if active {
+			b.Background(pal.Sel)
+		} else if b.Hovered() {
+			b.Background(pal.Hover)
+		}
+		if b.Clicked() {
+			d.router.Push(pagePath(p))
+		}
+		b.Children(func() {
+			ui.Box(c).Children(func() {
+				col := pal.TextMuted
+				if active {
+					col = pal.Text
+				}
+				ui.Icon(c, pageIcons[p]).FontSize(17).TextColor(col)
+				// A dot stands in for the badge the label used to carry.
+				if (p == "Data") || (p == "Settings" && d.inbox > 0) {
+					ui.Box(c).Size(7, 7).Radius(4).Background(pal.Series[1]).
+						Border(1.5, pal.SidebarBG).Attach(ui.AnchorTopRight, ui.AnchorTopRight)
+				}
 			})
-			ui.SidebarSection(c, "Toolkit", &d.sections[1], func() {
-				ui.SidebarItem(c, "Controls", IconSliders, "Controls")
-				ui.SidebarItem(c, "Overlays", IconLayers, "Overlays")
+		})
+	}
+	ui.Box(c).Grow(1)
+	expand := ui.ButtonBase(c).Label("Expand sidebar").Tooltip("Expand sidebar (⌘B)").
+		Size(36, 36).Radius(9).Center().Margin(0, ui.Auto).Cursor(ui.CursorPointer)
+	if expand.Hovered() {
+		expand.Background(pal.Hover)
+	}
+	if expand.Clicked() {
+		d.navOpen = true
+	}
+	expand.Children(func() { ui.Icon(c, IconChevronsRight).FontSize(16).TextColor(pal.TextMuted) })
+	ui.Row(c).Margin(0, ui.Auto).Children(func() {
+		ui.Avatar(c, "Ada Lovelace", nil)
+	})
+}
+
+// userFooter is the sidebar's account row: avatar, name, and a context
+// menu of account actions.
+func (d *dashboard) userFooter(c *ui.Context, pal Palette) {
+	foot := ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(6, 8).Radius(8).Cursor(ui.CursorPointer)
+	if foot.Hovered() {
+		foot.Background(pal.Hover)
+	}
+	foot.ContextMenu(func(m *ui.Menu) {
+		if m.Item("Profile").Chosen() {
+			d.router.Push(pagePath("Settings"))
+		}
+		if m.Item("Sign out").Chosen() {
+			c.Toast("Signed out (not really)")
+		}
+	})
+	foot.Children(func() {
+		ui.Avatar(c, "Ada Lovelace", nil)
+		ui.Column(c).Gap(0).Grow(1).MinWidth(0).Children(func() {
+			ui.Text(c, "Ada Lovelace").FontSize(12).FontWeight(600).SingleLine()
+			ui.Text(c, "ada@acme.dev").FontSize(10.5).TextColor(pal.TextMuted).SingleLine()
+		})
+		ui.Icon(c, IconMore).FontSize(14).TextColor(pal.TextMuted)
+	})
+}
+
+// inspectorPanel is the right-hand activity panel: live requests, the
+// recent activity feed and the team, over every page. Folding it slides
+// the column to nothing; the border rides the open state.
+func (d *dashboard) inspectorPanel(c *ui.Context, pal Palette) {
+	w := float32(0)
+	if d.inspector {
+		w = panelWidth
+	}
+	panel := ui.Column(c).Width(w).Shrink(0).Background(pal.SidebarBG).
+		ClipX().Transition(ui.ElementTransition{Size: true, Duration: slideDuration, Ease: ui.EaseInOut})
+	if d.inspector {
+		panel = panel.BorderWidth(0, 0, 0, 1).BorderColor(pal.Border)
+	}
+	panel.Children(func() {
+		if !d.inspector {
+			return
+		}
+		ui.Row(c).Padding(12, 8, 8, 14).Gap(7).AlignItems(ui.Center).Children(func() {
+			ui.Icon(c, IconActivity).FontSize(14).TextColor(pal.TextMuted)
+			ui.Text(c, "Activity").FontSize(13).FontWeight(600)
+			ui.Row(c).Gap(5).AlignItems(ui.Center).Padding(1, 7).Radius(999).
+				Background(pal.Success.Alpha(0.14)).Children(func() {
+				ui.Box(c).Size(6, 6).Radius(3).Background(pal.Success)
+				ui.Text(c, "live").FontSize(10).FontWeight(600).TextColor(pal.Success)
 			})
-			ui.SidebarSection(c, "Workspace", &d.sections[2], func() {
-				ui.SidebarItem(c, "Settings", IconGear, "Settings").Children(func() {
-					if d.inbox > 0 {
-						ui.Textf(c, "%d", d.inbox).FontSize(10.5).TextColor(pal.TextMuted)
+			ui.Spacer(c)
+			iconToggle(c, pal, "Hide panel (⌘J)", false, IconPanelRightClose, func() { d.inspector = false })
+		})
+		ui.Column(c).Padding(0, 10, 12).Gap(10).Grow(1).MinHeight(0).Children(func() {
+			// Live requests.
+			ui.Column(c).Padding(12).Gap(8).Radius(10).Shrink(0).Background(pal.Card).Border(1, pal.Border).Children(func() {
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, "Requests / s").FontSize(12).TextColor(pal.TextMuted).Grow(1)
+					ui.Text(c, formatCompact(d.live[len(d.live)-1])).FontSize(15).FontWeight(700)
+				})
+				sparkline(c, d.live, pal.Series[1]).Height(40).Grow(1)
+				ui.Textf(c, "peak %s · floor %s", formatCompact(maxOf(d.live)), formatCompact(minOf(d.live))).
+					FontSize(10.5).TextColor(pal.TextMuted)
+			})
+			// The feed takes what height is left.
+			ui.Column(c).Padding(12).Gap(8).Radius(10).Grow(1).MinHeight(0).Background(pal.Card).Border(1, pal.Border).Children(func() {
+				ui.Text(c, "Recent activity").FontSize(13).FontWeight(600)
+				d.activityList(c, pal, 0)
+			})
+			// Team online.
+			ui.Column(c).Padding(12).Gap(8).Radius(10).Shrink(0).Background(pal.Card).Border(1, pal.Border).Children(func() {
+				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, "Team online").FontSize(13).FontWeight(600).Grow(1)
+					ui.Textf(c, "%d of %d", 5, len(team())).FontSize(11).TextColor(pal.TextMuted)
+				})
+				ui.Row(c).Gap(6).Wrap().Children(func() {
+					for i, m := range team() {
+						if i == 5 {
+							break
+						}
+						ui.Box(c).Children(func() {
+							ui.Avatar(c, m.Name, nil).Tooltip(m.Name + " · " + m.Role)
+							ui.Box(c).Size(9, 9).Radius(5).Background(pal.Success).
+								Border(2, pal.Card).Attach(ui.AnchorBottomRight, ui.AnchorBottomRight)
+						})
 					}
 				})
 			})
-		}).Grow(1).MinHeight(0).Label("Pages").Changed() {
-			d.router.Push(pagePath(page))
-		}
-		// The user footer: avatar, name, and a context menu of account
-		// actions.
-		foot := ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(6, 8).Radius(8).Cursor(ui.CursorPointer)
-		if foot.Hovered() {
-			foot.Background(pal.Hover)
-		}
-		foot.ContextMenu(func(m *ui.Menu) {
-			if m.Item("Profile").Chosen() {
-				d.router.Push(pagePath("Settings"))
-			}
-			if m.Item("Sign out").Chosen() {
-				c.Toast("Signed out (not really)")
-			}
-		})
-		foot.Children(func() {
-			ui.Avatar(c, "Ada Lovelace", nil)
-			ui.Column(c).Gap(0).Grow(1).MinWidth(0).Children(func() {
-				ui.Text(c, "Ada Lovelace").FontSize(12).FontWeight(600).SingleLine()
-				ui.Text(c, "ada@acme.dev").FontSize(10.5).TextColor(pal.TextMuted).SingleLine()
-			})
-			ui.Icon(c, IconMore).FontSize(14).TextColor(pal.TextMuted)
 		})
 	})
 }
 
-// topbar is the header above the pages: history, breadcrumbs, the global
-// search, and the right-hand actions — refresh, notifications, theme.
+// topbar is the header above the pages: the two panel toggles at its
+// edges, history, breadcrumbs, the global search, and the actions —
+// refresh, notifications, theme, export.
 func (d *dashboard) topbar(c *ui.Context, pal Palette) {
 	ui.Toolbar(c, func() {
+		iconToggle(c, pal, "Toggle sidebar (⌘B)", d.navOpen, IconPanelLeft, func() { d.navOpen = !d.navOpen })
+		ui.Box(c).Width(1).Height(18).Background(pal.Border)
 		ui.BackButton(c, d.router)
 		ui.ForwardButton(c, d.router)
 		// A crumb click on the workspace name goes back to Overview.
@@ -313,6 +492,7 @@ func (d *dashboard) topbar(c *ui.Context, pal Palette) {
 				}
 			}
 		})
+		iconToggle(c, pal, "Toggle activity panel (⌘J)", d.inspector, IconPanelRight, func() { d.inspector = !d.inspector })
 	}).Label("Top bar").Padding(8, 20, 0)
 }
 
@@ -330,6 +510,40 @@ func liveSeed() []float64 {
 // mygoClipboard copies to the system clipboard from context-menu actions.
 func mygoClipboard(s string) {
 	mygo.Clipboard.WriteText(s)
+}
+
+// activityList builds the Recent activity feed: one virtualized row per
+// event, with an avatar, the text, a level pill and a relative time. A
+// fixed height fills it out; zero grows it into what height is left.
+func (d *dashboard) activityList(c *ui.Context, pal Palette, fixed float32) *ui.Element {
+	events := makeEvents(40)
+	labels := map[string]string{"deploy": "deploy", "alert": "alert", "signup": "signup", "payment": "billing"}
+	d.feedRows.Key = func(i int) any { return events[i].Seq }
+	list := ui.List(c, &d.feedRows, len(events), func(i int) {
+		e := events[i]
+		ui.Row(c).Key(e.Seq).Padding(7, 4).Gap(10).AlignItems(ui.Center).Children(func() {
+			ui.Avatar(c, eventActor(e.Seq), nil)
+			ui.Column(c).Gap(0).Grow(1).MinWidth(0).Children(func() {
+				ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
+					ui.Text(c, labels[e.Kind]).FontSize(11).FontWeight(700).TextColor(pal.TextMuted)
+					ui.Text(c, e.What).FontSize(12.5).SingleLine().Grow(1).MinWidth(0)
+				})
+				ui.Text(c, relativeTime(e.At, d.now)).FontSize(10.5).TextColor(pal.TextMuted)
+			})
+			Pill(c, pal, e.Level, statusColor(pal, e.Level))
+		}).ContextMenu(func(m *ui.Menu) {
+			if m.Item("Copy details").Chosen() {
+				mygoClipboard(fmt.Sprintf("%s: %s", e.Kind, e.What))
+			}
+			if m.Item("Copy time").Chosen() {
+				mygoClipboard(e.At.Format(time.RFC3339))
+			}
+		})
+	}).Padding(4).Gap(0)
+	if fixed > 0 {
+		return list.Height(fixed)
+	}
+	return list.Grow(1).MinHeight(0)
 }
 
 func main() {

@@ -14,15 +14,27 @@ go run ./examples/dashboard
 
 | Page | Widgets |
 | --- | --- |
-| **Overview** | KPI cards with sparklines and delta pills, a Painter-drawn area chart with a gradient fill, a donut of stroked arcs, a bar chart, `Meter` rows, a virtualized activity feed with `Avatar` + context menus, a live card fed by a goroutine through `Window.Update`, and a file drop zone |
+| **Shell** | a collapsible sidebar on **both sides**: the left navigation folds to a 58 px icon rail (tooltips and dot badges, ⌘B), the right **Activity panel** — live requests, the recent-activity feed, team online — slides away entirely (⌘J); both widths animate through `ElementTransition{Size}`; ⌘1–5 switch pages |
+| **Overview** | KPI cards with sparklines and delta pills, a Painter-drawn area chart with a gradient fill, a donut of stroked arcs, a bar chart, `Meter` rows and a file drop zone |
 | **Data** | a sortable, multi-select `Table` with `EditableText` and keyboard support, a virtualized `List` of 10,000 searchable rows, a `Tree`, a drag-to-reorder `GridView` and an `OutlineTable` |
 | **Controls** | `Form`/`Field`/`Fieldset` with validation, text inputs, `TextArea`, `Select`, `Combobox`, `Autocomplete`, `TokenField`, switches, radios, checkbox groups, `Slider`/`StepSlider`/`RangeSlider`, `NumberInput`/`Stepper`, `Progress`, `Calendar`/`DateInput`/`TimeInput`, `ColorWell`, `Rating`, segmented controls, `ToggleGroup` and `Tabs` |
 | **Overlays** | buttons and `MenuButton`, a `Popover`, `AlertDialog` and `Modal`, `Toast`/`ToastAction`, tooltips, a drag & drop kanban board (`Drag`/`Drop`/`DragOver`) and color transitions |
 | **Settings** | a two-pane `Split` shell, `Collapsible` and `Accordion`, plan-usage `Meter`s and the danger zone |
 
-Around them, the app shell: a `Router` driven by a `Sidebar` with
-sections, badges and a user footer, a `Toolbar` with back/forward,
-`Breadcrumbs`, search and notifications, and ⌘1…5 to switch pages.
+Around them, the app shell itself: a `Router` driven by a `Sidebar` with
+sections, badges and a user footer (or the icon rail it folds to), a
+`Toolbar` with back/forward, `Breadcrumbs`, search and notifications.
+
+## Icons
+
+The UI icons are Lucide (`lucide.dev`, ISC), parsed in `icons.go` the
+same way the agent app parses its own. The sourcing order the project
+prefers: **lucide** first, **iconify** (`icon-sets.iconify.design`) as
+the supplement when another style or metaphor fits — its sets paste
+into the same wrapper — and **lobehub** (`lobehub.com/icons`) for brand
+and LLM-vendor logos in model pickers; those are filled multi-color
+logos and would carry their own `MustParseSVG` rather than
+`currentColor`. Anything still missing gets a pass in Sketch.
 
 ## Notes
 
@@ -35,12 +47,15 @@ sections, badges and a user footer, a `Toolbar` with back/forward,
 - **The data is mock and deterministic** (`data.go`), seeded so every
   launch looks the same; the pure helpers (filtering, sorting,
   formatting) unit-test without a window.
-- **A layout trap worth knowing.** An element with `Grow(1)` directly
-  inside a scroll's content collapses the whole layout — cards take
-  their grow from a row (definite measure), never from a scroll. The
-  render test in `dashboard_test.go` catches it: with `MYGO_UI_SHOTS`
-  set it writes every page's PNG, the way the agent app screenshots its
-  own surfaces.
+- **A layout trap worth knowing, twice over.** An element with
+  `Grow(1)` directly inside a scroll's content collapses the whole
+  layout, and so does a growing element inside a container whose own
+  height wraps its content (the charts carry fixed heights for exactly
+  this reason). Cards take their grow from a row with a definite
+  measure, never from a scroll. The render tests catch both: with
+  `MYGO_UI_SHOTS` set they write every page's PNG plus the shell's
+  three fold states, the way the agent app screenshots its own
+  surfaces.
 
 ```sh
 MYGO_UI_SHOTS=/tmp/shots go test ./examples/dashboard/ -run TestRender

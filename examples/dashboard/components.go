@@ -47,7 +47,7 @@ func StatCard(c *ui.Context, pal Palette, label, value, delta string, up bool, i
 		ui.Text(c, value).FontSize(24).FontWeight(700)
 		ui.Row(c).Gap(6).AlignItems(ui.Center).Children(func() {
 			DeltaPill(c, pal, delta, up)
-			ui.Text(c, "vs last period").FontSize(11).TextColor(pal.TextMuted)
+			ui.Text(c, "vs last period").FontSize(11).TextColor(pal.TextMuted).SingleLine()
 		})
 		sparkline(c, samples, series).Height(36).Margin(4, 0, 0, 0).Grow(1)
 	})
@@ -196,9 +196,10 @@ func sparkline(c *ui.Context, samples []float64, col ui.Color) *ui.Element {
 
 // areaChart draws a labeled time series: horizontal gridlines, a smooth
 // curve over a gradient fill, and the last point marked. It is custom
-// painting, the way the gallery's Drawing page does it.
+// painting, the way the gallery's Drawing page does it. Fixed height:
+// a Grow here would collapse inside a card whose own height wraps.
 func areaChart(c *ui.Context, pal Palette, data []NamedValue, col ui.Color) *ui.Element {
-	return ui.Box(c).Grow(1).Height(220).Draw(func(p *ui.Painter, r ui.Rect) {
+	return ui.Box(c).Height(220).Draw(func(p *ui.Painter, r ui.Rect) {
 		if len(data) < 2 {
 			return
 		}
@@ -260,9 +261,10 @@ func areaChart(c *ui.Context, pal Palette, data []NamedValue, col ui.Color) *ui.
 }
 
 // barChart draws one rounded bar per value with its label and value
-// under it; the tallest bar carries the accent color.
+// under it; the tallest bar carries the accent color. Fixed height, for
+// the same reason areaChart is.
 func barChart(c *ui.Context, pal Palette, data []NamedValue) *ui.Element {
-	return ui.Box(c).Grow(1).Height(220).Draw(func(p *ui.Painter, r ui.Rect) {
+	return ui.Box(c).Height(220).Draw(func(p *ui.Painter, r ui.Rect) {
 		if len(data) == 0 {
 			return
 		}

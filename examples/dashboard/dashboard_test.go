@@ -147,19 +147,93 @@ func TestRender(t *testing.T) {
 		}
 	}
 
+	// The shell's own states, for the visual audit: the default, the
+	// sidebar folded to its rail, and both panels folded.
+	if dir != "" {
+		d := newDashboard()
+		tt := ui.NewTester(d.view, 1240, 800)
+		tt.Frame()
+		writeShot(t, tt, dir, "shell-default")
+
+		d = newDashboard()
+		d.navOpen = false
+		tt = ui.NewTester(d.view, 1240, 800)
+		tt.Frame()
+		writeShot(t, tt, dir, "shell-sidebar-folded")
+
+		d = newDashboard()
+		d.navOpen = false
+		d.inspector = false
+		tt = ui.NewTester(d.view, 1240, 800)
+		tt.Frame()
+		writeShot(t, tt, dir, "shell-both-folded")
+	}
+
 	// Navigation: clicking the sidebar's Data item lands on /data.
+	nd := newDashboard()
+	nav := ui.NewTester(nd.view, 1240, 800)
+	nav.Frame()
+	if err := nav.Click("Data"); err != nil {
+		t.Fatalf("click the Data item: %v", err)
+	}
+	nav.Frame()
+	if nd.router.Path() != pagePath("Data") {
+		t.Fatalf("after clicking Data the router is at %s", nd.router.Path())
+	}
+	if !nav.HasText("Orders") {
+		t.Fatal("the Data page does not show the orders table")
+	}
+}
+
+// TestFoldedPanels walks the shell's collapse states: both panels open
+// at first, ⌘B folds the sidebar to the icon rail, ⌘J folds the activity
+// panel, and the rail still navigates. Every fold slides for
+// slideDuration, so the test waits the animation out before it clicks.
+func TestFoldedPanels(t *testing.T) {
 	d := newDashboard()
 	tt := ui.NewTester(d.view, 1240, 800)
 	tt.Frame()
-	if err := tt.Click("Data"); err != nil {
-		t.Fatalf("click the Data item: %v", err)
+	if !tt.HasText("Analytics") || !tt.HasText("Recent activity") {
+		t.Fatal("at start the sidebar and the activity panel should both be open")
+	}
+
+	settle := func() {
+		tt.Frame()
+		time.Sleep(slideDuration + 60*time.Millisecond)
+		tt.Frame()
+	}
+
+	tt.Key(ui.Cmd, ui.KeyB)
+	settle()
+	if tt.HasText("Analytics") {
+		t.Fatal("⌘B did not fold the sidebar")
+	}
+	if !tt.HasText("Recent activity") {
+		t.Fatal("⌘B folded the activity panel too")
+	}
+	if err := tt.Click("Controls"); err != nil {
+		t.Fatalf("click the Controls rail icon: %v", err)
 	}
 	tt.Frame()
-	if d.router.Path() != pagePath("Data") {
-		t.Fatalf("after clicking Data the router is at %s", d.router.Path())
+	if d.router.Path() != pagePath("Controls") {
+		t.Fatalf("the rail did not navigate: %s", d.router.Path())
 	}
-	if !tt.HasText("Orders") {
-		t.Fatal("the Data page does not show the orders table")
+
+	tt.Key(ui.Cmd, ui.KeyB)
+	tt.Key(ui.Cmd, ui.KeyJ)
+	settle()
+	if tt.HasText("Recent activity") {
+		t.Fatal("⌘J did not fold the activity panel")
+	}
+	if !tt.HasText("Analytics") {
+		t.Fatal("⌘B unfolded the sidebar instead of ⌘J folding the panel")
+	}
+
+	// The Overview content survives both panels folded.
+	tt.Key(ui.Cmd, ui.Key1)
+	tt.Frame()
+	if !tt.HasText("Revenue") {
+		t.Fatal("the Overview content is missing with both panels folded")
 	}
 }
 
