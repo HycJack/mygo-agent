@@ -1,125 +1,160 @@
 # MyGo Agent
 
-一个 Codex 风格的桌面 AI 编程智能体，基于 [MyGo](https://github.com/egoist/mygo)
-构建 —— GPU 原生渲染，无 WebView、无 HTML、无 JavaScript。
+A Codex-style desktop AI coding agent built on [MyGo](https://github.com/egoist/mygo)
+— GPU-native rendering, no WebView, no HTML, no JavaScript.
 
-![截图](screenshot.png)
+![Screenshot](screenshot.png)
 
-## 特性
+English | [简体中文](README.zh-CN.md)
 
-- **项目（Projects）** —— 侧栏顶部切换工作目录；任务、文件树、git 面板、
-  终端均按项目隔离。
-- **四种 agent 后端**，左下角菜单切换：
-  - *内置 agent* —— 进程内循环（参考 pi）：流式 OpenAI 兼容调用（chat
-    completions 或 Responses API）+ 本地工具（`bash`、`read_file`、
-    `edit_file`、`list_files`、`grep`、`read_skill`），回复支持表格、
-    链接与 diff 卡片的 Markdown 渲染，长任务自动压缩上下文，ChatLog
-    随任务持久化、重启后可带完整上下文继续。
-  - *Codex CLI* —— 通过 `codex app-server`（JSON-RPC）驱动，自动续接
-    会话；Agent 模式下命令/文件变更的原生审批请求直达本应用的审批卡
-    （协议契约见 spec/cli-backends.md）。
-  - *Claude Code* —— 通过 `claude -p` 双向 stream-json 控制协议驱动，
-    自动续接会话；`can_use_tool` 审批请求直达审批卡（只读模式自动拒绝），
-    Edit/Write 调用渲染为 diff。
-  - *Demo agent* —— 无需任何账号。
-- **厂商级模型配置（ZCode 风格）** —— 每个厂商独立的 base URL、API key、
-  模型列表与 wire API（chat completions 或 codex/OpenAI 模型所用的
-  Responses API）。内置 OpenAI、DeepSeek、OpenRouter、Ollama 预设。
-- **技能（Skills）** —— 遵循 Agent Skills 规范：`.agents/skills/`
-  （项目或用户目录）下的 `SKILL.md` 目录；系统提示只放名称与描述，
-  任务匹配时模型通过 `read_skill` 按需加载。
-- **MCP 服务器** —— 设置弹窗中配置 stdio MCP 客户端，自动合并项目里的
-  `.mcp.json`（Claude Code / pi 约定）；工具以 `mcp_<server>_<tool>`
-  的名字并入 agent 工具集。
-- **界面** —— 任务侧栏（日期分组 + 搜索）、文件树 + git 变更面板、
-  文件查看器（文本 / 图片 / Markdown / diff）、消息锚点轨（悬停预览、
-  点击跳转）、消息操作（复制 / 重发 / 重新生成）、全宽输入框（审批模式
-  + 模型选择）、内嵌 Ghostty 终端。
+## Features
 
-## 安全模型
+- **Projects** — switch the working directory at the top of the sidebar;
+  threads, the file tree, the git panel and the terminal are all
+  project-scoped.
+- **Four agent backends**, switchable from the menu at the bottom left:
+  - *Built-in agent* — an in-process loop (modeled on pi): streaming
+    OpenAI-compatible calls (chat completions or the Responses API) +
+    local tools (`bash`, `read_file`, `edit_file`, `list_files`, `grep`,
+    `read_skill`); Markdown replies with tables, links and diff cards;
+    long tasks auto-compact the context; the chat log persists with the
+    thread, so a restart resumes with the full context.
+  - *Codex CLI* — driven through `codex app-server` (JSON-RPC); sessions
+    resume automatically; in Agent mode the CLI's native approval
+    requests for commands and file changes land on this app's approval
+    cards (wire contract in [spec/cli-backends.md](spec/cli-backends.md)).
+  - *Claude Code* — driven through `claude -p` with the bidirectional
+    stream-json control protocol; sessions resume automatically;
+    `can_use_tool` approval requests land on the approval cards (denied
+    automatically in Read Only mode); Edit/Write calls render as diffs.
+  - *Pi coding agent* — driven through `pi -p --mode json`; sessions
+    resume automatically; Read Only mode maps to a `--tools read`
+    allowlist, the only permission lever pi exposes.
+- **Vendor-grade model config (ZCode-style)** — per-provider base URL,
+  API key, model list and wire API (chat completions, or the Responses
+  API the codex/OpenAI models use). Ships with OpenAI, DeepSeek,
+  OpenRouter and Ollama presets.
+- **Skills** — follows the Agent Skills spec: `SKILL.md` directories
+  under `.agents/skills/` (project or user); the system prompt carries
+  only names and descriptions; the model loads a skill on demand through
+  `read_skill`.
+- **MCP servers** — configured in the settings dialog as a stdio command
+  or a streamable HTTP URL, merged automatically with the project's
+  `.mcp.json` (the Claude Code / pi convention); tools join the agent's
+  tool set as `mcp_<server>_<tool>`.
+- **UI** — thread sidebar (date groups + search), file tree + git
+  changes panel, file viewer (text / image / Markdown / diff), message
+  anchor rail (hover preview, click to jump), message actions (copy /
+  resend / regenerate), wide composer (approval mode + model picker),
+  embedded Ghostty terminal.
 
-规范先行：[spec/](spec/) 目录先写不变量再写代码 ——
-[permissions.md](spec/permissions.md)（权限门）、[sandbox.md](spec/sandbox.md)
-（执行边界）、[approvals.md](spec/approvals.md)（审批流）。
+## Security model
 
-- **三级审批模式**（输入框左下角）对每个后端都真实生效：
-  - *Read Only* —— 只读工具（`read_file` / `list_files` / `grep` /
-    `read_skill`）；shell、写文件、MCP 一律拒绝。
-  - *Agent* —— 可写文件（仅限项目目录）并可跑 shell；shell 在本地
-    沙箱中执行：全域可读（凭证目录 `~/.ssh`、`~/.aws`、`~/.gnupg`
-    等除外）、只有项目目录与临时目录可写、**网络一律拒绝**
-    （macOS 用 Seatbelt，Linux 用 bubblewrap）。
-  - *Full Access* —— 不套沙箱，完全访问。
-- **逐工具规则**（config.json `permissions.rules`）覆盖模式默认值，
-  选择器支持精确名、`前缀*` 与 `*`，值为 `allow` / `deny` / `ask`：
+Specs first: the [spec/](spec/) directory writes the invariants before
+the code — [permissions.md](spec/permissions.md) (the permission gate),
+[sandbox.md](spec/sandbox.md) (the execution boundary),
+[approvals.md](spec/approvals.md) (the approval flow).
+
+- **Three approval modes** (bottom-left of the composer), real for every
+  backend:
+  - *Read Only* — the read-only tools (`read_file` / `list_files` /
+    `grep` / `read_skill`); shell, file writes and MCP are denied.
+  - *Agent* — may write files (inside the project directory only) and
+    run shell; shell runs in a local sandbox: the whole disk is readable
+    (except the credential stores `~/.ssh`, `~/.aws`, `~/.gnupg`, …),
+    only the project directory and a scratch temp dir are writable, and
+    **network is denied always** (Seatbelt on macOS, bubblewrap on
+    Linux).
+  - *Full Access* — no sandbox, full access.
+- **Per-tool rules** (config.json `permissions.rules`) override the mode
+  defaults; selectors match exact names, `prefix*` and bare `*`, with
+  values `allow` / `deny` / `ask`:
 
   ```json
   "permissions": { "rules": { "bash": "ask", "mcp_github_*": "allow" } }
   ```
 
-- **审批卡** —— 规则为 `ask`（或 Agent 模式下的 MCP 工具）时，运行
-  挂起并在消息流中弹出审批卡：*Allow once* / *Deny*。批准只对这一次
-  调用生效（没有 "always allow"——持久授权只来自配置文件）；10 分钟
-  无响应自动拒绝；模型输出永远无法创造授权。
-- 平台没有沙箱时（如 Windows），Agent 模式会**明确报错**而不是静默
-  降级为无沙箱执行。
+- **Approval cards** — when a rule says `ask` (or an MCP tool runs in
+  Agent mode), the run suspends and a card appears in the message
+  stream: *Allow once* / *Deny*. An approval binds exactly this one call
+  (there is no "always allow" — durable authority comes only from the
+  config file); no answer within 10 minutes denies; model output can
+  never create authority.
+- Where the platform has no sandbox (Windows, say), Agent mode
+  **reports the error** instead of silently degrading to unsandboxed
+  execution.
 
-## 架构
+## Architecture
 
-规范先行:[spec/](spec/) 目录持有全部协议契约；`scripts/check-deps.sh`
-在 CI 中机器强制分层依赖。四个层次，每条边界一个接口：
+Specs first: [spec/](spec/) holds every protocol contract;
+`scripts/check-deps.sh` machine-enforces the layering in CI. Four
+layers, one interface per boundary:
 
 ```
 ┌──────────────────────────────────────────────────────────┐
-│ UI（internal/ui）   ViewModel + Actions 渲染共享视图：      │
+│ UI (internal/ui)    renders ViewModels through Actions:   │
 │                     Home · Composer · Sidebar · Workspace │
-│                     Markdown · Diff 行 · 主题/图标          │
-│   ▲ 状态快照                │ Actions 回调                 │
-│ HOST（internal/app）状态、线程、dispatch、审批、持久化：    │
-│                     threads.json（版本化+隔离）·config.json │
-│   │ harness.Turn / Event（归一化事件流）                    │
-│ HARNESS（internal/harness）一个协议，四个可替换后端：       │
-│      builtin 循环 · codex app-server · claude 控制协议 · pi json│
-│   │ Sandbox / Memory 协议                                  │
-│ PROVIDERS（internal/providers/sandbox）                     │
-│      macOS Seatbelt · Linux bubblewrap · 平台缺失时诚实报错 │
+│                     Markdown · diff rows · theme/icons    │
+│   ▲ state snapshots        │ Actions callbacks            │
+│ HOST (internal/app) state, threads, dispatch, approvals,  │
+│                     persistence: threads/ (versioned +    │
+│                     isolated) · config.json               │
+│   │ harness.Turn / Event (a normalized event stream)      │
+│ HARNESS (internal/harness) one protocol, four adapters:   │
+│      builtin loop · codex app-server · claude control ·   │
+│      pi json                                              │
+│   │ Sandbox / Memory protocols                            │
+│ PROVIDERS (internal/providers/sandbox)                    │
+│      macOS Seatbelt · Linux bubblewrap · honest errors    │
+│      when a platform has no backend                       │
 └──────────────────────────────────────────────────────────┘
 ```
 
-## 目录结构
+## Directory layout
 
 ```
-main.go               仅入口：参数、版本号、启动应用
-internal/app          应用本体：状态、四种后端、全部界面
-  model.go threads.go projects.go      状态、持久化、项目
-  view.go sidebar.go thread.go         外壳、任务列表、消息
-  composer.go viewer.go workspace.go   输入框、文件查看器、面板
-  builtin.go claude.go                 内置 agent 与 Claude Code 运行器
-  settings.go rail.go theme.go         设置、锚点轨、调色板
-internal/agent        agent 循环：流式客户端（chat + responses）、
-                      工具、技能、MCP、diff
-internal/config       持久化配置
-internal/components   可复用 UI 组件（锚点轨、格式化）
-packaging/            macOS .app 的 Info.plist
+main.go                  entry point only: flags, version, app start
+internal/app             the Host: state, four backends, persistence
+  model.go store.go      app state; config.json + thread files
+  thread.go agent.go     transcript, turns, message actions
+  backends.go builtin.go the backend switch, the built-in runner
+  projector.go itemize.go  events → blocks; folding alike cards
+  approval.go settings.go approvals bridge, provider settings
+  view.go sidebar.go composer.go viewer.go workspace.go
+internal/harness         the protocol: Harness/Turn/Event, the
+                         permission gate, the sandbox interface,
+                         approval timing, the outside-dir scan
+  builtin/               the built-in agent: llm (chat + responses),
+                         tools, skills, MCP (stdio + HTTP), compaction
+  claude/ codex/ pi/     the CLI adapters (stream-json / app-server /
+                         JSON mode)
+  cli/                   shared pieces: process reaping, redaction,
+                         output trimming
+internal/ui              shared views: ViewModels + Actions, markdown,
+                         diff rows, anchor rail, settings, header
+internal/providers/sandbox  macOS Seatbelt · Linux bubblewrap ·
+                         a missing backend is reported, never faked
+internal/config          persisted config (strict, versioned)
+packaging/               Info.plist for the macOS .app
 ```
 
-## 构建
+## Build
 
-需要 Go 1.27+（工具链会自动下载）。无 cgo、无 npm。
+Needs Go 1.27+ (the toolchain downloads itself). No cgo, no npm.
 
 ```bash
-make build     # 编译当前平台的 ./mygo-agent
-make run       # 源码运行
-make test      # 全部测试
-make release   # dist/ 下产出 darwin/linux/windows（amd64+arm64）、
-               # macOS .app 包与校验和
+make build     # compile ./mygo-agent for this platform
+make run       # run from source
+make test      # all tests
+make release   # dist/: darwin/linux/windows (amd64+arm64),
+               # the macOS .app bundle and checksums
 ```
 
-`--version` / `-v` 打印构建版本。
+`--version` / `-v` prints the build version.
 
-## 打包
+## Packaging
 
-`make release` 将所有目标交叉编译到 `dist/`：
+`make release` cross-compiles every target into `dist/`:
 
 ```
 mygo-agent-darwin-amd64         mygo-agent-windows-amd64.exe
@@ -128,10 +163,13 @@ mygo-agent-linux-amd64          mygo-agent-linux-arm64
 MyGoAgent-darwin-*.app.zip      checksums.txt
 ```
 
-macOS 包对外分发需要签名与公证（本机自用可
-`codesign --deep --force --sign -` 临时签名）。推送 `v*` 标签会触发
-release 工作流，自动把 `dist/*` 附到 GitHub Release。
+Shipping the macOS bundle needs signing and notarization (for local use,
+`codesign --deep --force --sign -` ad-hoc signs it). Pushing a `v*` tag
+triggers the release workflow, which attaches `dist/*` to the GitHub
+Release.
 
-## 文档
+## Documentation
 
-- [README.md](README.md) — English
+- [README.zh-CN.md](README.zh-CN.md) — 简体中文
+- [spec/](spec/) — the normative specs: architecture, permissions,
+  sandbox, approvals, the CLI wire protocols, persistence

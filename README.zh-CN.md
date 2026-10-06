@@ -5,30 +5,35 @@
 
 ![截图](screenshot.png)
 
+[English](README.md) | 简体中文
+
 ## 特性
 
 - **项目（Projects）** —— 侧栏顶部切换工作目录；任务、文件树、git 面板、
   终端均按项目隔离。
 - **四种 agent 后端**，左下角菜单切换：
-  - *内置 agent* —— 进程内循环（参考 pi）：流式 OpenAI 兼容调用 + 本地
-    工具（`bash`、`read_file`、`edit_file`、`list_files`、`grep`、
-    `read_skill`），回复支持表格、链接与 diff 卡片的 Markdown 渲染。
+  - *内置 agent* —— 进程内循环（参考 pi）：流式 OpenAI 兼容调用（chat
+    completions 或 Responses API）+ 本地工具（`bash`、`read_file`、
+    `edit_file`、`list_files`、`grep`、`read_skill`），回复支持表格、
+    链接与 diff 卡片的 Markdown 渲染，长任务自动压缩上下文，ChatLog
+    随任务持久化、重启后可带完整上下文继续。
   - *Codex CLI* —— 通过 `codex app-server`（JSON-RPC）驱动，自动续接
     会话；Agent 模式下命令/文件变更的原生审批请求直达本应用的审批卡
     （协议契约见 spec/cli-backends.md）。
   - *Claude Code* —— 通过 `claude -p` 双向 stream-json 控制协议驱动，
     自动续接会话；`can_use_tool` 审批请求直达审批卡（只读模式自动拒绝），
     Edit/Write 调用渲染为 diff。
-  - *Demo agent* —— 无需任何账号。
+  - *Pi coding agent* —— 通过 `pi -p --mode json` 驱动，自动续接会话；
+    只读模式映射为 `--tools read` 白名单（pi 唯一暴露的权限杠杆）。
 - **厂商级模型配置（ZCode 风格）** —— 每个厂商独立的 base URL、API key、
   模型列表与 wire API（chat completions 或 codex/OpenAI 模型所用的
   Responses API）。内置 OpenAI、DeepSeek、OpenRouter、Ollama 预设。
 - **技能（Skills）** —— 遵循 Agent Skills 规范：`.agents/skills/`
   （项目或用户目录）下的 `SKILL.md` 目录；系统提示只放名称与描述，
   任务匹配时模型通过 `read_skill` 按需加载。
-- **MCP 服务器** —— 设置弹窗中配置 stdio MCP 客户端，自动合并项目里的
-  `.mcp.json`（Claude Code / pi 约定）；工具以 `mcp_<server>_<tool>`
-  的名字并入 agent 工具集。
+- **MCP 服务器** —— 设置弹窗中配置（stdio 命令或 streamable HTTP URL），
+  自动合并项目里的 `.mcp.json`（Claude Code / pi 约定）；工具以
+  `mcp_<server>_<tool>` 的名字并入 agent 工具集。
 - **界面** —— 任务侧栏（日期分组 + 搜索）、文件树 + git 变更面板、
   文件查看器（文本 / 图片 / Markdown / diff）、消息锚点轨（悬停预览、
   点击跳转）、消息操作（复制 / 重发 / 重新生成）、全宽输入框（审批模式
@@ -74,7 +79,7 @@
 │                     Markdown · Diff 行 · 主题/图标          │
 │   ▲ 状态快照                │ Actions 回调                 │
 │ HOST（internal/app）状态、线程、dispatch、审批、持久化：    │
-│                     threads.json（版本化+隔离）·config.json │
+│                     threads/（版本化+隔离）· config.json    │
 │   │ harness.Turn / Event（归一化事件流）                    │
 │ HARNESS（internal/harness）一个协议，四个可替换后端：       │
 │      builtin 循环 · codex app-server · claude 控制协议 · pi json│
@@ -87,18 +92,27 @@
 ## 目录结构
 
 ```
-main.go               仅入口：参数、版本号、启动应用
-internal/app          应用本体：状态、四种后端、全部界面
-  model.go threads.go projects.go      状态、持久化、项目
-  view.go sidebar.go thread.go         外壳、任务列表、消息
-  composer.go viewer.go workspace.go   输入框、文件查看器、面板
-  builtin.go claude.go                 内置 agent 与 Claude Code 运行器
-  settings.go rail.go theme.go         设置、锚点轨、调色板
-internal/agent        agent 循环：流式客户端（chat + responses）、
-                      工具、技能、MCP、diff
-internal/config       持久化配置
-internal/components   可复用 UI 组件（锚点轨、格式化）
-packaging/            macOS .app 的 Info.plist
+main.go                  仅入口：参数、版本号、启动应用
+internal/app             Host：状态、四种后端、持久化
+  model.go store.go      应用状态；config.json 与线程文件读写
+  thread.go agent.go     消息流、回合分发、消息操作
+  backends.go builtin.go 后端切换与内置 agent 运行器
+  projector.go itemize.go  事件 → 消息块；同类卡片折叠
+  approval.go settings.go  审批桥、厂商/模型设置
+  view.go sidebar.go composer.go viewer.go workspace.go
+                         外壳、任务列表、输入框、查看器、面板
+internal/harness         协议层：Harness/Turn/Event、权限门、
+                         沙箱接口、审批超时、外部目录扫描
+  builtin/               内置 agent：llm（chat + responses）、工具、
+                         技能、MCP（stdio + HTTP）、上下文压缩
+  claude/ codex/ pi/     CLI 适配器（stream-json / app-server / JSON）
+  cli/                   共享件：进程收割、脱敏、输出裁剪
+internal/ui              共享视图：ViewModel + Actions、Markdown、
+                         diff 行、锚点轨、设置、标题栏
+internal/providers/sandbox  macOS Seatbelt · Linux bubblewrap ·
+                         平台缺失时诚实报错
+internal/config          持久化配置（严格解析、版本化）
+packaging/               macOS .app 的 Info.plist
 ```
 
 ## 构建
@@ -133,3 +147,4 @@ release 工作流，自动把 `dist/*` 附到 GitHub Release。
 ## 文档
 
 - [README.md](README.md) — English
+- [spec/](spec/) — 规范全集：架构分层、权限、沙箱、审批、CLI 线路协议、持久化
