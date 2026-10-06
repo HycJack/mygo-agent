@@ -109,6 +109,7 @@ func (h sidebarActions) RenameThread(id string) {
 }
 
 func (h sidebarActions) SetAgent(id string) { h.a.setActiveAgent(id) }
+func (h sidebarActions) NewGroup()          { h.a.addGroup() }
 
 func (h sidebarActions) SwitchProject(id string) { h.a.switchProject(id) }
 func (h sidebarActions) RemoveProject(id string) { h.a.removeProject(id) }

@@ -10,6 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 
 	uipkg "mygo-agent/internal/ui"
 
@@ -93,13 +94,16 @@ func TestScreenshots(t *testing.T) {
 	writeShot(t, tt, dir, "03-thread-workspace")
 	a.wsOpen = false
 
-	// 4. Settings: the provider form (as opened from the model picker).
+	// 4. Settings: the provider form, with its models fetched.
 	a.settingsOpen = true
+	a.settingsTab = "providers"
 	a.settingsSel = "p-ds"
+	a.fetchedModels["p-ds"] = []string{"deepseek-chat", "deepseek-reasoner", "deepseek-v3.2"}
 	tt.Frame()
 	writeShot(t, tt, dir, "04-settings-provider")
 
 	// 5. Settings: the agent form.
+	a.settingsTab = "agents"
 	a.settingsSel = "ag-review"
 	tt.Frame()
 	writeShot(t, tt, dir, "05-settings-agent")
@@ -112,8 +116,16 @@ func TestScreenshots(t *testing.T) {
 	writeShot(t, tt, dir, "06-agent-picker")
 	a.vm.AgentMenu = false
 
-	// 7. Viewer: the thread trace.
+	// 7. Viewer: the thread trace (synthesized — the seeded task never
+	// actually ran).
 	a.current = th.ID
+	now := time.Now()
+	a.appendTrace(th, traceEvent{At: now.Add(-90 * time.Second), Kind: "tool_start",
+		Tool: "bash", Summary: "$ go test ./internal/outbox/"})
+	a.appendTrace(th, traceEvent{At: now.Add(-88 * time.Second), Kind: "tool_end",
+		Tool: "bash", Ms: 1890, Summary: "FAIL: TestOutboxRetry", Failed: true})
+	a.appendTrace(th, traceEvent{At: now.Add(-60 * time.Second), Kind: "turn",
+		Ms: 31200, Tokens: 4120, Summary: "3 tool calls · 4120 tokens"})
 	a.openTrace(th)
 	tt.Frame()
 	writeShot(t, tt, dir, "07-trace-viewer")

@@ -66,6 +66,8 @@ type SidebarActions interface {
 	DeleteThread(id string)
 	RenameThread(id string)
 	SetAgent(id string)
+	// NewGroup creates a group profile and opens its form (spec/agents.md).
+	NewGroup()
 	SwitchProject(id string)
 	RemoveProject(id string)
 	PickProjectDir()
@@ -205,7 +207,7 @@ func Sidebar(c *ui.Context, vm *SidebarVM, acts SidebarActions, top float32) {
 				acts.OpenSettings()
 			}
 			gear.Children(func() {
-				ui.Icon(c, IconSliders).FontSize(15).TextColor(vm.Pal.TextMuted)
+				ui.Icon(c, IconGear).FontSize(15).TextColor(vm.Pal.TextMuted)
 			})
 		})
 	})
@@ -409,6 +411,18 @@ func agentPicker(c *ui.Context, vm *SidebarVM, acts SidebarActions) {
 					}
 				})
 			}
+			grp := ui.ButtonBase(c).Fill().Padding(6, 10).Radius(7).Gap(8).Cursor(ui.CursorPointer)
+			if grp.Hovered() {
+				grp.Background(vm.Pal.CardHover)
+			}
+			if grp.Clicked() {
+				closeMenu()
+				acts.NewGroup()
+			}
+			grp.Children(func() {
+				ui.Icon(c, IconBot).FontSize(13).TextColor(c.Theme().TextMuted)
+				ui.Text(c, "New group…").FontSize(12.5).Grow(1)
+			})
 			mng := ui.ButtonBase(c).Fill().Padding(6, 10).Radius(7).Gap(8).Cursor(ui.CursorPointer)
 			if mng.Hovered() {
 				mng.Background(vm.Pal.CardHover)
@@ -418,7 +432,7 @@ func agentPicker(c *ui.Context, vm *SidebarVM, acts SidebarActions) {
 				acts.OpenSettings()
 			}
 			mng.Children(func() {
-				ui.Icon(c, IconSliders).FontSize(13).TextColor(c.Theme().TextMuted)
+				ui.Icon(c, IconGear).FontSize(13).TextColor(c.Theme().TextMuted)
 				ui.Text(c, "Manage agents…").FontSize(12.5).Grow(1)
 			})
 		})

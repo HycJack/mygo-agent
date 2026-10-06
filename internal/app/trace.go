@@ -158,10 +158,12 @@ func (a *app) openTrace(th *Thread) {
 		if te.Tool != "" {
 			detail = te.Tool + " " + detail
 		}
-		if te.Tokens > 0 {
+		// The turn line's summary already names its token total; the
+		// note lines get the count appended here.
+		if te.Kind != "turn" && te.Tokens > 0 {
 			detail = fmt.Sprintf("%s · %d tokens", detail, te.Tokens)
 		}
-		if te.CostUSD > 0 {
+		if te.Kind != "turn" && te.CostUSD > 0 {
 			detail = fmt.Sprintf("%s · $%.4f", detail, te.CostUSD)
 		}
 		mark := " "

@@ -3,10 +3,16 @@ package app
 import (
 	uipkg "mygo-agent/internal/ui"
 
+	"encoding/json"
 	"fmt"
+	"io"
+	"net/http"
 	"slices"
+	"sort"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"mygo-agent/internal/harness"
 	"mygo-agent/internal/harness/builtin"
@@ -55,8 +61,12 @@ func (a *app) settingsModal(c *ui.Context) {
 func (a *app) settingsVM() *uipkg.SettingsVM {
 	vm := &uipkg.SettingsVM{
 		Open: a.settingsOpen,
+		Tab:  a.settingsTab,
 		Sel:  a.settingsSel,
 		Pal:  a.pal,
+	}
+	if vm.Tab == "" {
+		vm.Tab = uipkg.TabAgents
 	}
 	vm.MCPName, vm.MCPCommand = a.mcpDraftName, a.mcpDraftCommand
 	// The codex-runtime hint only matters when something actually runs
@@ -81,6 +91,7 @@ func (a *app) settingsVM() *uipkg.SettingsVM {
 			ID: p.ID, Name: p.Name, BaseURL: p.BaseURL, APIKey: p.APIKey,
 			Wire: p.Wire, Models: slices.Clone(p.Models),
 			Codex: p.ID == "codex", RunsAs: runsAs,
+			Available: a.fetchedModels[p.ID], FetchErr: a.fetchErrs[p.ID],
 		})
 	}
 	vm.ProviderIDs = strings.Join(ids, ", ")
@@ -128,6 +139,38 @@ func (a *app) settingsVM() *uipkg.SettingsVM {
 		vm.Agents = append(vm.Agents, ve)
 	}
 	return vm
+}
+
+// catalogVM snapshots the built-in tool registry for the tools tab and
+// the agent form's checkboxes (spec/agents.md). The registry is static,
+// so the snapshot is cached for the process.
+func (a *app) catalogVM() []uipkg.ToolInfoVM {
+	catalogOnce.Do(func() { catalogCached = builtin.ToolCatalog() })
+	out := make([]uipkg.ToolInfoVM, len(catalogCached))
+	for i, ti := range catalogCached {
+		out[i] = uipkg.ToolInfoVM{Name: ti.Name, Description: ti.Description, Actions: ti.Actions}
+	}
+	return out
+}
+
+var (
+	catalogOnce   sync.Once
+	catalogCached []builtin.ToolInfo
+)
+
+// skillsVM lists the skills discovered for the active project, with
+// where each came from. Refreshed when the dialog opens
+// (settingsModal's open edge), not per frame.
+func (a *app) skillsVM() []uipkg.SkillVM {
+	out := make([]uipkg.SkillVM, 0, len(a.dialogSkills))
+	for _, sk := range a.dialogSkills {
+		source := "user"
+		if strings.HasPrefix(sk.Dir, a.workdir) {
+			source = "project"
+		}
+		out = append(out, uipkg.SkillVM{Name: sk.Name, Description: sk.Description, Source: source})
+	}
+	return out
 }
 
 // syncSettings mirrors the form's bindings into host state and saves
@@ -246,6 +289,7 @@ func (h settingsActions) AddProvider()             { h.a.addProvider() }
 func (h settingsActions) RemoveProvider(id string) { h.a.removeProvider(id) }
 func (h settingsActions) AddMCP()                  { h.a.addMCPServer() }
 func (h settingsActions) AddAgent()                { h.a.addAgent() }
+func (h settingsActions) AddGroup()                { h.a.addGroup() }
 func (h settingsActions) RemoveAgent(id string)    { h.a.removeAgent(id) }
 
 func (h settingsActions) RemoveMCP(i int) {
@@ -313,6 +357,16 @@ func (a *app) addProvider() {
 	a.saveConfig()
 }
 
+// addGroup appends a group profile — the visible entry to the relay
+// (spec/agents.md) — and opens its form, where the panel members go.
+func (a *app) addGroup() {
+	ag := Agent{ID: "ag-" + uid(), Name: "Group"}
+	a.agents = append(a.agents, ag)
+	a.settingsSel, a.settingsTab = ag.ID, uipkg.TabAgents
+	a.settingsOpen = true
+	a.saveConfig()
+}
+
 // addAgent appends a blank profile and opens it for editing. An empty
 // profile inherits the app's selection, so it is runnable as-is.
 func (a *app) addAgent() {
@@ -376,4 +430,104 @@ func (a *app) removeProvider(id string) {
 		}
 	}
 	a.saveConfig()
+}
+
+// SelectTab switches the dialog's tab, landing on the tab's first row so
+// the form never shows a resource from another tab.
+func (h settingsActions) SelectTab(tab string) {
+	switch tab {
+	case uipkg.TabAgents, uipkg.TabProvider, uipkg.TabTools, uipkg.TabSkills, uipkg.TabMCP:
+		h.a.settingsTab = tab
+	}
+	switch tab {
+	case uipkg.TabProvider:
+		if h.a.providerByID(h.a.settingsSel) == nil && len(h.a.providers) > 0 {
+			h.a.settingsSel = h.a.providers[0].ID
+		}
+	case uipkg.TabAgents:
+		if h.a.agentByID(h.a.settingsSel) == nil {
+			h.a.settingsSel = h.a.defaultAgentID()
+		}
+	}
+}
+
+// FetchModels asks the provider itself what it serves (GET /models on
+// the OpenAI-compatible endpoint). It runs inline — the click blocks
+// the dialog for the round trip — and lands in the frame's snapshot
+// plus the app's session cache.
+func (h settingsActions) FetchModels(id string) {
+	v := h.providerVM(id)
+	if v == nil {
+		return
+	}
+	p := h.a.providerByID(id)
+	if p == nil || p.BaseURL == "" {
+		v.FetchErr = "no base URL configured"
+		return
+	}
+	models, err := fetchProviderModels(p.BaseURL, p.APIKey)
+	if err != nil {
+		v.FetchErr = err.Error()
+		return
+	}
+	v.FetchErr = ""
+	v.Available = models
+	h.a.fetchedModels[id] = models
+}
+
+// fetchProviderModels reads an OpenAI-compatible /models listing, with
+// a fallback for Ollama's own shape.
+func fetchProviderModels(baseURL, apiKey string) ([]string, error) {
+	url := strings.TrimRight(baseURL, "/") + "/models"
+	req, err := http.NewRequest(http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	if apiKey != "" {
+		req.Header.Set("Authorization", "Bearer "+apiKey)
+	}
+	client := &http.Client{Timeout: 15 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return nil, fmt.Errorf("HTTP %d from %s", resp.StatusCode, url)
+	}
+	data, err := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+	if err != nil {
+		return nil, err
+	}
+	var openai struct {
+		Data []struct {
+			ID string `json:"id"`
+		} `json:"data"`
+	}
+	if json.Unmarshal(data, &openai) == nil && len(openai.Data) > 0 {
+		out := make([]string, 0, len(openai.Data))
+		for _, m := range openai.Data {
+			if m.ID != "" {
+				out = append(out, m.ID)
+			}
+		}
+		sort.Strings(out)
+		return out, nil
+	}
+	var ollama struct {
+		Models []struct {
+			Name string `json:"name"`
+		} `json:"models"`
+	}
+	if json.Unmarshal(data, &ollama) == nil && len(ollama.Models) > 0 {
+		out := make([]string, 0, len(ollama.Models))
+		for _, m := range ollama.Models {
+			if m.Name != "" {
+				out = append(out, m.Name)
+			}
+		}
+		sort.Strings(out)
+		return out, nil
+	}
+	return nil, fmt.Errorf("unrecognized models response from %s", url)
 }

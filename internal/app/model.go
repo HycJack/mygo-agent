@@ -95,8 +95,16 @@ type app struct {
 	projectMenu  bool
 	hoverRow     string // the task row the pointer is on, for its delete button
 	pickingDir   bool   // a native directory dialog is out
-	settingsOpen bool   // the manage-providers modal is open
-	settingsSel  string // the provider being edited there
+	settingsOpen bool   // the settings modal is open
+	settingsSel  string // the provider or agent being edited there
+	settingsTab  string // the dialog's active tab (spec/agents.md)
+	// The dialog's per-open data: skills discovered for the active
+	// project when it opened, and each provider's own /models listing
+	// for this session (never persisted).
+	dialogSkills     []builtin.Skill
+	fetchedModels    map[string][]string
+	fetchErrs        map[string]string
+	settingsWereOpen bool
 
 	navOpen bool // the tasks sidebar is shown
 	// Panel widths, DIP, dragged on the dividers between the panels.
@@ -180,6 +188,8 @@ func newApp() *app {
 		lists:         map[string]*ui.ListState{},
 		approvals:     map[string]chan harness.ApprovalDecision{},
 		runs:          map[string]*runState{},
+		fetchedModels: map[string][]string{},
+		fetchErrs:     map[string]string{},
 		groupQueue:    map[string][]string{},
 		sections:      map[string]bool{},
 		dirs:          map[string]bool{},

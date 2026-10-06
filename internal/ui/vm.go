@@ -77,6 +77,9 @@ type Actions interface {
 	// SetAgent binds the agent: new tasks start with it, and on a thread
 	// the thread rebinds from the next turn (spec/agents.md).
 	SetAgent(id string)
+	// NewGroup creates a group profile and opens its form — the visible
+	// entry to the relay.
+	NewGroup()
 	// SaveConfig persists settings after an edit.
 	SaveConfig()
 }
@@ -221,6 +224,18 @@ func modelButton(c *ui.Context, vm *ViewModel, acts Actions) {
 				})
 			})
 			ui.Box(c).Height(1).Margin(4, 6).Background(vm.Pal.Border)
+			grp := ui.ButtonBase(c).Fill().Padding(7, 10).Radius(7).Gap(8).Cursor(ui.CursorPointer)
+			if grp.Hovered() {
+				grp.Background(vm.Pal.CardHover)
+			}
+			if grp.Clicked() {
+				vm.ModelMenu = false
+				acts.NewGroup()
+			}
+			grp.Children(func() {
+				ui.Icon(c, IconBot).FontSize(13).TextColor(t.TextMuted)
+				ui.Text(c, "New group…").FontSize(12).Grow(1)
+			})
 			mng := ui.ButtonBase(c).Padding(7, 10).Radius(7).Gap(8).Cursor(ui.CursorPointer)
 			if mng.Hovered() {
 				mng.Background(vm.Pal.CardHover)
@@ -230,7 +245,7 @@ func modelButton(c *ui.Context, vm *ViewModel, acts Actions) {
 				acts.OpenSettings(vm.SettingsSel)
 			}
 			mng.Children(func() {
-				ui.Icon(c, IconSliders).FontSize(13).TextColor(t.TextMuted)
+				ui.Icon(c, IconGear).FontSize(13).TextColor(t.TextMuted)
 				ui.Text(c, "Settings…").FontSize(12).Grow(1)
 			})
 			Segments(c, vm.Effort, EffortNames, acts.SetEffort, vm.Pal)
@@ -300,7 +315,7 @@ func agentButton(c *ui.Context, vm *ViewModel, acts Actions) {
 				acts.OpenSettings(vm.AgentID)
 			}
 			mng.Children(func() {
-				ui.Icon(c, IconSliders).FontSize(13).TextColor(t.TextMuted)
+				ui.Icon(c, IconGear).FontSize(13).TextColor(t.TextMuted)
 				ui.Text(c, "Manage agents…").FontSize(12).Grow(1)
 			})
 		})

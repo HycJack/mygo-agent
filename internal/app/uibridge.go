@@ -36,8 +36,6 @@ func (a *app) homeViewModel() *uipkg.ViewModel {
 	vm.FocusComposer = a.focusComposer
 	vm.Mode = a.mode
 	vm.Effort = a.effort
-	vm.Model = a.model
-	vm.ProviderID = a.providerID
 	vm.SettingsSel = a.settingsSel
 	vm.SettingsOpen = a.settingsOpen
 	vm.ModelMenu = a.modelMenu
@@ -58,6 +56,17 @@ func (a *app) homeViewModel() *uipkg.ViewModel {
 	vm.AgentName = agID
 	if ag := a.agentByID(agID); ag != nil {
 		vm.AgentName = strings.TrimSpace(ag.Emoji + " " + ag.Name)
+	}
+	// The model line names what the next turn will actually run: the
+	// bound agent's override when it has one (spec/agents.md).
+	vm.Model, vm.ProviderID = a.model, a.providerID
+	if ag := a.agentByID(agID); ag != nil {
+		if ag.Model != "" {
+			vm.Model = ag.Model
+		}
+		if ag.Provider != "" {
+			vm.ProviderID = ag.Provider
+		}
 	}
 	vm.Agents = vm.Agents[:0]
 	for i := range a.agents {
@@ -136,6 +145,10 @@ func (h homeActions) PickModel(pid, m string) {
 // default approval mode seeds the mode the way starting a task with it
 // would (spec/agents.md).
 func (h homeActions) SetAgent(id string) { h.a.setActiveAgent(id) }
+
+// NewGroup creates a group profile and opens its form — the visible
+// entry to the relay (spec/agents.md).
+func (h homeActions) NewGroup() { h.a.addGroup() }
 
 // setActiveAgent is the host half of the picker and the home launcher.
 func (a *app) setActiveAgent(id string) {

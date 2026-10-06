@@ -94,7 +94,7 @@ func TestE2EJourney(t *testing.T) {
 		t.Fatalf("select the team agent: %v", err)
 	}
 	tt.Frame()
-	if !tt.HasText("Panel members (group relay)") {
+	if !tt.HasText("GROUP RELAY") || !tt.HasText("Panel members") {
 		t.Fatal("the agent form's panel editor is missing")
 	}
 

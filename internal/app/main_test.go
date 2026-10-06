@@ -61,13 +61,14 @@ func TestSettingsModalCloses(t *testing.T) {
 	a.settingsSel = "codex"
 	tt := ui.NewTester(a.view, 1240, 800)
 
+	a.settingsTab = "providers"
 	a.settingsOpen = true
 	tt.Frame()
 	if !tt.HasText("PROVIDERS") {
 		t.Fatal("the settings dialog is not on screen")
 	}
 
-	// The dim backdrop: a click far outside the 780×480 panel.
+	// The dim backdrop: a click far outside the panel.
 	tt.ClickAt(30, 100)
 	tt.Frame()
 	tt.Frame()

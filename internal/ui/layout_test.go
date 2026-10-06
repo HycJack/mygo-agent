@@ -26,6 +26,7 @@ func (*stubAppActs) SetMode(int)              {}
 func (*stubAppActs) SetEffort(int)            {}
 func (*stubAppActs) PickModel(string, string) {}
 func (*stubAppActs) SetAgent(string)          {}
+func (*stubAppActs) NewGroup()                {}
 func (*stubAppActs) OpenSettings(string)      {}
 func (*stubAppActs) SaveConfig()              {}
 
