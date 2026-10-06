@@ -7,6 +7,7 @@ package main
 // own surfaces.
 
 import (
+	"encoding/base64"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -138,6 +139,7 @@ func TestRender(t *testing.T) {
 	dir := os.Getenv("MYGO_UI_SHOTS")
 	for _, page := range pages {
 		d := newDashboard()
+		d.loggedIn = true
 		d.router.Push(pagePath(page))
 		tt := ui.NewTester(d.view, 1240, 800)
 		tt.Frame()
@@ -147,21 +149,26 @@ func TestRender(t *testing.T) {
 		}
 	}
 
-	// The shell's own states, for the visual audit: the default, the
-	// sidebar folded to its rail, and both panels folded.
+	// The shell's own states, for the visual audit: the login screen,
+	// the default, the sidebar folded to its rail, and both folded.
 	if dir != "" {
+		writeShot(t, ui.NewTester(newDashboard().view, 1240, 800), dir, "login")
+
 		d := newDashboard()
+		d.loggedIn = true
 		tt := ui.NewTester(d.view, 1240, 800)
 		tt.Frame()
 		writeShot(t, tt, dir, "shell-default")
 
 		d = newDashboard()
+		d.loggedIn = true
 		d.navOpen = false
 		tt = ui.NewTester(d.view, 1240, 800)
 		tt.Frame()
 		writeShot(t, tt, dir, "shell-sidebar-folded")
 
 		d = newDashboard()
+		d.loggedIn = true
 		d.navOpen = false
 		d.inspector = false
 		tt = ui.NewTester(d.view, 1240, 800)
@@ -171,6 +178,7 @@ func TestRender(t *testing.T) {
 
 	// Navigation: clicking the sidebar's Data item lands on /data.
 	nd := newDashboard()
+	nd.loggedIn = true
 	nav := ui.NewTester(nd.view, 1240, 800)
 	nav.Frame()
 	if err := nav.Click("Data"); err != nil {
@@ -191,6 +199,7 @@ func TestRender(t *testing.T) {
 // slideDuration, so the test waits the animation out before it clicks.
 func TestFoldedPanels(t *testing.T) {
 	d := newDashboard()
+	d.loggedIn = true
 	tt := ui.NewTester(d.view, 1240, 800)
 	tt.Frame()
 	if !tt.HasText("Analytics") || !tt.HasText("Recent activity") {
@@ -270,4 +279,122 @@ func writeShot(t *testing.T, tt *ui.Tester, dir, name string) {
 
 func containsLower(s, sub string) bool {
 	return len(s) >= len(sub) && strings.Contains(strings.ToLower(s), strings.ToLower(sub))
+}
+
+// TestFakeJWT checks the demo token's shape: three dot-separated
+// segments, the first two base64url JSON.
+func TestFakeJWT(t *testing.T) {
+	token := fakeJWT("ada@acme.dev")
+	parts := strings.Split(token, ".")
+	if len(parts) != 3 {
+		t.Fatalf("fakeJWT: %d segments, want 3: %q", len(parts), token)
+	}
+	dec := func(s string) string {
+		b, err := base64.RawURLEncoding.DecodeString(s)
+		if err != nil {
+			t.Fatalf("fakeJWT segment %q does not decode: %v", s, err)
+		}
+		return string(b)
+	}
+	if h := dec(parts[0]); !strings.Contains(h, `"alg":"HS256"`) {
+		t.Errorf("header: %s", h)
+	}
+	if p := dec(parts[1]); !strings.Contains(p, `"sub":"ada@acme.dev"`) {
+		t.Errorf("payload: %s", p)
+	}
+	if parts[2] == "" {
+		t.Error("signature is empty")
+	}
+}
+
+// TestLoginFlow walks the two ways in: the password form (with its
+// validation), an OAuth button, and sign-out back to the card.
+func TestLoginFlow(t *testing.T) {
+	// The app opens on the login screen; the shell stays hidden.
+	d := newDashboard()
+	tt := ui.NewTester(d.view, 1240, 800)
+	tt.Frame()
+	if !tt.HasText("Welcome back") || !tt.HasText("Continue with GitHub") {
+		t.Fatal("the app does not open on the login screen")
+	}
+	if tt.HasText("Revenue") {
+		t.Fatal("the shell is visible before signing in")
+	}
+
+	// Bad credentials report inline and keep the card up. The tester
+	// reaches an input by the geometry beside its field label, the way
+	// MyGo's own form tests do.
+	focusField := func(label string) {
+		r, ok := tt.Find(label)
+		if !ok {
+			t.Fatalf("no %s field on the card", label)
+		}
+		tt.ClickAt(r.X+r.W+30, r.Y+r.H/2)
+	}
+	focusField("Email")
+	tt.Type("ada@acme.dev")
+	focusField("Password")
+	tt.Type("abc")
+	tt.Click("Sign in")
+	tt.Frame()
+	if !tt.HasText("at least 6 characters") {
+		t.Fatal("a short password did not report inline")
+	}
+	if d.loggedIn {
+		t.Fatal("a short password signed in")
+	}
+
+	// Good credentials land in the shell, token issued.
+	focusField("Password")
+	tt.Type("hunter02")
+	tt.Click("Sign in")
+	tt.Frame()
+	if !d.loggedIn || d.user != "ada@acme.dev" {
+		t.Fatal("the password form did not sign in")
+	}
+	if d.jwt == "" || len(strings.Split(d.jwt, ".")) != 3 {
+		t.Fatalf("no JWT issued: %q", d.jwt)
+	}
+	if !tt.HasText("Good morning") {
+		t.Fatal("the shell did not appear after signing in")
+	}
+
+	// An OAuth button signs in with its provider at once (headless: the
+	// mock handshake lands synchronously).
+	od := newDashboard()
+	ot := ui.NewTester(od.view, 1240, 800)
+	ot.Frame()
+	if err := ot.Click("Continue with WeChat"); err != nil {
+		t.Fatalf("click the WeChat button: %v", err)
+	}
+	ot.Frame()
+	if !od.loggedIn || od.user != "ada@acme.dev" {
+		t.Fatal("the OAuth button did not sign in")
+	}
+	if !ot.HasText("Good morning") {
+		t.Fatal("the shell did not appear after the OAuth sign-in")
+	}
+
+	// Sign out returns to the card, password cleared, email kept.
+	nd := newDashboard()
+	nd.loggedIn = true
+	nd.loginEmail = "kept@acme.dev"
+	nd.loginPassword = "hunter02"
+	nt := ui.NewTester(nd.view, 1240, 800)
+	nt.Frame()
+	// The footer menu is a context menu: right-click the account row.
+	if err := nt.RightClick("Ada Lovelace"); err != nil {
+		t.Fatalf("open the account menu: %v", err)
+	}
+	nt.ChooseMenuItem("Sign out")
+	nt.Frame()
+	if nd.loggedIn {
+		t.Fatal("sign out kept the session")
+	}
+	if !nt.HasText("Welcome back") {
+		t.Fatal("sign out did not return to the login card")
+	}
+	if nd.loginPassword != "" {
+		t.Fatal("sign out kept the password")
+	}
 }

@@ -13,12 +13,25 @@ import "github.com/egoist/mygo/ui"
 //     paste straight into this same wrapper).
 //  3. lobehub.com/icons — brand and LLM vendor logos (OpenAI, Claude,
 //     Gemini…) for model pickers; filled multi-color logos, so they
-//     would take their own MustParseSVG rather than currentColor.
+//     take their own MustParseSVG rather than currentColor. The login
+//     screen's WeChat, Google and GitHub marks below are exactly that.
 //
 // Anything still missing gets a pass in Sketch and lands here as paths.
 func Icon(shapes string) *ui.SVG {
 	return ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">` + shapes + `</svg>`))
 }
+
+// The brand logos of the login screen, drawn in their own colors —
+// filled marks, not stroked currentColor. Sources: simple-icons (via
+// iconify) for GitHub and WeChat, Google's sign-in branding asset for
+// the G; all three also ship on lobehub.com/icons.
+var (
+	IconGitHub = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="currentColor" d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>`))
+
+	IconGoogle = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#4285F4" d="M23.49 12.27c0-.79-.07-1.54-.19-2.27H12v4.51h6.47c-.29 1.48-1.14 2.73-2.4 3.58v3h3.86c2.26-2.09 3.56-5.17 3.56-8.82z"/><path fill="#34A853" d="M12 24c3.24 0 5.95-1.08 7.93-2.91l-3.86-3c-1.08.72-2.45 1.16-4.07 1.16-3.13 0-5.78-2.11-6.73-4.96H1.29v3.09C3.26 21.3 7.31 24 12 24z"/><path fill="#FBBC05" d="M5.27 14.29c-.25-.72-.38-1.49-.38-2.29s.14-1.57.38-2.29V6.62H1.29C.47 8.24 0 10.06 0 12s.47 3.76 1.29 5.38l3.98-3.09z"/><path fill="#EA4335" d="M12 4.75c1.77 0 3.35.61 4.6 1.8l3.42-3.42C17.95 1.19 15.24 0 12 0 7.31 0 3.26 2.7 1.29 6.62l3.98 3.09C6.22 6.86 8.87 4.75 12 4.75z"/></svg>`))
+
+	IconWeChat = ui.MustParseSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24"><path fill="#07C160" fill-rule="evenodd" d="M8.691 2.188C3.941 2.188 0 5.472 0 9.53c0 2.212 1.17 4.203 3.002 5.55a.59.59 0 0 1 .213.565l-.394 1.798c-.052.24.176.43.401.286l2.223-1.38a.748.748 0 0 1 .558-.09c1.018.242 2.1.343 3.19.27.242-.016.463.15.506.39.29 1.573 1.701 2.767 3.417 2.767.485 0 .972-.04 1.39-.16a.61.61 0 0 1 .446.066l1.692.926c.214.117.442-.06.398-.271l-.336-1.534a.56.56 0 0 1 .2-.53c1.29-1.058 2.088-2.492 2.088-4.077 0-2.778-2.498-5.05-5.595-5.05-.31 0-.615.025-.917.071-1.16-2.617-4.003-4.47-7.346-4.47zM6.111 7.34a1.101 1.101 0 1 1 0 2.202 1.101 1.101 0 0 1 0-2.202zm5.418 0a1.101 1.101 0 1 1 0 2.202 1.101 1.101 0 0 1 0-2.202zm3.082 2.166c2.596 0 4.698 1.908 4.698 4.262 0 .789-.248 1.525-.667 2.163a.44.44 0 0 0-.087.398l.2.828c.043.18-.139.332-.312.268l-1.14-.535a.48.48 0 0 0-.35-.018 5.184 5.184 0 0 1-1.51.227c-2.2 0-3.983-1.528-3.983-3.413 0-1.885 1.784-3.413 3.983-3.413z"/></svg>`))
+)
 
 // The icon set the dashboard uses.
 var (

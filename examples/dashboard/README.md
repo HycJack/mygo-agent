@@ -14,6 +14,7 @@ go run ./examples/dashboard
 
 | Page | Widgets |
 | --- | --- |
+| **Login** | the app opens here: a gradient brand panel and a sign-in card with the two ways in — a password form (masked input, inline validation, Enter submits) that issues the session's **JWT**, and **WeChat / Google / GitHub OAuth** buttons with their brand marks. Both flows are mocked in-process (a beat of handshake, a demo identity); the footer menu copies the token or signs out |
 | **Shell** | a collapsible sidebar on **both sides**: the left navigation folds to a 58 px icon rail (tooltips and dot badges, ⌘B), the right **Activity panel** — live requests, the recent-activity feed, team online — slides away entirely (⌘J); both widths animate through `ElementTransition{Size}`; ⌘1–5 switch pages |
 | **Overview** | KPI cards with sparklines and delta pills, a Painter-drawn area chart with a gradient fill, a donut of stroked arcs, a bar chart, `Meter` rows and a file drop zone |
 | **Data** | a sortable, multi-select `Table` with `EditableText` and keyboard support, a virtualized `List` of 10,000 searchable rows, a `Tree`, a drag-to-reorder `GridView` and an `OutlineTable` |
@@ -44,6 +45,11 @@ logos and would carry their own `MustParseSVG` rather than
 - **Charts are custom painting.** `components.go` draws them with
   `Element.Draw` and the `Painter`: gridlines, smooth `QuadTo` curves,
   gradient fills and stroked arcs.
+- **The auth is a prop, not a service.** `pages_login.go` mints a real
+  three-segment JWT (base64url header.payload, dummy signature) with
+  `fakeJWT`, and the OAuth handshakes are a goroutine's beat of latency
+  through `Window.Update` — swap them for a real auth server and the
+  rest of the example does not care.
 - **The data is mock and deterministic** (`data.go`), seeded so every
   launch looks the same; the pure helpers (filtering, sorting,
   formatting) unit-test without a window.

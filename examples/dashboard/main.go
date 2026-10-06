@@ -71,6 +71,17 @@ type dashboard struct {
 	crumb     int
 	csvFiles  []string
 
+	// Session
+	loggedIn bool
+	user     string // the signed-in identity's email
+	jwt      string // the token the (mock) auth server issued
+	welcome  string // the toast the shell shows on its first frame
+
+	// Login form
+	loginEmail, loginPassword string
+	authBusy                  string // which flow is connecting, if any
+	authError                 string
+
 	// Overview
 	theRange int // 24h / 7d / 30d, an index into rangeNames
 	health   [3]float64
@@ -188,11 +199,21 @@ func newDashboard() *dashboard {
 	return d
 }
 
-// view is the whole UI: the shell — a collapsible sidebar on each side
-// of the routed pages — with the palette applied through the theme.
+// view is the whole UI: the login screen until a session lands, then
+// the shell — a collapsible sidebar on each side of the routed pages —
+// with the palette applied through the theme.
 func (d *dashboard) view(c *ui.Context) {
 	pal := d.palette()
 	c.SetTheme(pal.Theme())
+	if !d.loggedIn {
+		d.loginView(c, pal)
+		return
+	}
+	if d.welcome != "" {
+		msg := d.welcome
+		d.welcome = ""
+		c.Toast(msg)
+	}
 	ui.Row(c).Fill().AlignItems(ui.Stretch).Children(func() {
 		d.sidebar(c, pal)
 		ui.Column(c).Grow(1).MinWidth(0).Children(func() {
@@ -356,25 +377,37 @@ func (d *dashboard) sidebarRail(c *ui.Context, pal Palette) {
 }
 
 // userFooter is the sidebar's account row: avatar, name, and a context
-// menu of account actions.
+// menu with the session's actions — copy the JWT, the profile, sign
+// out (back to the login screen).
 func (d *dashboard) userFooter(c *ui.Context, pal Palette) {
+	email := d.user
+	if email == "" {
+		email = "ada@acme.dev"
+	}
 	foot := ui.Row(c).Gap(8).AlignItems(ui.Center).Padding(6, 8).Radius(8).Cursor(ui.CursorPointer)
 	if foot.Hovered() {
 		foot.Background(pal.Hover)
 	}
 	foot.ContextMenu(func(m *ui.Menu) {
+		if m.Item("Copy JWT").Chosen() {
+			mygoClipboard(d.jwt)
+			c.Toast("JWT copied to the clipboard")
+		}
 		if m.Item("Profile").Chosen() {
 			d.router.Push(pagePath("Settings"))
 		}
 		if m.Item("Sign out").Chosen() {
-			c.Toast("Signed out (not really)")
+			d.loggedIn = false
+			d.user, d.jwt = "", ""
+			d.loginPassword = ""
+			c.Toast("Signed out")
 		}
 	})
 	foot.Children(func() {
 		ui.Avatar(c, "Ada Lovelace", nil)
 		ui.Column(c).Gap(0).Grow(1).MinWidth(0).Children(func() {
 			ui.Text(c, "Ada Lovelace").FontSize(12).FontWeight(600).SingleLine()
-			ui.Text(c, "ada@acme.dev").FontSize(10.5).TextColor(pal.TextMuted).SingleLine()
+			ui.Text(c, email).FontSize(10.5).TextColor(pal.TextMuted).SingleLine()
 		})
 		ui.Icon(c, IconMore).FontSize(14).TextColor(pal.TextMuted)
 	})
