@@ -484,7 +484,7 @@ func block(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, m *MessageVM
 	case "approval":
 		blockApproval(c, vm, acts, &b)
 	case "reasoning":
-		blockReasoning(c, &b, vm.Pal)
+		blockReasoning(c, vm, acts, m, b, bi)
 	case "note":
 		blockNote(c, &b, vm.Pal)
 	}
@@ -578,13 +578,35 @@ func blockError(c *ui.Context, b *BlockVM, pal Palette) {
 	})
 }
 
-// blockReasoning is a quiet note about how the agent thought.
-func blockReasoning(c *ui.Context, b *BlockVM, pal Palette) {
+// blockReasoning is the agent's thinking: a one-line preview with the
+// thought folded away until clicked, default closed like a command's
+// output. Thinking is context for the reply, not the reply — a long task
+// can produce pages of it, and nobody scrolls back for it
+// (spec/architecture.md), so it earns no screen until asked for.
+func blockReasoning(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, m *MessageVM, b BlockVM, bi int) {
 	t := c.Theme()
-	ui.Row(c).Padding(2, 0).Gap(8).Children(func() {
-		ui.Box(c).Width(2).MinHeight(16).Radius(1).Background(pal.Border)
-		ui.Text(c, b.Text).Italic().FontSize(12).TextColor(t.TextMuted).Grow(1).MinWidth(0)
+	head := ui.Row(c).MinHeight(22).Padding(0, 8).Gap(8).AlignItems(ui.Center).Radius(6).Cursor(ui.CursorPointer)
+	if head.Hovered() || b.Open {
+		head.Background(vm.Pal.Hover)
+	}
+	if head.Clicked() {
+		acts.ToggleBlock(m.ID, bi)
+	}
+	head.Children(func() {
+		ui.Icon(c, IconSparkles).FontSize(12).TextColor(vm.Pal.TextMuted)
+		ui.Text(c, firstLine(b.Text)).Italic().FontSize(12).TextColor(t.TextMuted).Grow(1).MinWidth(0).SingleLine()
+		chev := ui.Icon(c, IconChevDown).FontSize(12).TextColor(vm.Pal.TextMuted)
+		if b.Open {
+			chev.Rotate(180)
+		}
 	})
+	if b.Open {
+		// The thought itself, indented under its preview the way an
+		// expanded command's output is.
+		ui.Column(c).Padding(2, 8, 4, 28).Children(func() {
+			ui.Text(c, b.Text).Italic().FontSize(12).TextColor(t.TextMuted).Grow(1).MinWidth(0)
+		})
+	}
 }
 
 // blockNote is what the harness said about the turn itself: a turn-limit

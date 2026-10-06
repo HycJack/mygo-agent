@@ -290,3 +290,60 @@ func TestPluralCountsAboveOne(t *testing.T) {
 		t.Fatalf("plural(3) = %q", plural(3, "note", "notes"))
 	}
 }
+
+// TestReasoningCardIsCollapsedUntilClicked pins the thinking card's
+// contract: the thought is context for the reply, not the reply, so a
+// card arrives folded — the first line on screen, the body not — and the
+// click asks the host to toggle that block's position, the way a
+// command's output does.
+func TestReasoningCardIsCollapsedUntilClicked(t *testing.T) {
+	item := ItemVM{Kind: ItemBlock, Type: "reasoning", At: 7,
+		Blocks: []BlockVM{{Type: "reasoning", Text: "checking the parser tests first\nthen the fixtures"}}}
+	acts := &stubActs{}
+	tt := renderItems(t, acts, []ItemVM{item}, false)
+
+	if tt.HasText("then the fixtures") {
+		t.Fatalf("the thought's body is on screen while folded: %v", tt.Texts())
+	}
+	if !tt.HasText("checking the parser tests first") {
+		t.Fatalf("the folded card lost its preview line: %v", tt.Texts())
+	}
+	if err := tt.Click("checking the parser tests first"); err != nil {
+		t.Fatal(err)
+	}
+	if len(acts.toggled) != 1 || acts.toggled[0] != 7 {
+		t.Fatalf("the click toggled %v, want the block's own position [7]", acts.toggled)
+	}
+
+	// Expanded, the body is the point: the full text is on screen.
+	item.Blocks[0].Open = true
+	tt = renderItems(t, acts, []ItemVM{item}, false)
+	if !tt.HasText("then the fixtures") {
+		t.Fatalf("an expanded thinking card lost its body: %v", tt.Texts())
+	}
+}
+
+// TestReasoningRunExpandsIntoFoldedMembers pins the two-layer fold: a
+// reasoning run's header opens the run, and the members it reveals are
+// themselves folded previews — the run's open state is the members', not
+// a license for pages of thought to pour onto the screen.
+func TestReasoningRunExpandsIntoFoldedMembers(t *testing.T) {
+	items := []ItemVM{{
+		Kind: ItemGroup, Type: "reasoning",
+		Blocks: []BlockVM{
+			{Type: "reasoning", Text: "first thought\nwith detail"},
+			{Type: "reasoning", Text: "second thought\nwith detail"},
+		},
+	}}
+	acts := &stubActs{}
+	tt := renderItems(t, acts, items, true)
+
+	if tt.HasText("with detail") {
+		t.Fatalf("an expanded run poured its members' bodies out: %v", tt.Texts())
+	}
+	for _, want := range []string{"first thought", "second thought"} {
+		if !tt.HasText(want) {
+			t.Fatalf("an expanded run lost a member preview %q: %v", want, tt.Texts())
+		}
+	}
+}
