@@ -41,12 +41,14 @@ type Provider struct {
 }
 
 // MCPServer is one Model Context Protocol server: a command the app
-// spawns and speaks JSON-RPC to over stdio.
+// spawns and speaks JSON-RPC to over stdio, or a streamable HTTP
+// endpoint (URL set, no command).
 type MCPServer struct {
 	Name    string   `json:"name"`
-	Command string   `json:"command"`
+	Command string   `json:"command,omitempty"`
 	Args    []string `json:"args,omitempty"`
 	Env     []string `json:"env,omitempty"`
+	URL     string   `json:"url,omitempty"`
 }
 
 // Version is the config.json schema version this binary writes

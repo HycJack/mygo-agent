@@ -111,6 +111,9 @@ func (h builtinHarness) runBuiltin(ctx context.Context, emit func(harness.Event)
 	case 2:
 		effort = "high"
 	}
+	// The system prompt is not carried on LoopConfig: the loop takes its
+	// head of transcript as it finds it, and the host seeds it
+	// (seedChatLog below) — one writer, not two.
 	cfg := builtin.LoopConfig{
 		BaseURL:         p.BaseURL,
 		APIKey:          p.APIKey,
@@ -118,7 +121,6 @@ func (h builtinHarness) runBuiltin(ctx context.Context, emit func(harness.Event)
 		Wire:            wire,
 		ContextWindow:   p.ContextWindow,
 		ReasoningEffort: effort,
-		SystemPrompt:    builtinSystemPrompt(turn.Workdir, skills),
 		Tools:           tools,
 		Policy:          harness.Policy{Mode: turn.Mode, Rules: turn.Rules},
 		// Approvals surface as cards on the reply; the loop's timeout

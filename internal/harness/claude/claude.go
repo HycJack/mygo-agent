@@ -56,10 +56,12 @@ func (h *Harness) Run(ctx context.Context, turn harness.Turn, emit func(harness.
 	// A prompt that names a path outside the workspace asks for it here,
 	// once, and the answer goes on the command line as --add-dir. It has
 	// to be asked before the spawn: the grant is the CLI's allow list,
-	// not a decision it can be told about midway. Read-only mode is left
-	// alone — with nothing to write, a run that cannot reach the file
-	// cannot damage anything, and the card would be one more thing to
-	// answer for no change in the outcome.
+	// not a decision it can be told about midway. Read-only and agent
+	// both run in default permission mode, and the CLI's directory
+	// boundary blocks reads as much as writes — without the grant even a
+	// read-only run fails silently, which is the failure this card
+	// exists to prevent. Full access (bypassPermissions) has no boundary
+	// to raise and is never asked.
 	if perm == "default" {
 		args = append(args, outsideDirArgs(ctx, turn)...)
 	}
@@ -301,6 +303,12 @@ func (r *run) handle(line string) {
 		IsError    bool    `json:"is_error"`
 		Duration   float64 `json:"duration_ms"`
 		Cost       float64 `json:"total_cost_usd"`
+		// The turn's token totals, when the CLI reports them; the note
+		// carries their sum the way pi's note carries totalTokens.
+		Usage *struct {
+			InputTokens  int `json:"input_tokens"`
+			OutputTokens int `json:"output_tokens"`
+		} `json:"usage"`
 	}
 	if json.Unmarshal([]byte(line), &ev) != nil {
 		return
@@ -367,8 +375,14 @@ func (r *run) handle(line string) {
 		if ev.IsError || ev.Subtype != "success" {
 			verb = "Stopped"
 		}
-		r.send(harness.Event{Kind: harness.EventNote, Text: fmt.Sprintf(
-			"%s in %.1fs · $%.4f · session %s", verb, ev.Duration/1000, ev.Cost, cli.ShortSession(r.turn.SessionID))})
+		text := fmt.Sprintf("%s in %.1fs · $%.4f", verb, ev.Duration/1000, ev.Cost)
+		if ev.Usage != nil {
+			if tokens := ev.Usage.InputTokens + ev.Usage.OutputTokens; tokens > 0 {
+				text += fmt.Sprintf(" · %d tokens", tokens)
+			}
+		}
+		r.send(harness.Event{Kind: harness.EventNote,
+			Text: text + " · session " + cli.ShortSession(r.turn.SessionID)})
 	}
 }
 

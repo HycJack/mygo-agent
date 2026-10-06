@@ -20,7 +20,8 @@ this app's snapshot model.
   "version": 1,
   "meta": {
     "id": "…", "project_id": "…", "title": "…",
-    "created": …, "updated": …, "codex_id": "…", "claude_id": "…"
+    "created": …, "updated": …, "codex_id": "…", "claude_id": "…",
+    "pi_id": "…"
   },
   "messages": [ … ],
   "chat_log": [ … ]
@@ -52,7 +53,7 @@ this app's snapshot model.
 | Failure | Behavior |
 | --- | --- |
 | `version` greater than the binary knows | The file is **renamed** with an `.unsupported` suffix and skipped; the bytes are preserved. Never silently misparse a newer schema. |
-| Strict decode error (typo, corruption) | Renamed with an `.invalid` suffix, skipped; the reason surfaces in the settings dialog. Per-thread files fail alone: the rest of the tree still loads. |
+| Strict decode error (typo, corruption) | Renamed with an `.invalid` suffix, skipped; the reason is recorded on the host for the session. Per-thread files fail alone: the rest of the tree still loads. |
 | File missing | Defaults; no rename, no notice. |
 
 ## Legacy migration
@@ -70,9 +71,12 @@ deleted by the app.
    files, a bad byte cannot even touch the other tasks.
 2. A quarantine rename happens at most once per file per launch; if the
    target name exists, a counter suffix is added.
-3. Load-failure reasons stay visible (settings dialog) until the next
-   successful save clears them.
+3. Load-failure reasons are recorded for the session and cleared at the
+   next successful save.
 4. Writes are atomic (temp file + rename) per file; config.json keeps
    mode 0600, thread files 0600.
-5. Deleting a thread removes exactly its file; the undo toast restores
-   the file from the in-memory bytes the deletion held.
+5. Deleting a thread removes exactly its file; a running thread is
+   stopped first, and the deletion marks the thread *dropped* so a late
+   event from the dying run can never re-save it. The undo toast
+   restores the file from the in-memory bytes the deletion held; only
+   undo clears the dropped flag.

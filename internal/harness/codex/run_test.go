@@ -148,6 +148,41 @@ func TestTurnFailedShapes(t *testing.T) {
 	}
 }
 
+// TestTokenUsageNote pins the closing note: the turn ends by saying what
+// it cost in tokens — its own usage frame when it carries one, else the
+// running thread/tokenUsage/updated total. A server that never reports
+// usage stays silent, as before the note existed.
+func TestTokenUsageNote(t *testing.T) {
+	// The turn's own usage frame is enough.
+	var evs []harness.Event
+	r := newRun(harness.Turn{}, func(ev harness.Event) { evs = append(evs, ev) })
+	r.notify("turn/completed", []byte(`{"usage":{"inputTokens":110,"outputTokens":17}}`))
+	if notes := find(evs, harness.EventNote); len(notes) != 1 || notes[0].Text != "Done · 127 tokens" {
+		t.Fatalf("usage on turn/completed: %+v", notes)
+	}
+
+	// The running total is the fallback, and the updates emit nothing
+	// on their own.
+	evs = nil
+	r = newRun(harness.Turn{}, func(ev harness.Event) { evs = append(evs, ev) })
+	r.notify("thread/tokenUsage/updated", []byte(`{"threadId":"t0","tokenUsage":{"input_tokens":90,"output_tokens":10}}`))
+	if len(evs) != 0 {
+		t.Fatalf("usage updates emit nothing: %+v", evs)
+	}
+	r.notify("turn/completed", []byte(`{}`))
+	if notes := find(evs, harness.EventNote); len(notes) != 1 || notes[0].Text != "Done · 100 tokens" {
+		t.Fatalf("running total fallback: %+v", notes)
+	}
+
+	// No usage anywhere, no note.
+	evs = nil
+	r = newRun(harness.Turn{}, func(ev harness.Event) { evs = append(evs, ev) })
+	r.notify("turn/completed", []byte(`{}`))
+	if notes := find(evs, harness.EventNote); len(notes) != 0 {
+		t.Fatalf("a silent server grew a note: %+v", notes)
+	}
+}
+
 // TestSawEventNeedsOutput pins that an unreadable stream is not a clean
 // turn: sawEvent only becomes true once something was actually emitted,
 // and dropped frames are counted so the transport can fail the turn.

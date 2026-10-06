@@ -25,7 +25,6 @@ type LoopConfig struct {
 	Model            string
 	Wire             string // WireChat (default) or WireResponses
 	ReasoningEffort  string // responses API only
-	SystemPrompt     string
 	Tools            []Tool
 	MaxTurns         int
 	MaxMessages      int // compact the transcript past this many messages

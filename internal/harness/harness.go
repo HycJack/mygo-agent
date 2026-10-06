@@ -70,7 +70,7 @@ type Endpoint struct {
 	Name    string
 	BaseURL string
 	APIKey  string
-	Wire    string // "chat" or "responses"; empty means responses
+	Wire    string // "chat" or "responses"; empty means the adapter's default (codex: responses, builtin: chat)
 }
 
 // EventKinds are the values of Event.Kind.

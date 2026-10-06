@@ -18,21 +18,6 @@ func New() harness.Sandbox { return sandbox{} }
 
 type sandbox struct{}
 
-// sensitivePaths are the credential stores a sandboxed command must not
-// read even though reads elsewhere are broad (the codex workspace-write
-// contract: read the disk, write the workspace, no network).
-var sensitivePaths = func() []string {
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return nil
-	}
-	var out []string
-	for _, sub := range []string{".ssh", ".aws", ".gnupg", ".kube", ".docker"} {
-		out = append(out, filepath.Join(home, sub))
-	}
-	return out
-}()
-
 // Command wraps argv in a Seatbelt profile launched with
 // /usr/bin/sandbox-exec (the harness.Sandbox protocol). The profile shape follows the codex workspace-
 // write contract and agent-foundation's envd worker confinement
@@ -84,7 +69,7 @@ func seatbeltProfile(b harness.Boundary) string {
 	// Reads are broad so toolchains work from wherever they are
 	// installed; the credentials denylist is more specific and wins.
 	sb.WriteString("(allow file-read*)\n")
-	for _, p := range sensitivePaths {
+	for _, p := range credentialStores() {
 		fmt.Fprintf(&sb, "(deny file-read* (subpath %q))\n", p)
 		fmt.Fprintf(&sb, "(deny file-read-metadata (subpath %q))\n", p)
 	}

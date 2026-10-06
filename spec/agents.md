@@ -13,13 +13,13 @@
 
 ## 2. 现状盘点（与本方案相关的代码事实）
 
-- **配置** `internal/config`：v1，`providers`（OpenAI 兼容端点 + codex/claude 内置）、`mcp_servers`（全局）、`permissions.rules`、`backend/model/effort/max_turns`（**全局单选**）。严格解析（未知字段报错），版本化，拒绝更新版本的文件。
-- **Harness 协议** `internal/harness`：`Harness/Turn/Event` 单回合协议 + 四个适配器（builtin / codex app-server / claude stream-json / pi json）。`Turn` 携带 prompt/workdir/mode/rules/model/effort/sessionID/sandbox/memory。
+- **配置** `internal/config`：v1，`providers`（OpenAI 兼容端点，含 wire API 与 `context_window`，+ codex/claude 内置）、`mcp_servers`（全局）、`permissions.rules`、`backend/model/effort/max_turns`（**全局单选**）。严格解析（未知字段报错），版本化，拒绝更新版本的文件。
+- **Harness 协议** `internal/harness`：`Harness/Turn/Event` 单回合协议 + 四个适配器（builtin / codex app-server / claude stream-json / pi json）。`Turn` 携带 prompt/workdir/mode/rules/model/effort/max_turns/sessionID/endpoint/sandbox/memory（MemoryKey + 初始 transcript）/onApproval/onOutsideDir。
 - **工具**：`harness.Tools(workdir, skills, ToolOptions)` 构建内置 6 件（bash / read_file / edit_file / list_files / grep / read_skill），每个 `Tool{Name, Description, Actions, Parameters, Execute}` —— 天然的注册表素材。
 - **Skills**：`DiscoverSkills(projectDir)` 从项目目录发现，经 `read_skill` 工具暴露。
-- **MCP**：运行时 `a.effectiveMCPServers()`（全局配置 + 项目 `.mcp.json`）spawn 后把工具并入工具集（仅 builtin）。
+- **MCP**：运行时 `a.effectiveMCPServers()`（全局配置 + 项目 `.mcp.json`；stdio 命令或 streamable HTTP `url` 均可）spawn 后把工具并入工具集（仅 builtin）。
 - **运行态**：`a.running`/`a.cancel` **全局单飞** —— 同一时刻只能有一个回合。这是多 Agent 的第一个硬阻塞点。
-- **会话存储**：`threads/<projectID>/<threadID>.json`（meta + messages + chat_log），原子写，版本化（spec/data.md）。无线程 ↔ Agent 绑定，无事件级 trace，无用量统计（builtin loop 目前**不采集** usage；codex 有 `thread/tokenUsage/updated` 通知；claude 的 result 行带 `duration_ms/total_cost_usd/usage`）。
+- **会话存储**：`threads/<projectID>/<threadID>.json`（meta + messages + chat_log），原子写，版本化（spec/data.md）。无线程 ↔ Agent 绑定，无事件级 trace；用量采集部分就位：builtin 已采集 prompt/completion tokens（驱动水位压缩；chat wire 需声明 `context_window` 才会请求 usage），cost 未采集；claude 的 result 行带 `duration_ms/total_cost_usd/usage`（时长/费用/tokens 均已进完成卡片）；codex 已读 `turn/completed` 的 usage 与 `thread/tokenUsage/updated`（完成卡片显示 tokens），cost 无来源。
 - **UI**：`internal/ui` 已全部 ViewModel+Actions 化（Transcript/Viewer/Settings/Header/Sidebar/Home/Composer）；`internal/app` 只剩状态、分发、持久化与桥接。这个形状就是为"第二个 UI 表面"准备的。
 - **UI 框架**：mygo 支持**两种**窗口：native（当前，GPU 直绘）与 **web page**（系统 webview + 由 Go 服务定义生成的 TS client，typed IPC：bind 服务 / channel 流 / 类型化事件）。二者可混用 —— Web 端有现成路径，不必自起前端脚手架之外的东西。
 
@@ -90,7 +90,7 @@
 | MCP 挂载 | 完整（进程内） | `--mcp-config` | 配置覆盖，按名单映射 |
 | Skills | read_skill + 过滤 | CLI 自读项目 skills | 同左 |
 | 系统提示词 | LoopConfig 追加 | `--append-system-prompt` | 不可注入（写明限制） |
-| 用量统计 | 需新增采集（loop/llm 解析 usage） | result 行已带（已解析一半） | `tokenUsage/updated` 通知（已观测到） |
+| 用量统计 | tokens 已采集（水位压缩用），cost 未采集 | result 行已带（时长/费用/tokens 已展示） | usage 已读（完成卡片显示 tokens），cost 无来源 |
 
 原则：配置统一声明，各适配器**尽力映射**，做不到的在 UI 上标注"该后端不支持"，不静默忽略。
 
@@ -137,7 +137,7 @@
 ## 7. 聊天记录追踪
 
 - **事件 trace**：每线程新增 `events.jsonl`（append-only，一行一事件：`ts, kind, tool, ms, tokens, summary`），projector（`applyEvent`）是唯一写入点，四个后端天然统一。`finish` 时写一行 turn 汇总。
-- **用量采集**：builtin 在 `llm.go` 响应解析处采集 usage（当前缺失，需补）；claude 取 result 行的 `duration_ms/cost/usage`；codex 订阅 `tokenUsage/updated`。按 线程/Agent/模型 聚合，UI 加用量面板。
+- **用量采集**：builtin 已在 llm/responses 解析处采集 tokens（chat wire 需声明 `context_window` 才发送 `stream_options.include_usage`；cost 待补）；claude 取 result 行的 `duration_ms/cost/usage`（已进完成卡片）；codex 读 `turn/completed` 的 usage 与 `thread/tokenUsage/updated`（完成卡片显示 tokens）。按 线程/Agent/模型 聚合，UI 加用量面板。
 - **搜索**：先做文件扫描的简单检索（标题 + 消息全文，够用且零依赖）；数据量大后迁移 sqlite（单文件、只读副本模式，不引入服务）。索引存 `<configDir>/search.db`。
 - **回放**：Transcript 已按消息/卡片渲染；trace 视图按 turn 分组显示事件流水（工具、耗时、token），从线程详情进入。
 

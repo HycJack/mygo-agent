@@ -472,9 +472,10 @@ func safeJoin(root, path string) string {
 	return filepath.Join(root, filepath.Clean("/"+path))
 }
 
-// sensitivePaths are the credential stores the file tools refuse, the
+// sensitivePaths are the credential stores the file tools refuse — the
 // same list the sandbox masks for a shell command
-// (internal/providers/sandbox). Without it here the shell boundary was
+// (internal/providers/sandbox/credentials.go). Without it here the
+// shell boundary was
 // the only thing standing between the model and `~/.aws/credentials`:
 // `file.read` is allow in every mode, an absolute path passes straight
 // through safeJoin, and the content leaves the machine in the next

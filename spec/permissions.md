@@ -36,8 +36,7 @@ Rules:
 `file.read` and `skill.read` are allow in all three modes, and an absolute
 path passes straight through the path join, so the gate alone would let the
 model read `~/.aws/credentials` in read-only mode and carry it out in the next
-request. The file tools therefore refuse a fixed set of credential stores —
-the same list the sandbox masks for a shell command (sandbox.md):
+request. The file tools therefore refuse a fixed set of credential stores:
 
 ```
 ~/.ssh   ~/.aws   ~/.gnupg   ~/.kube   ~/.docker   ~/.config/gh   ~/.netrc
@@ -46,6 +45,12 @@ the same list the sandbox masks for a shell command (sandbox.md):
 - It is a **deny list on the tool**, not a mode: it applies in every mode,
   including full access. A sandbox boundary is a convenience; a credential
   store is a secret.
+- The sandbox masks the same list for shell commands (sandbox.md): what
+  is a secret to the model as a file is a secret through a shell too.
+  The price is honest and known — a credential CLI that authenticates
+  from its own store (`gh`, say) will not authenticate inside `agent`
+  mode; that is the boundary working, and Full Access is the way around
+  it.
 - Both the literal and the symlink-resolved form of each store are compared,
   so a symlink or a `..` segment is not a way around it. Resolution is
   best-effort — a path that does not exist cannot be resolved — which is why

@@ -12,21 +12,6 @@ import (
 	"mygo-agent/internal/harness"
 )
 
-// sensitivePaths are the credential stores a sandboxed command must not
-// read even though reads elsewhere are broad (the codex workspace-write
-// contract: read the disk, write the workspace, no network).
-func sensitivePaths() []string { //nolint:unused on other platforms
-	home, err := os.UserHomeDir()
-	if err != nil || home == "" {
-		return nil
-	}
-	var out []string
-	for _, sub := range []string{".ssh", ".aws", ".gnupg", ".kube", ".docker"} {
-		out = append(out, filepath.Join(home, sub))
-	}
-	return out
-}
-
 // sandboxedCommand wraps argv in bubblewrap mount namespaces, following
 // agent-foundation's envd recipe (spec/sandbox.md): unshared pid/ipc/uts,
 // a new session that dies with the parent, all capabilities dropped, the
@@ -69,9 +54,21 @@ func (sandbox) Command(ctx context.Context, b harness.Boundary, name string, arg
 		"--proc", "/proc",
 		"--dev", "/dev",
 	}
-	// Mask the credential stores: an empty tmpfs over each one.
-	for _, p := range sensitivePaths() {
-		argv = append(argv, "--tmpfs", p)
+	// Mask the credential stores: an empty tmpfs over each directory, a
+	// /dev/null bind over each bare file (.netrc) — a tmpfs needs a
+	// directory to mount on, and a bind mount of the null device reads
+	// as empty. A store that does not exist needs no mask, and bwrap
+	// fails on a mount point that is not there.
+	for _, p := range credentialStores() {
+		st, err := os.Stat(p)
+		if err != nil {
+			continue
+		}
+		if st.IsDir() {
+			argv = append(argv, "--tmpfs", p)
+		} else {
+			argv = append(argv, "--ro-bind", "/dev/null", p)
+		}
 	}
 	for _, grant := range []string{b.Workdir, b.Scratch} {
 		if grant == "" {

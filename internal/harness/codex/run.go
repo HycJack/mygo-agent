@@ -2,6 +2,7 @@ package codex
 
 import (
 	"encoding/json"
+	"fmt"
 	"strings"
 	"sync"
 	"time"
@@ -22,12 +23,13 @@ type run struct {
 	sawEvent  bool                        // something usable was emitted
 	garbage   int                         // frames dropped because their params did not parse
 	fail      string                      // reason from turn/failed, if the turn failed
+	tokens    int                         // latest token total the server reported
 
 	// approvalTimeout bounds one approval wait; zero uses the shared
 	// harness.DefaultApprovalTimeout.
 	approvalTimeout time.Duration
 
-	mu   sync.Mutex // guards done and the emit call itself
+	mu   sync.Mutex // guards done, tokens and the emit call itself
 	done bool       // the run settled; later events are dropped
 }
 
@@ -371,6 +373,31 @@ func (r *run) notify(method string, params json.RawMessage) {
 		// The turn settled as a failure: say so on the stream and keep
 		// the text for Run to return as the turn's error.
 		r.failTurn(turnFailure(params))
+	case method == "thread/tokenUsage/updated":
+		// The running token total. It emits nothing on its own — the
+		// note belongs to the completed turn.
+		if t := usageTotal(params); t > 0 {
+			r.mu.Lock()
+			r.tokens = t
+			r.mu.Unlock()
+		}
+	case method == "turn/completed":
+		// The turn's own usage frame wins (it is per-turn); the running
+		// total is the fallback. The closing note follows the claude and
+		// pi precedent: the turn ends by saying what it cost in tokens.
+		// A server that never reports usage stays silent, as before.
+		if t := usageTotal(params); t > 0 {
+			r.mu.Lock()
+			r.tokens = t
+			r.mu.Unlock()
+		}
+		r.mu.Lock()
+		tokens := r.tokens
+		r.mu.Unlock()
+		if tokens > 0 {
+			r.send(harness.Event{Kind: harness.EventNote,
+				Text: fmt.Sprintf("Done · %d tokens", tokens)})
+		}
 	case method == "error":
 		var p struct {
 			Message string `json:"message"`
@@ -411,4 +438,43 @@ func turnFailure(params json.RawMessage) string {
 		return p.Message
 	}
 	return p.Reason
+}
+
+// usageTotal reads the token total out of a usage frame, under either
+// name the wire has used for it (`tokenUsage` on thread/tokenUsage/updated,
+// `usage` on turn/completed) and either spelling inside — camelCase on
+// the app-server, snake_case on exec --json, the same lesson the item
+// types taught. Zero means the frame carried no usable totals.
+func usageTotal(params json.RawMessage) int {
+	var p struct {
+		TokenUsage json.RawMessage `json:"tokenUsage"`
+		Usage      json.RawMessage `json:"usage"`
+	}
+	if json.Unmarshal(params, &p) != nil {
+		return 0
+	}
+	for _, raw := range []json.RawMessage{p.TokenUsage, p.Usage} {
+		if len(raw) == 0 {
+			continue
+		}
+		var u struct {
+			Total       int `json:"totalTokens"`
+			TotalSnake  int `json:"total_tokens"`
+			Input       int `json:"inputTokens"`
+			InputSnake  int `json:"input_tokens"`
+			Output      int `json:"outputTokens"`
+			OutputSnake int `json:"output_tokens"`
+		}
+		if json.Unmarshal(raw, &u) != nil {
+			continue
+		}
+		total := u.Total + u.TotalSnake
+		if total == 0 {
+			total = u.Input + u.InputSnake + u.Output + u.OutputSnake
+		}
+		if total > 0 {
+			return total
+		}
+	}
+	return 0
 }

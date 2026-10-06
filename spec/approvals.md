@@ -60,16 +60,21 @@ type OnOutsideDir func(ctx context.Context, req OutsideDirRequest) bool
   path would be five clicks that teach the user to stop reading them.
 - The directories come from the prompt text, narrowed to the shallowest
   root that still covers what was named — `~/src/project/main.go` asks
-  for `~/src/project`, not `~/src` and certainly not `$HOME`. `--add-dir`
-  takes directories only, so a file reference is granted as its
-  directory.
+  for `~/src/project`, not `~/src` and certainly not `$HOME` — and
+  narrowed to what the disk confirms: a named path that does not exist
+  as a directory grants its parent directory instead, so a grant never
+  names a directory that is not there. `--add-dir` takes directories
+  only, so a file reference is granted as its directory.
 - It is asked **before the spawn**, because granting means putting the
   directories on the command line. A refusal is final and total: the run
   stays exactly as confined as it was. It is never a partial grant, since
   the grant cannot be revised once the process is running.
-- Read-only mode is not asked. With nothing to write, a run that cannot
-  reach the file cannot damage anything, and the card would be one more
-  thing to answer for no change in the outcome.
+- It is asked whenever the CLI runs in its default permission mode —
+  read-only and agent both; only full access (no boundary to raise) is
+  never asked. Read-only *is* asked, deliberately: the CLI's directory
+  boundary blocks reads as much as writes, so without the grant even a
+  read-only run fails silently — the exact failure this card exists to
+  prevent.
 - A run with no `OnOutsideDir` is confined. That is the safe reading of a
   boundary it has no way to raise.
 - The grant opens **reads only**. Claude Code still asks — through

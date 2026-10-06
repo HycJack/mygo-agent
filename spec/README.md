@@ -13,6 +13,12 @@ state invariants; code and tests follow them.
 | [architecture.md](architecture.md) | The layer map: harness / providers / host / UI and their import rules |
 | [data.md](data.md) | The persistence formats: versioning, strict decode, load-failure handling |
 
+Proposals are not contracts: [agents.md](agents.md) is a staged plan
+(agents as configured entities, a web governance plane, tracing) whose
+"current state" section tracks the code as it stands. It becomes
+normative per stage, as each stage lands and its spec rows move into the
+table above.
+
 ## Rules for every spec
 
 - One fact, one place: a rule lives in exactly one spec; other documents link

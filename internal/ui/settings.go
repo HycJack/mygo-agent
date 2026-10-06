@@ -256,7 +256,7 @@ func mcpSection(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 	ui.Column(c).Gap(8).Children(func() {
 		ui.Text(c, "MCP SERVERS").FontSize(10.5).FontWeight(600).TextColor(t.TextMuted).LetterSpacing(0.6)
 		if len(vm.MCPServer) == 0 {
-			ui.Text(c, "None configured. A server is a command speaking MCP over stdio; its tools join the agent's set.").FontSize(11.5).TextColor(t.TextMuted)
+			ui.Text(c, "None configured. A server is a command speaking MCP over stdio, or an https:// URL for streamable HTTP; its tools join the agent's set.").FontSize(11.5).TextColor(t.TextMuted)
 		}
 		for i := range vm.MCPServer {
 			srv := &vm.MCPServer[i]
@@ -282,7 +282,7 @@ func mcpSection(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 				ui.TextInput(c, &vm.MCPName).Placeholder("filesystem").FontSize(12)
 			})
 			ui.Column(c).Gap(3).Grow(3).Children(func() {
-				ui.Text(c, "Command and arguments").FontSize(10.5).TextColor(t.TextMuted)
+				ui.Text(c, "Command, or https:// URL").FontSize(10.5).TextColor(t.TextMuted)
 				ui.TextInput(c, &vm.MCPCommand).Placeholder(`npx -y @modelcontextprotocol/server-filesystem /tmp`).FontSize(12)
 			})
 			if ui.Button(c, "Add").Clicked() {

@@ -75,6 +75,25 @@ func TestResultNote(t *testing.T) {
 		!strings.Contains(notes[0].Text, "sess-abc") {
 		t.Fatalf("result notes: %+v", notes)
 	}
+	if strings.Contains(notes[0].Text, "tokens") {
+		t.Fatalf("a result line without usage grew a token count: %q", notes[0].Text)
+	}
+	if !r.sawResult {
+		t.Fatal("the result line did not set sawResult — the run would never settle")
+	}
+}
+
+// TestResultNoteTokens pins the usage member of the result line: when
+// the CLI reports token totals, the note carries their sum.
+func TestResultNoteTokens(t *testing.T) {
+	r, evs := collect(harness.Turn{SessionID: "sess-abc123"})
+	r.handle(`{"type":"result","subtype":"success","is_error":false,"duration_ms":2345,` +
+		`"total_cost_usd":0.0042,"usage":{"input_tokens":110,"output_tokens":17}}`)
+
+	notes := kind(evs, harness.EventNote)
+	if len(notes) != 1 || !strings.Contains(notes[0].Text, "127 tokens") {
+		t.Fatalf("result notes: %+v", notes)
+	}
 	if !r.sawResult {
 		t.Fatal("the result line did not set sawResult — the run would never settle")
 	}

@@ -35,7 +35,11 @@ func TestSeatbeltProfileShape(t *testing.T) {
 		"(allow process-exec process-fork)",
 		`(allow file-read-data (literal "/"))`,
 		"(allow file-read*)",
+		// The full credential list, pinned: the sandbox masks the same
+		// stores the file tools refuse (spec/permissions.md).
 		`(deny file-read* (subpath ` + homeSub(t, ".ssh") + `))`,
+		`(deny file-read* (subpath ` + homeSub(t, ".config/gh") + `))`,
+		`(deny file-read* (subpath ` + homeSub(t, ".netrc") + `))`,
 		`(allow file-read* file-write* (subpath "/tmp/w"))`,
 		`(allow file-read* file-write* (subpath "/tmp/s"))`,
 	} {

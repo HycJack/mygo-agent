@@ -309,6 +309,7 @@ func (a *app) effectiveMCPServers() []builtin.MCPServer {
 			Command string   `json:"command"`
 			Args    []string `json:"args"`
 			Env     []string `json:"env"`
+			URL     string   `json:"url"`
 		} `json:"mcpServers"`
 	}
 	if json.Unmarshal(data, &f) != nil {
@@ -324,10 +325,10 @@ func (a *app) effectiveMCPServers() []builtin.MCPServer {
 				break
 			}
 		}
-		if dup || srv.Command == "" {
+		if dup || srv.Command == "" && srv.URL == "" {
 			continue
 		}
-		out = append(out, builtin.MCPServer{Name: name, Command: srv.Command, Args: srv.Args, Env: srv.Env})
+		out = append(out, builtin.MCPServer{Name: name, Command: srv.Command, Args: srv.Args, Env: srv.Env, URL: srv.URL})
 	}
 	return out
 }
@@ -338,7 +339,7 @@ func toAgentServers(in []config.MCPServer) []builtin.MCPServer {
 	}
 	out := make([]builtin.MCPServer, len(in))
 	for i, s := range in {
-		out[i] = builtin.MCPServer{Name: s.Name, Command: s.Command, Args: s.Args, Env: s.Env}
+		out[i] = builtin.MCPServer{Name: s.Name, Command: s.Command, Args: s.Args, Env: s.Env, URL: s.URL}
 	}
 	return out
 }
@@ -362,7 +363,7 @@ func fromAgentServers(in []builtin.MCPServer) []config.MCPServer {
 	}
 	out := make([]config.MCPServer, len(in))
 	for i, s := range in {
-		out[i] = config.MCPServer{Name: s.Name, Command: s.Command, Args: s.Args, Env: s.Env}
+		out[i] = config.MCPServer{Name: s.Name, Command: s.Command, Args: s.Args, Env: s.Env, URL: s.URL}
 	}
 	return out
 }

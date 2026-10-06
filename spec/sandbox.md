@@ -15,7 +15,8 @@ primitive. It is deliberately small: one function that wraps one command.
 ```go
 type Boundary struct {
     Workdir string   // the project directory: read-write
-    Scratch string   // a fresh per-run temp dir: read-write, HOME and TMPDIR
+    Scratch string   // a fresh temp dir per shell call: read-write;
+                     // the child's HOME (its TMPDIR is a tmp/ subdir)
     Network string   // "deny" (agent mode) or "inherit" (not used yet)
 }
 ```
@@ -25,9 +26,11 @@ type Boundary struct {
   installed — **except a fixed credentials denylist** (`~/.ssh`,
   `~/.aws`, `~/.gnupg`, `~/.kube`, `~/.docker`), which stays unread.
   This is the codex *workspace-write* contract: read the disk, write the
-  workspace, no network. `Scratch` is read-write and becomes `HOME` and
-  `TMPDIR` of the child so caches and temp files land inside the
-  boundary.
+  workspace, no network. `Scratch` is read-write, becomes the child's
+  `HOME`, and holds its `TMPDIR` (a `tmp/` subdirectory), so caches and
+  temp files land inside the boundary; it is fresh for every shell
+  invocation and removed when the command ends. The file tools refuse
+  the same credential list (permissions.md).
 - **The working directory is a default, not a boundary.** Containment comes
   from the grants, not from `cmd.Dir`.
 - **No per-command weakening.** The boundary is fixed for the mode; there is
@@ -41,7 +44,7 @@ type Boundary struct {
 | Platform | Primitive | Network | Status |
 | --- | --- | --- | --- |
 | macOS | Seatbelt (`/usr/bin/sandbox-exec`) with a generated `(deny default)` profile | `(deny network*)` by default | supported |
-| Linux | bubblewrap (`bwrap`) when on PATH: mount namespaces, `--ro-bind / /`, credential dirs masked by tmpfs, `--cap-drop ALL`, `--die-with-parent` | `--unshare-net` | supported when `bwrap` exists |
+| Linux | bubblewrap (`bwrap`) when on PATH: PID/IPC/UTS/network namespaces, `--new-session`, `--ro-bind / /`, `--proc /proc`, `--dev /dev`, credential dirs masked by tmpfs, `--cap-drop ALL`, `--die-with-parent` | `--unshare-net` | supported when `bwrap` exists |
 | Windows | — | — | unsupported, reported |
 
 Rules:
@@ -63,8 +66,9 @@ Generated SBPL, launched as `sandbox-exec -p <profile> -- <argv>`:
 - `(version 1)` header, `(deny default)` base.
 - Allowed unconditionally: `process-exec`, `process-fork`, `signal` to
   same-sandbox processes, `process-info*` (same-sandbox), `sysctl-read`,
-  `file-read-metadata`, `file-read*`/`file-write*` on `/dev/null`,
-  `/dev/zero`, `/dev/random`, `/dev/urandom`.
+  `file-read-metadata`, the root directory handle (`file-read-data` on
+  `/`, so path lookups resolve), and `file-read*`/`file-write*` on
+  `/dev/null`, `/dev/zero`, `/dev/random`, `/dev/urandom`.
 - Broad `file-read*` so toolchains run from anywhere, with the fixed
   credentials denylist denied over it (more specific filters win).
 - Per grant: `file-read*` + `file-write*` on the canonicalized subpath.
@@ -85,17 +89,22 @@ Generated SBPL, launched as `sandbox-exec -p <profile> -- <argv>`:
   that pipe; both halves of the guard belong together.
 - A sandboxed command that was killed or timed out has an **unknown
   outcome**: its result says so instead of reporting a clean failure.
-- `Scratch` directories are removed when the run finishes.
+- The `Scratch` directory is removed when the command ends — a fresh one
+  is made for every shell call, not one per run.
 
-The credential denylist here masks the stores for a *shell* command. The
-file tools apply the same list themselves (permissions.md), because a mode
-that denies `shell.exec` still allows `file.read`.
+The credential denylist here masks the same stores for a *shell* command
+that the file tools refuse (permissions.md) — one list, two enforcement
+points, because a mode that denies `shell.exec` still allows `file.read`.
+On Linux a bare file (`~/.netrc`) is masked by binding `/dev/null` over
+it; a tmpfs needs a directory to mount on, and a store that does not
+exist needs no mask at all.
 
 ## Invariants
 
 1. In `agent` mode a shell command that writes outside `Workdir`/`Scratch`
-   fails, on every supported platform, with the OS's denial — this is the
-   property the sandbox tests assert.
+   fails, on every supported platform, with the OS's denial — asserted
+   live on macOS; on Linux the same grants are enforced by construction
+   (read-only root bind, per-grant binds, tmpfs masks, `--unshare-net`).
 2. Egress is denied in `agent` mode; a command that opens a network
    connection fails the same way.
 3. The sandbox never grants more than `full` mode and never less than

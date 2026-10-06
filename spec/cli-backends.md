@@ -10,7 +10,7 @@ reference implementations are OpenAgentCore's codex adapter
 
 | Mode | codex (app-server) | claude CLI | pi CLI |
 | --- | --- | --- | --- |
-| read-only | `sandbox: "read-only"`, `approvalPolicy: "never"` | `--permission-mode default`; the app **denies every** `can_use_tool` | `--tools read` (allowlist keeps the read tool only) |
+| read-only | `sandbox: "read-only"`, `approvalPolicy: "never"` | `--permission-mode default`; the app **denies every** `can_use_tool`; directories the prompt names outside the workspace are still asked about once and passed as `--add-dir` (approvals.md) | `--tools read` (allowlist keeps the read tool only) |
 | agent | `sandbox: "workspace-write"`, `approvalPolicy: "on-request"` | `--permission-mode default`; every `can_use_tool` forwards to an approval card, and directories the prompt names outside the workspace are asked about once and passed as `--add-dir` (approvals.md) | pi defaults |
 | full | `sandbox: "danger-full-access"`, `approvalPolicy: "never"` | `--permission-mode bypassPermissions` | pi defaults |
 
@@ -39,15 +39,25 @@ over NDJSON. Sequence: `initialize` (clientInfo, `capabilities.experimentalApi=t
   the legacy `sandboxPolicy` object makes codex **silently fall back to
   read-only**; keep the kebab string.
 - `thread/resume` params: `threadId`, `cwd`, `approvalPolicy`, `sandbox`.
+- `-c model_reasoning_effort=<low|medium|high>` follows `Turn.Effort`
+  (default `medium`) and is always passed.
 - The thread id arrives in the `thread/start` result (`thread.id`) and again
   in the `thread/started` notification; it is persisted as the thread's
   `CodexID` for resume.
-- Subscribed notifications: `thread/started`, `turn/started`,
-  `turn/completed`, `turn/failed`, `item/started`, `item/completed`,
-  `item/agentMessage/delta`, `item/reasoning/textDelta`,
-  `item/reasoning/summaryTextDelta`, `item/commandExecution/outputDelta`,
-  `thread/tokenUsage/updated`, `error`. Item shapes match the exec `--json`
-  item model and map to the same cards.
+- Handled notifications: `turn/completed` and `turn/failed` settle the
+  turn; `item/started` and `item/completed` carry the item model;
+  `item/agentMessage/delta`, `item/reasoning/textDelta` and
+  `item/reasoning/summaryTextDelta` stream prose and reasoning; `error`
+  fails the turn; `thread/tokenUsage/updated` feeds the closing note.
+  Item shapes match the exec `--json` item model and map to the same
+  cards. Every other frame is ignored today — including `thread/started`
+  (the id is read from the `thread/start` result), `turn/started` and
+  `item/commandExecution/outputDelta`.
+- The turn closes with a note ("Done · N tokens") from its own usage
+  frame when `turn/completed` carries one, else from the running
+  `thread/tokenUsage/updated` total; a server that reports no usage
+  stays silent. Usage frames are read under either spelling — camelCase
+  on the app-server, snake_case on exec `--json`.
 - A context compaction arrives as an **item** of type `contextCompaction`,
   announced twice (`item/started`, `item/completed`), and is reported as a
   note on the completed frame only. The codex binary also contains a
@@ -96,10 +106,15 @@ stdin stays open until the `result` event (or an error) arrives, then closes.
     — `updatedInput` echoes the received input object.
   - deny: `…{"behavior":"deny","message":<reason>}`.
 - Any other server-initiated control subtype is answered with
-  `{"subtype":"error","request_id":…,"error":"unsupported"}` — never left
-  hanging: an unanswered control request stalls the CLI turn forever.
+  `{"subtype":"error","request_id":…,"error":"unsupported by mygo"}` —
+  never left hanging: an unanswered control request stalls the CLI turn
+  forever.
 - In read-only mode every `can_use_tool` is denied with a fixed message
   naming the mode (the model reads it as the tool result).
+- The `result` event closes the turn; its `duration_ms`,
+  `total_cost_usd` and `usage` become the closing note ("Done in 12.3s ·
+  $0.0042 · 127 tokens · session …" — the token count only when the CLI
+  reported usage).
 
 ## pi JSON mode protocol
 
@@ -108,9 +123,12 @@ one fresh process per turn; JSONL events on stdout.
 
 - `-ne` skips extension discovery: a broken local extension must not block
   the app's runs. `-ne` also means pi extensions are out of scope here.
-- **Session**: the stream's `{"type":"session","id"}` is stored as
-  `threadMeta.pi_id`; the next turn passes it back via `--session-id`
-  (pi creates it if missing), so a task resumes pi's own session file.
+- **Session**: the app generates a UUID for a new thread and always
+  passes `--session-id`; the stream's `{"type":"session","id"}` is
+  stored as `threadMeta.pi_id`, so later turns resume pi's own session
+  file.
+- **Thinking**: `--thinking` maps `Turn.Effort` 0/1/2 to
+  `off`/`minimal`/`medium`/`high` (out of range falls back to `medium`).
 - **Model/provider**: pi resolves models from its own configuration
   (`~/.pi/agent/settings.json`, models.json, auth.json). The app passes
   no `--model` today — pi's default applies; a per-agent model mapping
@@ -123,7 +141,9 @@ one fresh process per turn; JSONL events on stdout.
   `{id,name,arguments}`, `usage.totalTokens`, `usage.cost.total`,
   `errorMessage`; `turn_end` with `toolResults` — messages with
   `role:"toolResult"`, `toolCallId`, `toolName`, `content`, `isError`;
-  `auto_retry_start`; `agent_settled` — the turn is over.
+  `auto_retry_start`; `agent_settled` — the turn is over. The turn
+  closes with a note ("Done · N tokens · $… · session …") when the
+  stream reported usage.
 - **Settle**: break the read loop on `agent_settled` and reap the
   process; the CLI may keep its streams open (the claude lesson). codex
   app-server is a resident server: close stdin when the turn settles or

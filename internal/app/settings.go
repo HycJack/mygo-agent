@@ -72,8 +72,12 @@ func (a *app) settingsVM() *uipkg.SettingsVM {
 		vm.Presets = append(vm.Presets, uipkg.PresetVM{Name: ps.name})
 	}
 	for _, s := range a.mcpServers {
+		line := s.URL
+		if line == "" {
+			line = s.Command + " " + strings.Join(s.Args, " ")
+		}
 		vm.MCPServer = append(vm.MCPServer, uipkg.MCPVM{
-			Name: s.Name, Command: s.Command + " " + strings.Join(s.Args, " "),
+			Name: s.Name, Command: line,
 		})
 	}
 	return vm
@@ -150,20 +154,23 @@ func (h settingsActions) AddModel(id string) {
 	h.a.saveConfig()
 }
 
-// addMCPServer parses the draft "command args…" line into a server and
-// saves it.
+// addMCPServer parses the draft line into a server and saves it. The
+// line is either a "command args…" stdio server or an http(s) URL for a
+// streamable HTTP one — the transport picks by URL at spawn time.
 func (a *app) addMCPServer() {
 	name := strings.TrimSpace(a.mcpDraftName)
 	line := strings.TrimSpace(a.mcpDraftCommand)
 	if name == "" || line == "" {
 		return
 	}
-	fields := strings.Fields(line)
-	a.mcpServers = append(a.mcpServers, builtin.MCPServer{
-		Name:    name,
-		Command: fields[0],
-		Args:    fields[1:],
-	})
+	srv := builtin.MCPServer{Name: name}
+	if strings.HasPrefix(line, "http://") || strings.HasPrefix(line, "https://") {
+		srv.URL = line
+	} else {
+		fields := strings.Fields(line)
+		srv.Command, srv.Args = fields[0], fields[1:]
+	}
+	a.mcpServers = append(a.mcpServers, srv)
 	a.mcpDraftName, a.mcpDraftCommand = "", ""
 	a.saveConfig()
 }

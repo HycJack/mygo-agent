@@ -44,12 +44,15 @@ because a transcript is thread state and already has one home.
   permission gate, the approval wait and the stream wire clients; it knows
   nothing about threads, windows or files-on-disk beyond its workdir.
   The root package is the protocol and the shared value types only; the
-  built-in agent (loop, tools, skills, MCP) lives in
+  built-in agent (loop, tools, skills, MCP over stdio and streamable
+  HTTP) lives in
   `internal/harness/builtin`, and the CLI adapters in their own
   subpackages — `internal/harness/claude` (stream-json control),
   `internal/harness/codex` (app-server JSON-RPC), `internal/harness/pi`
   (JSON mode) — plus `internal/harness/cli` for the pieces they share
-  (process-group kill guard, output/argument helpers). An
+  (process-group kill guard, output/argument helpers). The protocol
+  root is held to the same standard: it may name only itself and
+  `internal/harness/cli`. An
   adapter implements `Harness` and **returns** its failure: it streams
   events and never settles threads itself — the Host's dispatch owns the
   run's context and calls finish when Run returns. Approvals reach an
@@ -131,7 +134,9 @@ type Harness interface {
 
 - `Turn` carries everything a harness needs and nothing about Thread/UI:
   prompt, workdir, mode, rules, model, effort, max turns, session id to
-  resume, the approval callback, and the initial transcript for memory.
+  resume, an endpoint override, the sandbox boundary, memory (its key
+  plus the initial transcript), and the approval and outside-directory
+  callbacks.
 - `Event` is the normalized stream every adapter emits (kinds: text,
   tool_start, tool_end, reasoning, file_change, session, note, error,
   done). The Host's single projector turns events into message blocks —
@@ -192,6 +197,9 @@ Two kinds never fold:
 A run of **one** keeps its plain card. "One command, then an answer" is
 the common shape and must keep looking the way it always has; a header
 that says "1 commands" is worse than no header. Prose never folds at all.
+And a `reasoning` card is created closed: the thinking shows as one
+preview line until the user opens it, because nobody scrolls back for it
+even when it stays a single card.
 
 ## Tool output budgets
 
@@ -224,7 +232,10 @@ each a backstop for the one above it:
   and the most recent messages survive verbatim, and a note says the
   compaction happened. A failed summarising call falls back to dropping
   turns — a failed compaction must never fail the turn. Declaring no
-  window keeps the count-based backstop alone.
+  window keeps the count-based backstop alone. On the chat-completions
+  wire the declared window does double duty: it is also what asks the
+  provider for usage counts at all (`stream_options.include_usage`);
+  the Responses wire reports tokens on its own.
 - **By the turn.** `CompactHistory` drops whole turns past a message
   count, at a user-message boundary so no tool result loses the call
   that asked for it.
