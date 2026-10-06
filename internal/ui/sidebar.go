@@ -23,16 +23,9 @@ type SidebarVM struct {
 	Threads []ThreadVM
 	Current string
 
-	// The rail's agent switcher (the old backend switcher's slot): the
-	// agent a new task binds, with the resolved backend-model subtitle
-	// (spec/agents.md).
-	AgentID   string
-	AgentName string
-	Agents    []AgentVM
-	Width     float32
+	Width float32
 
 	// Transient view state; the host syncs it back after each frame.
-	AgentMenu   bool
 	ProjectMenu bool
 	HoverRow    string
 
@@ -65,9 +58,6 @@ type SidebarActions interface {
 	OpenThread(id string)
 	DeleteThread(id string)
 	RenameThread(id string)
-	SetAgent(id string)
-	// NewGroup creates a group profile and opens its form (spec/agents.md).
-	NewGroup()
 	SwitchProject(id string)
 	RemoveProject(id string)
 	PickProjectDir()
@@ -191,13 +181,11 @@ func Sidebar(c *ui.Context, vm *SidebarVM, acts SidebarActions, top float32) {
 		ui.Scroll(c).Grow(1).Padding(2, 8, 12).Gap(2).Children(func() {
 			threadList(c, vm, acts)
 		})
-		// The rail's bottom-left corner: the backend switcher, with
-		// settings one click beside it (and ⌘, behind it).
-		ui.Row(c).Padding(10).Gap(6).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).
+		// The rail's bottom-left corner: settings, one click away (⌘,
+		// behind it). Agent switching lives in the composer's picker and
+		// the home launcher — this rail no longer duplicates it.
+		ui.Row(c).Padding(10).Justify(ui.Center).BorderWidth(1, 0, 0, 0).
 			BorderColor(vm.Pal.Border).Children(func() {
-			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-				agentPicker(c, vm, acts)
-			})
 			gear := ui.ButtonBase(c).Label("Settings").Tooltip("Settings (⌘,)").
 				Size(28, 28).Radius(8).Center().Cursor(ui.CursorPointer)
 			if gear.Hovered() {
@@ -360,80 +348,6 @@ func projectSwitcher(c *ui.Context, vm *SidebarVM, acts SidebarActions) {
 			add.Children(func() {
 				ui.Icon(c, IconPlus).FontSize(13).TextColor(t.TextMuted)
 				ui.Text(c, "Add project…").FontSize(12.5).Grow(1)
-			})
-		})
-	})
-}
-
-// agentPicker is the rail's bottom-left switcher: the agent a new task
-// binds, showing each profile's resolved backend-model. It replaces the
-// old backend switcher — the backend is an agent attribute now, and the
-// composer's picker, the home launcher and this rail bind the same
-// selection (spec/agents.md).
-func agentPicker(c *ui.Context, vm *SidebarVM, acts SidebarActions) {
-	pick := ui.ButtonBase(c).Padding(6, 8).Radius(8).Gap(8).Cursor(ui.CursorPointer)
-	if pick.Hovered() {
-		pick.Background(vm.Pal.Hover)
-	}
-	if pick.Clicked() {
-		vm.AgentMenu = !vm.AgentMenu
-	}
-	pick.Children(func() {
-		ui.Icon(c, IconBot).FontSize(14).TextColor(vm.Pal.TextMuted)
-		ui.Text(c, vm.AgentName).SingleLine().FontSize(12).Grow(1)
-		chev := ui.Icon(c, IconChevDown).FontSize(12).TextColor(vm.Pal.TextMuted)
-		if vm.AgentMenu {
-			chev.Rotate(180)
-		}
-	})
-	ui.Popover(c, pick, &vm.AgentMenu, func() {
-		closeMenu := func() { vm.AgentMenu = false }
-		ui.Column(c).Width(260).Padding(4).Children(func() {
-			ui.Text(c, "AGENT").FontSize(10).FontWeight(600).TextColor(vm.Pal.TextMuted).
-				Padding(6, 10, 2).LetterSpacing(0.6)
-			for i := range vm.Agents {
-				ag := &vm.Agents[i]
-				row := ui.ButtonBase(c).Fill().Padding(6, 10).Radius(7).Gap(8).Cursor(ui.CursorPointer)
-				if row.Hovered() {
-					row.Background(vm.Pal.CardHover)
-				}
-				if row.Clicked() {
-					closeMenu()
-					acts.SetAgent(ag.ID)
-				}
-				row.Children(func() {
-					ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-						ui.Text(c, strings.TrimSpace(ag.Emoji+" "+ag.Name)).SingleLine().FontSize(12.5)
-						ui.Text(c, ag.Sub).SingleLine().FontSize(10.5).TextColor(vm.Pal.TextMuted)
-					})
-					if ag.ID == vm.AgentID {
-						ui.Icon(c, IconCheck).FontSize(13).TextColor(c.Theme().Text)
-					}
-				})
-			}
-			grp := ui.ButtonBase(c).Fill().Padding(6, 10).Radius(7).Gap(8).Cursor(ui.CursorPointer)
-			if grp.Hovered() {
-				grp.Background(vm.Pal.CardHover)
-			}
-			if grp.Clicked() {
-				closeMenu()
-				acts.NewGroup()
-			}
-			grp.Children(func() {
-				ui.Icon(c, IconBot).FontSize(13).TextColor(c.Theme().TextMuted)
-				ui.Text(c, "New group…").FontSize(12.5).Grow(1)
-			})
-			mng := ui.ButtonBase(c).Fill().Padding(6, 10).Radius(7).Gap(8).Cursor(ui.CursorPointer)
-			if mng.Hovered() {
-				mng.Background(vm.Pal.CardHover)
-			}
-			if mng.Clicked() {
-				closeMenu()
-				acts.OpenSettings()
-			}
-			mng.Children(func() {
-				ui.Icon(c, IconGear).FontSize(13).TextColor(c.Theme().TextMuted)
-				ui.Text(c, "Manage agents…").FontSize(12.5).Grow(1)
 			})
 		})
 	})
