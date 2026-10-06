@@ -193,6 +193,42 @@ A run of **one** keeps its plain card. "One command, then an answer" is
 the common shape and must keep looking the way it always has; a header
 that says "1 commands" is worse than no header. Prose never folds at all.
 
+## Tool output budgets
+
+What a tool call costs the model's context is bounded at three layers,
+each a backstop for the one above it:
+
+- **At the exit.** Every tool bounds what it emits — bash and every MCP
+  result at 32 KB (`TrimOutput`), `grep` at 200 matching lines,
+  `list_files` at 200 entries, `read_file` at 400 lines (a range at
+  2 MB). The trim keeps head **and tail**: a command's errors live at
+  the end of its output and a file's structure at its start, so a cut
+  that kept only the first half would drop exactly the half a failing
+  run was about to show. MCP results are bounded where they enter, at
+  the one place every server's output passes through — a server the app
+  does not own has no trim of its own.
+- **In the transcript.** `ElideToolResults` keeps the tool results
+  inside a byte budget (128 KB) by replacing the oldest with a one-line
+  placeholder, oldest first. A result ten rounds old has been read and
+  acted on; what it costs from here on is context, not information. The
+  most recent messages are never touched, and their protection is
+  absolute — when the recent window alone outweighs the budget, the
+  budget yields rather than the window opening. Elision is part of the
+  model-facing transcript and persists with it; what the screen shows
+  comes from the events, which keep their own trimmed copies.
+- **At the watermark.** When a provider declares a context window
+  (config `context_window`) and the last response's own prompt-token
+  count passes four fifths of it, the transcript is **summarised, not
+  dropped** — Claude Code's auto-compaction shape. The model writes the
+  summary in one tool-less call over the oldest stretch; the system head
+  and the most recent messages survive verbatim, and a note says the
+  compaction happened. A failed summarising call falls back to dropping
+  turns — a failed compaction must never fail the turn. Declaring no
+  window keeps the count-based backstop alone.
+- **By the turn.** `CompactHistory` drops whole turns past a message
+  count, at a user-message boundary so no tool result loses the call
+  that asked for it.
+
 ## What stayed out (deliberately)
 
 - mygo's immediate-mode framework renders from live state with host

@@ -240,6 +240,14 @@ func editFileTool(workdir string, o ToolOptions) Tool {
 			if o.ConfineWrites && !(underDir(workdir, full) && underDir(canonical(workdir), canonical(full))) {
 				return "", fmt.Errorf("in the current mode edit_file only writes inside the project directory: %s is outside", in.Path)
 			}
+			// The edit reads the whole file into memory — and holds it
+			// three times over (bytes, string, replacement). A stat first
+			// is what keeps a model-named large file from being the one
+			// call that OOMs the app; read_file refuses the same size.
+			if st, serr := os.Stat(full); serr == nil && st.Size() > maxReadFileBytes {
+				return "", fmt.Errorf("%s is %d bytes, over the %d-byte edit limit; edit a range of it with bash instead",
+					in.Path, st.Size(), maxReadFileBytes)
+			}
 			data, err := os.ReadFile(full)
 			if err != nil {
 				return "", err
@@ -311,6 +319,12 @@ func listFilesTool(workdir string) Tool {
 			slices.Sort(names)
 			if len(names) == 0 {
 				return "(empty)", nil
+			}
+			// A listing is a map, not a census: past 200 entries the
+			// tail is the same directory noise repeated, and it all
+			// rides into the context. The marker names the way out.
+			if len(names) > 200 {
+				names = append(names[:200], fmt.Sprintf("… %d more entries; list a narrower path …", len(names)-200))
 			}
 			return strings.Join(names, "\n"), nil
 		},
@@ -430,7 +444,11 @@ func readSkillTool(workdir string, skills *SkillSet) Tool {
 			if !ok {
 				return "", fmt.Errorf("no skill named %q", in.Name)
 			}
-			return content, nil
+			// A skill is instructions, and instructions are written by
+			// whoever installed them — the same cap a tool result gets
+			// keeps an oversized SKILL.md from being an unbounded ride
+			// into the context.
+			return cli.TrimOutput(content, maxToolResultBytes), nil
 		},
 	}
 }
@@ -533,8 +551,9 @@ func underDir(root, path string) bool {
 // may hold in memory; it sits well above the trim the model sees, so
 // TrimOutput's "first N" marker still describes what was dropped.
 const (
-	maxCommandOutput = 1 << 20
-	maxReadFileBytes = 2 << 20
+	maxCommandOutput   = 1 << 20
+	maxReadFileBytes   = 2 << 20
+	maxToolResultBytes = 32 << 10
 	// maxRangeReadBytes bounds a single line while streaming a range, and
 	// the longest line a ranged read will accept at all.
 	maxRangeReadBytes = 2 << 20

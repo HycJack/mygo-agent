@@ -89,6 +89,10 @@ func streamResponses(ctx context.Context, cfg StreamConfig, onText func(string))
 				Error *struct {
 					Message string `json:"message"`
 				} `json:"error"`
+				Usage *struct {
+					PromptTokens     int `json:"input_tokens"`
+					CompletionTokens int `json:"output_tokens"`
+				} `json:"usage"`
 			} `json:"response"`
 			Message string `json:"message"`
 		}
@@ -140,6 +144,10 @@ func streamResponses(ctx context.Context, cfg StreamConfig, onText func(string))
 		case "response.completed":
 			if ev.Response != nil && ev.Response.Error != nil {
 				res.Err = ev.Response.Error.Message
+			}
+			if ev.Response != nil && ev.Response.Usage != nil {
+				res.PromptTokens = ev.Response.Usage.PromptTokens
+				res.CompletionTokens = ev.Response.Usage.CompletionTokens
 			}
 			// The full output is available here; the accumulated pieces
 			// already mirror it.

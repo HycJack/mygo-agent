@@ -101,12 +101,23 @@ func (h builtinHarness) runBuiltin(ctx context.Context, emit func(harness.Event)
 	if wire == "" {
 		wire = harness.WireChat
 	}
+	// Effort is a plain int on Turn, clamped only in the dispatch path,
+	// so it switches rather than indexes: an out-of-range value fails
+	// closed to the middle, not into a panic.
+	effort := "medium"
+	switch turn.Effort {
+	case 0:
+		effort = "low"
+	case 2:
+		effort = "high"
+	}
 	cfg := builtin.LoopConfig{
 		BaseURL:         p.BaseURL,
 		APIKey:          p.APIKey,
 		Model:           turn.Model,
 		Wire:            wire,
-		ReasoningEffort: []string{"low", "medium", "high"}[turn.Effort],
+		ContextWindow:   p.ContextWindow,
+		ReasoningEffort: effort,
 		SystemPrompt:    builtinSystemPrompt(turn.Workdir, skills),
 		Tools:           tools,
 		Policy:          harness.Policy{Mode: turn.Mode, Rules: turn.Rules},

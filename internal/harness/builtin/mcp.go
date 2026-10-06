@@ -334,7 +334,7 @@ func (c *mcpClient) callTool(ctx context.Context, name, args string) (string, er
 		IsError bool `json:"isError"`
 	}
 	if err := json.Unmarshal(res, &out); err != nil {
-		return string(res), nil
+		return cli.TrimOutput(string(res), maxToolResultBytes), nil
 	}
 	var b strings.Builder
 	for _, blk := range out.Content {
@@ -347,7 +347,11 @@ func (c *mcpClient) callTool(ctx context.Context, name, args string) (string, er
 	if s == "" {
 		s = "(empty result)"
 	}
-	return s, nil
+	// A tool the app does not own has no trim of its own, and its
+	// result rides straight into the context: the cap the local tools
+	// apply at their own exits is applied here, at the one place every
+	// MCP result passes through.
+	return cli.TrimOutput(s, maxToolResultBytes), nil
 }
 
 // Close shuts the server process down.

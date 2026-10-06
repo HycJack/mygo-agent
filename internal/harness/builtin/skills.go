@@ -107,7 +107,14 @@ func (s *SkillSet) Load(name string) (string, bool) {
 	if !ok {
 		return "", false
 	}
-	data, err := os.ReadFile(filepath.Join(sk.Dir, "SKILL.md"))
+	path := filepath.Join(sk.Dir, "SKILL.md")
+	// The stat is the memory guard, not the context cap (read_skill
+	// trims after): a pathologically large SKILL.md is refused whole
+	// rather than read into memory first.
+	if st, err := os.Stat(path); err != nil || st.Size() > 2<<20 {
+		return "", false
+	}
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return "", false
 	}

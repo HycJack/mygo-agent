@@ -247,3 +247,54 @@ func TestReadFileRangeWorksOnALargeFile(t *testing.T) {
 	}
 	t.Fatal("read_file is missing from the tool set")
 }
+
+// TestListFilesCapsTheCensus pins the listing's budget: a listing is a
+// map, not a census, and an unbounded one rode straight into the
+// context. Past 200 entries the marker names the way out.
+func TestListFilesCapsTheCensus(t *testing.T) {
+	work := t.TempDir()
+	for i := range 250 {
+		name := filepath.Join(work, fmt.Sprintf("file_%03d.txt", i))
+		if err := os.WriteFile(name, []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	list := listFilesTool(work)
+	got, err := list.Execute(t.Context(), `{}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(got, "\n")
+	if len(lines) != 201 {
+		t.Fatalf("got %d lines, want 200 entries + the marker", len(lines))
+	}
+	if !strings.Contains(lines[200], "more entries") || !strings.Contains(lines[200], "narrower path") {
+		t.Fatalf("the marker does not name the way out: %q", lines[200])
+	}
+}
+
+// TestReadSkillIsBoundedLikeAToolResult pins the cap: a skill's
+// instructions are written by whoever installed them, and an oversized
+// SKILL.md must not be an unbounded ride into the context.
+func TestReadSkillIsBoundedLikeAToolResult(t *testing.T) {
+	work := t.TempDir()
+	dir := filepath.Join(work, ".agents", "skills", "huge")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "---\nname: huge\ndescription: a very large skill\n---\n" + strings.Repeat("x", maxToolResultBytes+5000)
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	read := readSkillTool(work, DiscoverSkills(work))
+	got, err := read.Execute(t.Context(), `{"name":"huge"}`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) > maxToolResultBytes+100 {
+		t.Fatalf("the skill came back unbounded: %d bytes", len(got))
+	}
+	if !strings.Contains(got, "output truncated") {
+		t.Fatalf("the cut was not marked: %q", got[:60])
+	}
+}

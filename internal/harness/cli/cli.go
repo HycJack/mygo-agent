@@ -60,6 +60,12 @@ func ShortArgs(raw json.RawMessage) string {
 
 // TrimOutput caps a tool result so one command cannot flood the context.
 //
+// The shape is head and tail, not head alone: a command's errors live at
+// the end of its output and a file's structure at its start, so a cut
+// that keeps only the first half throws away exactly the half a failing
+// run was about to show. Cuts land on rune boundaries, so a multibyte
+// line survives whole.
+//
 // The carriage return goes with the trailing newline: a Windows command
 // ends its line with CRLF, so trimming only the \n left a \r inside the
 // stored card — a stray character on screen, and a mismatch against the
@@ -69,8 +75,31 @@ func TrimOutput(s string, max int) string {
 	if len(s) <= max {
 		return s
 	}
-	return s[:max] + "\n… output truncated …"
+	if max < 64 {
+		// Too small to split meaningfully: keep the head alone.
+		return s[:max] + "\n… output truncated …"
+	}
+	head := runeFloor(s, max*2/3)
+	tailStart := len(s) - (max - max*2/3)
+	for tailStart < len(s) && isContinuation(s[tailStart]) {
+		tailStart++
+	}
+	elided := tailStart - head
+	return s[:head] +
+		fmt.Sprintf("\n… output truncated: %d bytes elided …\n", elided) +
+		s[tailStart:]
 }
+
+// runeFloor lowers n until it is not in the middle of a UTF-8 rune.
+func runeFloor(s string, n int) int {
+	for n > 0 && n < len(s) && isContinuation(s[n]) {
+		n--
+	}
+	return n
+}
+
+// isContinuation reports whether b is a UTF-8 continuation byte.
+func isContinuation(b byte) bool { return b&0xC0 == 0x80 }
 
 // ShortSession trims a session id for a summary note.
 func ShortSession(id string) string {

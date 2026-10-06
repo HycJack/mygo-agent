@@ -142,9 +142,15 @@ func TestTrimOutput(t *testing.T) {
 	if got := cli.TrimOutput("hello\n", 100); got != "hello" {
 		t.Fatalf("trim changed a short output: %q", got)
 	}
-	got := cli.TrimOutput(strings.Repeat("x", 5000), 100)
-	if len(got) != 100+len("\n… output truncated …") || !strings.HasSuffix(got, "… output truncated …") {
-		t.Fatalf("long output not truncated: %d", len(got))
+	// Head and tail, not head alone: both ends of the original survive
+	// around the marker, which is where a command's errors live.
+	src := strings.Repeat("x", 5000)
+	got := cli.TrimOutput(src, 100)
+	if !strings.HasPrefix(got, src[:66]) || !strings.HasSuffix(got, src[len(src)-34:]) {
+		t.Fatalf("the trimmed output lost an end: %d bytes", len(got))
+	}
+	if !strings.Contains(got, "output truncated") {
+		t.Fatalf("the cut was not marked: %q", got)
 	}
 }
 

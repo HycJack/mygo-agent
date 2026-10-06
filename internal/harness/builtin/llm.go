@@ -52,6 +52,13 @@ type StreamConfig struct {
 	Tools    []Tool
 
 	ReasoningEffort string // responses API only: low / medium / high
+
+	// ContextWindow is the provider's context window in tokens, as
+	// declared in the provider's config. Zero sends nothing; a declared
+	// window opts the chat wire into stream_options.include_usage, so
+	// the final chunk carries the prompt token count the watermark
+	// trigger reads. The responses wire reports usage regardless.
+	ContextWindow int
 }
 
 // assistantResult is what one streaming call produced.
@@ -60,6 +67,10 @@ type assistantResult struct {
 	ToolCalls []ToolCall
 	Finish    string
 	Err       string
+	// Prompt/CompletionTokens are what the wire reported, zero when it
+	// reported nothing: the watermark trigger reads the prompt side.
+	PromptTokens     int
+	CompletionTokens int
 }
 
 // streamChat runs one streaming completion over the provider's wire
@@ -80,6 +91,13 @@ func streamChatCompletions(ctx context.Context, cfg StreamConfig, onText func(de
 		"model":    cfg.Model,
 		"messages": cfg.Messages,
 		"stream":   true,
+	}
+	if cfg.ContextWindow > 0 {
+		// Opted in by a declared window: the last chunk then carries
+		// the usage the watermark reads. Servers that reject the field
+		// are rare, and the window that armed it is also the off
+		// switch.
+		body["stream_options"] = map[string]any{"include_usage": true}
 	}
 	if len(cfg.Tools) > 0 {
 		tools := make([]chatTool, len(cfg.Tools))
@@ -159,6 +177,10 @@ func streamChatCompletions(ctx context.Context, cfg StreamConfig, onText func(de
 				} `json:"delta"`
 				FinishReason *string `json:"finish_reason"`
 			} `json:"choices"`
+			Usage *struct {
+				PromptTokens     int `json:"prompt_tokens"`
+				CompletionTokens int `json:"completion_tokens"`
+			} `json:"usage"`
 			Error *struct {
 				Message string `json:"message"`
 			} `json:"error"`
@@ -169,6 +191,10 @@ func streamChatCompletions(ctx context.Context, cfg StreamConfig, onText func(de
 		if chunk.Error != nil {
 			res.Err = chunk.Error.Message
 			continue
+		}
+		if chunk.Usage != nil {
+			res.PromptTokens = chunk.Usage.PromptTokens
+			res.CompletionTokens = chunk.Usage.CompletionTokens
 		}
 		if len(chunk.Choices) == 0 {
 			continue

@@ -32,6 +32,9 @@ while IFS= read -r line; do
       printf '%s' "$n" > "$state"
       case "` + script + `" in
         die) exit 7 ;;
+        huge)
+          big=$(printf 'x%.0s' $(seq 1 60000))
+          resp="{\"jsonrpc\":\"2.0\",\"id\":$id,\"result\":{\"content\":[{\"type\":\"text\",\"text\":\"$big\"}]}}" ;;
         once)
           if [ "$n" -eq 1 ]; then
             resp="{\"jsonrpc\":\"2.0\",\"id\":$id,\"error\":{\"code\":-32000,\"message\":\"tool exploded\"}}"
@@ -125,5 +128,31 @@ func TestMCPToolNamesStayUniqueWhenTruncated(t *testing.T) {
 	}
 	if !strings.HasPrefix(a, "mcp_") || !strings.HasPrefix(b, "mcp_") {
 		t.Fatalf("truncated names lost their prefix: %q %q", a, b)
+	}
+}
+
+// TestMCPResultIsBoundedLikeALocalTool pins the cap: a tool the app does
+// not own has no trim of its own, and its result rides straight into the
+// context — the local tools' cap applies at the one place every MCP
+// result passes through, shaped head and tail like theirs.
+func TestMCPResultIsBoundedLikeALocalTool(t *testing.T) {
+	c, err := newMCPClient(t.Context(), MCPServer{Name: "flaky", Command: fakeMCPServer(t, "huge")})
+	if err != nil {
+		t.Fatalf("the handshake must succeed: %v", err)
+	}
+	defer c.Close()
+
+	got, err := c.callTool(t.Context(), "flaky", "{}")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) > maxToolResultBytes+100 {
+		t.Fatalf("the result was not bounded: %d bytes", len(got))
+	}
+	if !strings.Contains(got, "output truncated") {
+		t.Fatalf("the cut was not marked: %q", got[:80])
+	}
+	if !strings.HasPrefix(got, "xxxx") || !strings.HasSuffix(got, "xxxx") {
+		t.Fatal("the bounded result lost an end")
 	}
 }

@@ -1,8 +1,10 @@
 package cli
 
 import (
+	"fmt"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // A command's output reaches a card as the child wrote it, and on
@@ -34,11 +36,49 @@ func TestTrimOutputStillCaps(t *testing.T) {
 		long += "0123456789"
 	}
 	got := TrimOutput(long, 20)
-	if !strings.HasSuffix(got, "… output truncated …") {
+	if !strings.Contains(got, "output truncated") {
 		t.Fatalf("a long output was not marked as truncated: %q", got)
 	}
 	if len(got) >= len(long) {
 		t.Fatalf("a long output was not shortened: %d >= %d", len(got), len(long))
+	}
+}
+
+// TestTrimOutputKeepsBothEnds pins the shape: a command's errors live at
+// the end of its output and a file's structure at its start, so the cut
+// keeps both ends around the marker instead of only the head.
+func TestTrimOutputKeepsBothEnds(t *testing.T) {
+	var b strings.Builder
+	for i := range 3000 {
+		fmt.Fprintf(&b, "line %d\n", i)
+	}
+	long := b.String()
+	got := TrimOutput(long, 600)
+	// The trailing newline the trim removes first is not part of the tail.
+	src := strings.TrimRight(long, "\r\n")
+	head := src[:300]
+	tail := src[len(src)-200:]
+	if !strings.HasPrefix(got, head) {
+		t.Fatalf("the head of the output was lost: %q", got[:60])
+	}
+	if !strings.HasSuffix(got, tail) {
+		t.Fatalf("the tail of the output was lost — a failing run's last words: %q", got[len(got)-60:])
+	}
+	if !strings.Contains(got, "output truncated") {
+		t.Fatalf("the cut was not marked: %q", got)
+	}
+}
+
+// TestTrimOutputDoesNotSplitARune pins the cut boundary: a multibyte
+// line survives whole, in the head and in the tail.
+func TestTrimOutputDoesNotSplitARune(t *testing.T) {
+	long := strings.Repeat("中文", 1000) // 6000 bytes, no ASCII anywhere
+	got := TrimOutput(long, 500)
+	if !utf8.ValidString(got) {
+		t.Fatal("the trimmed output is not valid UTF-8 — a rune was split")
+	}
+	if !strings.HasPrefix(long, got[:strings.Index(got, "\n…")]) {
+		t.Fatal("the head does not match the source")
 	}
 }
 

@@ -32,6 +32,12 @@ type Provider struct {
 	// completions) or "responses" (the Responses API the codex and
 	// OpenAI models use).
 	Wire string `json:"wire,omitempty"`
+	// ContextWindow is the provider's context window in tokens. Zero
+	// leaves token accounting off; a declared window arms the built-in
+	// agent's watermark: near the top of it the transcript is
+	// summarised instead of dropped (spec/architecture.md, tool
+	// output budgets).
+	ContextWindow int `json:"context_window,omitempty"`
 }
 
 // MCPServer is one Model Context Protocol server: a command the app
