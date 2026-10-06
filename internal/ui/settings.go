@@ -841,23 +841,21 @@ func skillCheckbox(c *ui.Context, pal Palette, name, desc, source string, on boo
 
 // checkboxRow is one row with a live checkbox: checked flips in-frame,
 // and the change is applied to the snapshot through apply immediately.
+// The title rides the checkbox label — the whole line reads as the
+// click target, not just the 16px box.
 func checkboxRow(c *ui.Context, pal Palette, title, sub, badge string, checked *bool) {
 	t := c.Theme()
 	row := ui.Row(c).Gap(10).AlignItems(ui.Center).Padding(8, 12).Radius(8).
 		Background(t.Surface)
 	row.Children(func() {
-		ui.Checkbox(c, checked, "")
-		ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
-			ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
-				ui.Text(c, title).FontSize(12.5)
-				if badge != "" {
-					ui.Text(c, badge).FontSize(10).Padding(1, 7).Radius(999).
-						Background(pal.Bg).Border(1, t.Border).TextColor(t.TextMuted)
-				}
-			})
-			if sub != "" {
-				ui.Text(c, sub).FontSize(11).TextColor(t.TextMuted)
-			}
-		})
+		cb := ui.Checkbox(c, checked, title).FontSize(12.5)
+		cb.Grow(1).MinWidth(0)
+		if badge != "" {
+			ui.Text(c, badge).FontSize(10).Padding(1, 7).Radius(999).
+				Background(pal.Bg).Border(1, t.Border).TextColor(t.TextMuted)
+		}
 	})
+	if sub != "" {
+		ui.Text(c, sub).FontSize(11).TextColor(t.TextMuted).Padding(0, 0, 0, 34)
+	}
 }
