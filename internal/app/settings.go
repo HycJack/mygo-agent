@@ -124,6 +124,7 @@ func (a *app) settingsVM() *uipkg.SettingsVM {
 		if ag.MaxTurns > 0 {
 			ve.MaxTurns = strconv.Itoa(ag.MaxTurns)
 		}
+		ve.Sub = a.agentSub(ag)
 		vm.Agents = append(vm.Agents, ve)
 	}
 	return vm

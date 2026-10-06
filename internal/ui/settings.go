@@ -65,6 +65,9 @@ type AgentEditVM struct {
 	// Panel is the group relay's member names, in answer order
 	// (spec/agents.md); empty means a solo agent.
 	Panel []string
+	// Sub is the resolved backend·model (or "panel · N agents") the
+	// pickers show; the rail row uses the same.
+	Sub string
 }
 
 // SettingsVM is the render input of the settings dialog. The provider
@@ -191,15 +194,9 @@ func Settings(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 						row.Children(func() {
 							ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
 								ui.Text(c, strings.TrimSpace(ag.Emoji+" "+ag.Name)).SingleLine().FontSize(12.5)
-								sub := ag.Model
-								if sub == "" {
-									sub = ag.Backend
-								}
+								sub := ag.Sub
 								if sub == "" {
 									sub = "app default"
-								}
-								if ag.Model != "" && ag.Backend != "" {
-									sub = ag.Backend + " · " + sub
 								}
 								ui.Text(c, sub).SingleLine().FontSize(10.5).TextColor(vm.Pal.TextMuted)
 							})
