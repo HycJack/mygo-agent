@@ -84,9 +84,8 @@ type app struct {
 	renameDraft string
 
 	threadMenu   bool
-	backendMenu  bool
 	modelMenu    bool
-	agentMenu    bool // the composer's agent picker popover
+	agentMenu    bool // the agent picker popover (composer + rail share it)
 	projectMenu  bool
 	hoverRow     string // the task row the pointer is on, for its delete button
 	pickingDir   bool   // a native directory dialog is out

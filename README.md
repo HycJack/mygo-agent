@@ -23,7 +23,9 @@ English | [简体中文](README.zh-CN.md)
   file (tool calls with durations and exits, notes, per-turn token and
   cost totals), viewable from the task menu; the sidebar's search
   matches message text, not just titles.
-- **Four agent backends**, switchable from the menu at the bottom left:
+- **Four agent backends** — builtin, Codex CLI, Claude Code and Pi —
+  chosen per agent profile in settings (an agent that pins none follows
+  the app default):
   - *Built-in agent* — an in-process loop (modeled on pi): streaming
     OpenAI-compatible calls (chat completions or the Responses API) +
     local tools (`bash`, `read_file`, `edit_file`, `list_files`, `grep`,

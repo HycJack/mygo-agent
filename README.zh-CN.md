@@ -19,7 +19,8 @@
 - **追踪（Tracing）** —— 每个任务旁挂一份只追加的事件轨迹（工具调用
   与耗时/退出码、note、每回合 tokens/费用汇总），任务菜单 **View
   trace** 查看；侧栏搜索匹配消息全文，不止标题。
-- **四种 agent 后端**，左下角菜单切换：
+- **四种 agent 后端** —— builtin / Codex CLI / Claude Code / Pi，由
+  设置中的 Agent 档案决定（未指定的档案沿用应用默认）：
   - *内置 agent* —— 进程内循环（参考 pi）：流式 OpenAI 兼容调用（chat
     completions 或 Responses API）+ 本地工具（`bash`、`read_file`、
     `edit_file`、`list_files`、`grep`、`read_skill`），回复支持表格、

@@ -68,24 +68,24 @@ func Workspace(c *ui.Context, vm *WorkspaceVM, acts WorkspaceActions) {
 	ui.Column(c).Width(vm.Width).Shrink(0).Background(vm.Pal.SidebarBG).Children(func() {
 		// The strip that drags the window.
 		ui.Row(c).Height(max(c.TitleBar().Height, 40)).PaddingX(12).DragWindow().AlignItems(ui.Center).Gap(6).Children(func() {
-			ui.Icon(c, IconFolder).FontSize(13).TextColor(vm.Pal.TextMuted)
-			ui.Text(c, filepath.Base(vm.Workdir)).SingleLine().FontSize(12).FontWeight(600).TextColor(t.Text).Grow(1)
-			rb := ui.ButtonBase(c).Label("Refresh workspace").Tooltip("Refresh").Size(22, 22).Radius(6).Center()
+			ui.Icon(c, IconFolder).FontSize(15).TextColor(vm.Pal.TextMuted)
+			ui.Text(c, filepath.Base(vm.Workdir)).SingleLine().FontSize(12.5).FontWeight(600).TextColor(t.Text).Grow(1)
+			rb := ui.ButtonBase(c).Label("Refresh workspace").Tooltip("Refresh").Size(28, 28).Radius(7).Center()
 			if rb.Hovered() {
 				rb.Background(vm.Pal.Hover)
 			}
 			if rb.Clicked() {
 				acts.Refresh()
 			}
-			rb.Children(func() { ui.Icon(c, IconRefresh).FontSize(12).TextColor(vm.Pal.TextMuted) })
-			hide := ui.ButtonBase(c).Label("Hide workspace (⌘E)").Tooltip("Hide").Size(22, 22).Radius(6).Center()
+			rb.Children(func() { ui.Icon(c, IconRefresh).FontSize(15).TextColor(vm.Pal.TextMuted) })
+			hide := ui.ButtonBase(c).Label("Hide workspace (⌘E)").Tooltip("Hide").Size(28, 28).Radius(7).Center()
 			if hide.Hovered() {
 				hide.Background(vm.Pal.Hover)
 			}
 			if hide.Clicked() {
 				acts.Hide()
 			}
-			hide.Children(func() { ui.Icon(c, IconPanelRight).FontSize(12).TextColor(vm.Pal.TextMuted) })
+			hide.Children(func() { ui.Icon(c, IconPanelRight).FontSize(15).TextColor(vm.Pal.TextMuted) })
 		})
 		ui.Scroll(c).Grow(1).Padding(2, 6, 12).Children(func() {
 			treeSection(c, vm, acts)
