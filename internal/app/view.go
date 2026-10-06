@@ -359,6 +359,7 @@ func (a *app) groupDialogModal(c *ui.Context) {
 	} else if len(a.groupDraftOn) == 0 {
 		vm.Err = "pick at least one member"
 	}
+	vm.CanStart = len(a.groupDraftOn) > 0
 	uipkg.GroupDialog(c, vm, groupActions{a: a})
 	// Mirror the name only. The checkboxes reach the host through
 	// ToggleMember the moment they flip — mirroring the frame's stale
