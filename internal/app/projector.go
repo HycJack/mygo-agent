@@ -32,6 +32,11 @@ func (a *app) projectEvent(th *Thread, at int, kind string, ev harness.Event) {
 	if !m.Running {
 		return
 	}
+	// The trace rides the projector: the one writer, every backend's
+	// events in one format (spec/agents.md, tracing).
+	if te, ok := traceHarnessEvent(ev); ok {
+		a.appendTrace(th, te)
+	}
 	switch ev.Kind {
 	case harness.EventText:
 		if ev.TextDelta == "" {
@@ -109,6 +114,7 @@ func (a *app) projectEvent(th *Thread, at int, kind string, ev harness.Event) {
 		if b.Type == blockDiff {
 			th.noteDiffBlock()
 		}
+		m.turnTools++
 	case harness.EventToolEnd:
 		// Match the card a tool_start opened: by ToolID when the
 		// harness carries one, else the newest running command card.
@@ -173,6 +179,8 @@ func (a *app) projectEvent(th *Thread, at int, kind string, ev harness.Event) {
 		if ev.Text != "" {
 			m.Blocks = append(m.Blocks, Block{Type: blockNote, Text: ev.Text})
 		}
+		m.turnTokens += ev.Tokens
+		m.turnCost += ev.CostUSD
 	case harness.EventError:
 		if ev.Err != "" {
 			m.Blocks = append(m.Blocks, Block{Type: blockError, Text: ev.Err})

@@ -48,6 +48,13 @@ type app struct {
 	effort     int    // 0 low, 1 medium, 2 high — the model's reasoning effort
 	backend    string // builtin | codex | claude | pi
 
+	// The configured agents (spec/agents.md): new tasks bind to one, the
+	// composer can switch a thread to another, and each turn is
+	// assembled from the agent's profile over the app-level defaults.
+	agents       []Agent
+	defaultAgent string // the config's default; "" resolves to the first agent
+	activeAgent  string // the composer's selection; "" follows defaultAgent
+
 	providers []Provider
 
 	workdir    string // the active project's path
@@ -64,21 +71,27 @@ type app struct {
 	termOpen   bool
 	termHeight float32
 
-	running   bool
-	runningID string // the thread whose turn is running; a.stop belongs to it
-	cancel    context.CancelFunc
-	// cancelMu guards cancel: dispatch sets it from the frame — which in
-	// headless runs already holds a.mu — while finish clears it under
-	// update; a second, narrower lock avoids re-entering a.mu.
-	cancelMu sync.Mutex
+	// groupQueue holds a group turn's remaining panel members, keyed by
+	// thread id (spec/agents.md): finish pops the next one and dispatches
+	// it, so a panel runs as one registered run on the main thread.
+	// Cleared by stopThread — a stopped relay does not continue.
+	groupQueue map[string][]string
+
+	// runs maps thread id to its in-flight turn (spec/agents.md P2):
+	// two tasks run at once, and every stop belongs to one thread. The
+	// narrow mutex is the old cancelMu lesson kept: the map is written
+	// from the dispatching frame and from finish's update, and a second
+	// lock avoids re-entering a.mu.
+	runsMu sync.Mutex
+	runs   map[string]*runState
 
 	renaming    bool
 	renameID    string
 	renameDraft string
 
 	threadMenu   bool
-	backendMenu  bool
 	modelMenu    bool
+	agentMenu    bool // the agent picker popover (composer + rail share it)
 	projectMenu  bool
 	hoverRow     string // the task row the pointer is on, for its delete button
 	pickingDir   bool   // a native directory dialog is out
@@ -166,6 +179,8 @@ func newApp() *app {
 		pal:           codexPalette(),
 		lists:         map[string]*ui.ListState{},
 		approvals:     map[string]chan harness.ApprovalDecision{},
+		runs:          map[string]*runState{},
+		groupQueue:    map[string][]string{},
 		sections:      map[string]bool{},
 		dirs:          map[string]bool{},
 		dirCache:      map[string][]fsNode{},
@@ -245,6 +260,8 @@ func (a *app) loadConfig() {
 		a.backend = cfg.Backend
 	}
 	a.mcpServers = toAgentServers(cfg.MCPServers)
+	a.agents = cfg.Agents
+	a.defaultAgent = cfg.DefaultAgent
 	if len(cfg.Permissions.Rules) > 0 {
 		rules := make(harness.Rules, len(cfg.Permissions.Rules))
 		for sel, perm := range cfg.Permissions.Rules {
@@ -285,6 +302,8 @@ func (a *app) saveConfig() {
 		MCPServers:    fromAgentServers(a.mcpServers),
 		Permissions:   config.Permissions{Rules: permRulesToConfig(a.permRules)},
 		MaxTurns:      a.maxTurns,
+		Agents:        a.agents,
+		DefaultAgent:  a.defaultAgent,
 	})
 	if err == nil {
 		a.configErr = ""
@@ -393,6 +412,20 @@ func (a *app) ensureDefaults() {
 			a.model = ms[0]
 		}
 	}
+	// The v1→v2 migration (spec/data.md): a config with no agents folds
+	// into a single Default agent. An empty profile inherits the app's
+	// selection, so the fold is the identity — an old config behaves
+	// exactly as it did, and now has an agent to edit.
+	if len(a.agents) == 0 {
+		a.agents = []Agent{{ID: "default", Name: "Default"}}
+		a.defaultAgent = "default"
+	}
+	if a.agentByID(a.defaultAgent) == nil {
+		a.defaultAgent = a.agents[0].ID
+	}
+	if a.activeAgentID() == "" {
+		a.activeAgent = a.defaultAgent
+	}
 }
 
 // activeID returns the project id to use: the configured one while it
@@ -431,6 +464,74 @@ func (a *app) providerByID(id string) *Provider {
 		}
 	}
 	return nil
+}
+
+// agentByName finds a configured agent by exact name — the panel
+// membership convention (names, like mcp_servers).
+func (a *app) agentByName(name string) *Agent {
+	for i := range a.agents {
+		if a.agents[i].Name == name {
+			return &a.agents[i]
+		}
+	}
+	return nil
+}
+
+// agentByID finds a configured agent by id.
+func (a *app) agentByID(id string) *Agent {
+	for i := range a.agents {
+		if a.agents[i].ID == id {
+			return &a.agents[i]
+		}
+	}
+	return nil
+}
+
+// agentFor resolves the agent a thread is bound to: its own binding,
+// else the default (spec/agents.md). The v1 migration guarantees at
+// least one agent exists, so this is nil only on a half-built app.
+func (a *app) agentFor(th *Thread) *Agent {
+	if th != nil && th.AgentID != "" {
+		if ag := a.agentByID(th.AgentID); ag != nil {
+			return ag
+		}
+	}
+	if ag := a.agentByID(a.defaultAgent); ag != nil {
+		return ag
+	}
+	if len(a.agents) > 0 {
+		return &a.agents[0]
+	}
+	return nil
+}
+
+// activeAgentID is the agent the composer shows and a new task binds:
+// the user's selection, else the default.
+func (a *app) activeAgentID() string {
+	if ag := a.agentByID(a.activeAgent); ag != nil {
+		return ag.ID
+	}
+	return a.defaultAgentID()
+}
+
+// defaultAgentID resolves the configured default to a real agent.
+func (a *app) defaultAgentID() string {
+	if ag := a.agentByID(a.defaultAgent); ag != nil {
+		return ag.ID
+	}
+	if len(a.agents) > 0 {
+		return a.agents[0].ID
+	}
+	return ""
+}
+
+// backendFor resolves the backend a thread's next turn runs on: the
+// thread's agent's choice, else the app's switch.
+func (a *app) backendFor(th *Thread) string {
+	if ag := a.agentFor(th); ag != nil && ag.Backend != "" {
+		return ag.Backend
+	}
+	return a.backend
 }
 
 // switchProject makes p the active project: the workdir, the file tree,
@@ -550,6 +651,70 @@ func (a *app) byID(id string) *Thread {
 	return nil
 }
 
+// runState is one thread's in-flight turn: everything a stop needs.
+type runState struct {
+	cancel context.CancelFunc
+}
+
+// runStart registers the thread's in-flight turn. A thread runs one
+// turn — the send guards see to that — so a stale entry here means a
+// guard failed somewhere, and the loser is stopped rather than left
+// spending tokens with nobody holding its card.
+func (a *app) runStart(thID string, cancel context.CancelFunc) {
+	a.runsMu.Lock()
+	defer a.runsMu.Unlock()
+	if a.runs == nil {
+		a.runs = map[string]*runState{}
+	}
+	if stale := a.runs[thID]; stale != nil && stale.cancel != nil {
+		stale.cancel()
+	}
+	a.runs[thID] = &runState{cancel: cancel}
+}
+
+// runEnd clears the thread's entry: the turn is over, whatever the
+// outcome, and a late finish must not leave a ghost a stop could hit.
+func (a *app) runEnd(thID string) {
+	a.runsMu.Lock()
+	delete(a.runs, thID)
+	a.runsMu.Unlock()
+}
+
+// isRunning reports whether the thread's turn is in flight. The empty
+// id (the home screen) is never running.
+func (a *app) isRunning(thID string) bool {
+	if thID == "" {
+		return false
+	}
+	a.runsMu.Lock()
+	defer a.runsMu.Unlock()
+	return a.runs[thID] != nil
+}
+
+// currentRunning reports whether the thread on screen is running — the
+// composer's Stop, the header's badge and the transcript's gating all
+// key on it.
+func (a *app) currentRunning() bool {
+	th := a.currentThread()
+	return th != nil && a.isRunning(th.ID)
+}
+
+// stopThread cancels the thread's run and clears the entry. A thread
+// with no run is a no-op, which is what makes deleting or escaping on
+// an idle thread free.
+func (a *app) stopThread(thID string) {
+	a.runsMu.Lock()
+	st := a.runs[thID]
+	delete(a.runs, thID)
+	a.runsMu.Unlock()
+	// A stopped relay does not continue: finish finds no queue and ends
+	// the group turn with the participant that was running.
+	delete(a.groupQueue, thID)
+	if st != nil && st.cancel != nil {
+		st.cancel()
+	}
+}
+
 func (a *app) currentThread() *Thread {
 	if a.current == "" {
 		return nil
@@ -584,7 +749,13 @@ func (a *app) update(fn func()) {
 
 func (a *app) createThread() *Thread {
 	now := time.Now()
-	th := &Thread{ID: uid(), ProjectID: a.activeProject, Created: now, Updated: now}
+	th := &Thread{ID: uid(), ProjectID: a.activeProject, Created: now, Updated: now, AgentID: a.activeAgentID()}
+	// A task started from an agent with its own default approval mode
+	// starts in that mode — the composer's selector stays the per-run
+	// override, the agent only seeds it (spec/agents.md).
+	if ag := a.agentByID(th.AgentID); ag != nil && ag.Mode != nil {
+		a.mode = clampMode(*ag.Mode)
+	}
 	// Newest first: the sidebar groups by Updated, newest at the top.
 	a.threads = append([]*Thread{th}, a.threads...)
 	a.current = th.ID
@@ -605,13 +776,12 @@ func (a *app) deleteThread(c *ui.Context, id string) {
 	removed := a.threads[at]
 	a.threads = append(a.threads[:at], a.threads[at+1:]...)
 	// The stop belongs to the thread that is running, not the one on
-	// screen: current moves freely while a turn runs, so keying on it
+	// screen: current moves freely while turns run, so keying on it
 	// leaked the run — it kept spending tokens, its next event re-saved
 	// the file this delete removed, and its approval card sat pending
-	// until the deadline. Deleting any other thread must not stop it.
-	if a.running && a.runningID == id {
-		a.stop()
-	}
+	// until the deadline. stopThread is already scoped to the id, so
+	// deleting an idle thread is a no-op here.
+	a.stopThread(id)
 	// Events already drained from the CLI can still land before the
 	// cancel takes effect; the flag is what keeps them from resurrecting
 	// the file removeThreadFile is about to delete.

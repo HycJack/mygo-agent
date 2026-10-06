@@ -40,7 +40,7 @@ while read -r _; do :; done
 
 	waitFor(t, 10*time.Second, func() bool {
 		done := false
-		a.update(func() { done = !a.running && !th.Messages[0].Running })
+		a.update(func() { done = !a.isRunning(th.ID) && !th.Messages[0].Running })
 		return done
 	})
 	a.update(func() {

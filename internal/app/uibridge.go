@@ -1,6 +1,9 @@
 package app
 
 import (
+	"fmt"
+	"strings"
+
 	uipkg "mygo-agent/internal/ui"
 
 	"github.com/egoist/mygo/ui"
@@ -29,7 +32,7 @@ func (a *app) homeViewModel() *uipkg.ViewModel {
 		a.vm = &uipkg.ViewModel{}
 	}
 	vm := a.vm
-	vm.Running = a.running
+	vm.Running = a.currentRunning()
 	vm.FocusComposer = a.focusComposer
 	vm.Mode = a.mode
 	vm.Effort = a.effort
@@ -38,13 +41,47 @@ func (a *app) homeViewModel() *uipkg.ViewModel {
 	vm.SettingsSel = a.settingsSel
 	vm.SettingsOpen = a.settingsOpen
 	vm.ModelMenu = a.modelMenu
+	vm.AgentMenu = a.agentMenu
 	vm.Pal = a.pal
 	vm.Providers = vm.Providers[:0]
 	for i := range a.providers {
 		p := &a.providers[i]
 		vm.Providers = append(vm.Providers, uipkg.ProviderVM{ID: p.ID, Name: p.Name, Models: p.Models})
 	}
+	// The agent the composer shows: the current thread's binding on a
+	// thread, the active selection on the home screen (spec/agents.md).
+	agID := a.activeAgentID()
+	if th := a.currentThread(); th != nil && th.AgentID != "" {
+		agID = th.AgentID
+	}
+	vm.AgentID = agID
+	vm.AgentName = agID
+	if ag := a.agentByID(agID); ag != nil {
+		vm.AgentName = strings.TrimSpace(ag.Emoji + " " + ag.Name)
+	}
+	vm.Agents = vm.Agents[:0]
+	for i := range a.agents {
+		ag := &a.agents[i]
+		vm.Agents = append(vm.Agents, uipkg.AgentVM{ID: ag.ID, Name: ag.Name, Emoji: ag.Emoji, Sub: a.agentSub(ag)})
+	}
 	return vm
+}
+
+// agentSub is the picker row's subtitle: the backend and model the
+// agent resolves to, which is the app's when the profile leaves them
+// empty.
+func (a *app) agentSub(ag *Agent) string {
+	if n := len(a.panelFor(ag)); n > 0 {
+		return fmt.Sprintf("panel · %d agents", n)
+	}
+	backend, model := ag.Backend, ag.Model
+	if backend == "" {
+		backend = a.backend
+	}
+	if model == "" {
+		model = a.model
+	}
+	return backend + " · " + model
 }
 
 // uiVM publishes the snapshot to the bridge and returns the same pointer:
@@ -62,6 +99,7 @@ func (a *app) syncVM() {
 	}
 	a.focusComposer = a.vm.FocusComposer
 	a.modelMenu = a.vm.ModelMenu
+	a.agentMenu = a.vm.AgentMenu
 	a.draft = a.vm.Draft
 }
 
@@ -78,7 +116,7 @@ func (a *app) setDraft(s string) {
 type homeActions struct{ a *app }
 
 func (h homeActions) Send() { h.a.send() }
-func (h homeActions) Stop() { h.a.stop() }
+func (h homeActions) Stop() { h.a.stopThread(h.a.current) }
 
 // SetDraft fills the composer (the suggestion chips): the bound
 // ViewModel immediately, the host mirror for the frame.
@@ -91,6 +129,28 @@ func (h homeActions) SetEffort(e int) {
 func (h homeActions) PickModel(pid, m string) {
 	h.a.providerID, h.a.model = pid, m
 	h.a.saveConfig()
+}
+
+// SetAgent binds the agent: the composer's selection now, and the
+// current thread's binding from its next turn. A profile with its own
+// default approval mode seeds the mode the way starting a task with it
+// would (spec/agents.md).
+func (h homeActions) SetAgent(id string) { h.a.setActiveAgent(id) }
+
+// setActiveAgent is the host half of the picker and the home launcher.
+func (a *app) setActiveAgent(id string) {
+	ag := a.agentByID(id)
+	if ag == nil {
+		return
+	}
+	a.activeAgent = ag.ID
+	if ag.Mode != nil {
+		a.mode = clampMode(*ag.Mode)
+	}
+	if th := a.currentThread(); th != nil && th.AgentID != ag.ID {
+		th.AgentID = ag.ID
+		a.saveThread(th)
+	}
 }
 func (h homeActions) OpenSettings(sel string) {
 	if sel != "" {

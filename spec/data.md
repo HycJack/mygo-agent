@@ -21,7 +21,7 @@ this app's snapshot model.
   "meta": {
     "id": "…", "project_id": "…", "title": "…",
     "created": …, "updated": …, "codex_id": "…", "claude_id": "…",
-    "pi_id": "…"
+    "pi_id": "…", "agent_id": "…"
   },
   "messages": [ … ],
   "chat_log": [ … ]
@@ -34,19 +34,38 @@ this app's snapshot model.
 - Files carry mode 0600: thread content includes code snippets.
 - `<projectID>` partitions the tree by project; `<threadID>` is the
   app's hex uid. Both are validated filename-safe before use.
-- `version` is the schema version; the current version is 1; every
-  write stamps it; a file from a newer schema is refused (see Load
-  failures).
+- `agent_id` binds the thread to a configured agent (spec/agents.md).
+  Empty resolves to the default agent; the resolution is stamped back
+  on the next save, so a thread from before the agents block picks up
+  its binding on first use — never a rewrite on load alone.
+- `version` is the schema version; the current version is 2 (version 2
+  added the messages' producer attribution and the sidecar trace file);
+  every write stamps it; a file from a newer schema is refused (see
+  Load failures). Version 1 files still load: their messages simply
+  carry no attribution.
+- Beside the thread file lives `<threadID>.events.jsonl` — the turn's
+  trace (spec/agents.md): append-only, written by the projector, one
+  summary line per turn from finish. It is derived data, never read
+  back into state, and dies with the thread; undo restores the
+  conversation but not the trace.
 
-## config.json — version 1
+## config.json — version 2
 
 ```json
-{ "version": 1, "projects": […], "providers": […], … }
+{ "version": 2, "projects": […], "providers": […],
+  "agents": […], "default_agent": "…", … }
 ```
 
 - Strict decode: unknown fields are errors. A typo in a hand-edited
   config (`"permisions"`) fails loudly, not silently zeroed.
 - Mode 0600 — provider API keys live there.
+- `agents` are the configured agent profiles and `default_agent` names
+  the one new tasks bind to when nothing else chose (spec/agents.md).
+- **Version 1 files still load.** The host folds a config with no
+  agents into a single **Default** agent — an empty profile inherits
+  the app-level selection, so the fold is the identity and an old
+  config behaves exactly as it did — and the next save stamps
+  version 2. A file from version 3 is refused like any newer schema.
 
 ## Load failures
 

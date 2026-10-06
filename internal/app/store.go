@@ -98,12 +98,16 @@ type threadMeta struct {
 	CodexID   string    `json:"codex_id,omitempty"`
 	ClaudeID  string    `json:"claude_id,omitempty"`
 	PiID      string    `json:"pi_id,omitempty"`
+	// AgentID binds the thread to a configured agent (spec/agents.md);
+	// empty resolves to the default agent on use and is stamped here on
+	// the next save.
+	AgentID string `json:"agent_id,omitempty"`
 }
 
 func metaOf(th *Thread) threadMeta {
 	return threadMeta{ID: th.ID, ProjectID: th.ProjectID, Title: th.Title,
 		Created: th.Created, Updated: th.Updated,
-		CodexID: th.CodexID, ClaudeID: th.ClaudeID, PiID: th.PiID}
+		CodexID: th.CodexID, ClaudeID: th.ClaudeID, PiID: th.PiID, AgentID: th.AgentID}
 }
 
 // saveThread writes one thread's file atomically. The thread's Messages
@@ -120,7 +124,7 @@ func (a *app) saveThread(th *Thread) {
 		return
 	}
 	data, err := json.MarshalIndent(threadFile{
-		Version: 1, Meta: metaOf(th), Messages: th.Messages, ChatLog: th.ChatLog,
+		Version: 2, Meta: metaOf(th), Messages: th.Messages, ChatLog: th.ChatLog,
 	}, "", "  ")
 	if err != nil {
 		a.threadsErr = "this task could not be saved: " + err.Error()
@@ -136,8 +140,10 @@ func (a *app) saveThread(th *Thread) {
 	a.threadsErr = ""
 }
 
-// removeThreadFile deletes one thread's file. The caller keeps the
-// thread in memory for the undo toast.
+// removeThreadFile deletes one thread's file and its trace. The caller
+// keeps the thread in memory for the undo toast — which restores the
+// conversation from those bytes; the trace is derived and not kept, so
+// an undone task starts its trace over (spec/agents.md, tracing).
 func (a *app) removeThreadFile(th *Thread) {
 	if path, ok := a.threadsDir.file(th); ok {
 		// A file that survives deletion comes back on the next launch, so
@@ -148,6 +154,9 @@ func (a *app) removeThreadFile(th *Thread) {
 		}
 		// The project dir, now empty. A non-empty dir is not an error.
 		os.Remove(filepath.Dir(path))
+	}
+	if path, ok := a.threadsDir.eventFile(th); ok {
+		os.Remove(path)
 	}
 }
 
@@ -222,13 +231,14 @@ func decodeThreadFile(path string) (*Thread, error) {
 	if err := dec.Decode(&tf); err != nil {
 		return nil, err
 	}
-	if tf.Version > 1 {
+	if tf.Version > 2 {
 		return nil, fmt.Errorf("%w (thread schema %d)", errThreadsUnsupported, tf.Version)
 	}
 	return &Thread{
 		ID: tf.Meta.ID, ProjectID: tf.Meta.ProjectID, Title: tf.Meta.Title,
 		Created: tf.Meta.Created, Updated: tf.Meta.Updated,
 		CodexID: tf.Meta.CodexID, ClaudeID: tf.Meta.ClaudeID, PiID: tf.Meta.PiID,
+		AgentID:  tf.Meta.AgentID,
 		Messages: tf.Messages, ChatLog: tf.ChatLog,
 		// The diff count is derived state; the zero value already means
 		// "never counted", so the first read scans.

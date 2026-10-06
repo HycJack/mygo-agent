@@ -23,14 +23,16 @@ type SidebarVM struct {
 	Threads []ThreadVM
 	Current string
 
-	Backend     string // builtin | codex | claude | pi
-	Width       float32
-	BackendName string
-	CodexFound  bool
-	PiFound     bool
+	// The rail's agent switcher (the old backend switcher's slot): the
+	// agent a new task binds, with the resolved backend-model subtitle
+	// (spec/agents.md).
+	AgentID   string
+	AgentName string
+	Agents    []AgentVM
+	Width     float32
 
 	// Transient view state; the host syncs it back after each frame.
-	BackendMenu bool
+	AgentMenu   bool
 	ProjectMenu bool
 	HoverRow    string
 
@@ -48,6 +50,13 @@ type ThreadVM struct {
 	Updated    time.Time
 	BackendTag string // non-empty appends " · <tag>" under the title
 	Running    bool
+	// AgentEmoji is the bound agent's emoji, prefixed to the title so a
+	// task's owner is recognizable at a glance (spec/agents.md).
+	AgentEmoji string
+	// Search is the row's full-text haystack (title + messages), filled
+	// by the host only while a search is active; empty matches on the
+	// title alone.
+	Search string
 }
 
 // SidebarActions is what the rail calls back for.
@@ -56,10 +65,12 @@ type SidebarActions interface {
 	OpenThread(id string)
 	DeleteThread(id string)
 	RenameThread(id string)
-	SetBackend(kind string)
+	SetAgent(id string)
 	SwitchProject(id string)
 	RemoveProject(id string)
 	PickProjectDir()
+	// OpenSettings opens the settings dialog (the rail's gear, or ⌘,).
+	OpenSettings()
 }
 
 // ThreadGroup is one date section of the task list.
@@ -114,7 +125,9 @@ func threadMatches(th ThreadVM, q string) bool {
 	if strings.Contains(strings.ToLower(th.Title), q) {
 		return true
 	}
-	return false
+	// Full text (spec/agents.md, tracing): the host fills the haystack
+	// only while a search is on, so the empty default costs nothing.
+	return th.Search != "" && strings.Contains(strings.ToLower(th.Search), q)
 }
 
 func sameDay(a, b time.Time) bool {
@@ -176,8 +189,24 @@ func Sidebar(c *ui.Context, vm *SidebarVM, acts SidebarActions, top float32) {
 		ui.Scroll(c).Grow(1).Padding(2, 8, 12).Gap(2).Children(func() {
 			threadList(c, vm, acts)
 		})
-		ui.Column(c).Padding(10).BorderWidth(1, 0, 0, 0).BorderColor(vm.Pal.Border).Children(func() {
-			backendPicker(c, vm, acts)
+		// The rail's bottom-left corner: the backend switcher, with
+		// settings one click beside it (and ⌘, behind it).
+		ui.Row(c).Padding(10).Gap(6).AlignItems(ui.Center).BorderWidth(1, 0, 0, 0).
+			BorderColor(vm.Pal.Border).Children(func() {
+			ui.Column(c).Grow(1).MinWidth(0).Children(func() {
+				agentPicker(c, vm, acts)
+			})
+			gear := ui.ButtonBase(c).Label("Settings").Tooltip("Settings (⌘,)").
+				Size(28, 28).Radius(8).Center().Cursor(ui.CursorPointer)
+			if gear.Hovered() {
+				gear.Background(vm.Pal.Hover)
+			}
+			if gear.Clicked() {
+				acts.OpenSettings()
+			}
+			gear.Children(func() {
+				ui.Icon(c, IconSliders).FontSize(15).TextColor(vm.Pal.TextMuted)
+			})
 		})
 	})
 }
@@ -228,6 +257,9 @@ func threadRow(c *ui.Context, vm *SidebarVM, acts SidebarActions, th ThreadVM) {
 			title := th.Title
 			if title == "" {
 				title = "New task"
+			}
+			if th.AgentEmoji != "" {
+				ui.Text(c, th.AgentEmoji).FontSize(12)
 			}
 			ui.Text(c, title).SingleLine().FontSize(13)
 			sub := RelTime(th.Updated)
@@ -331,56 +363,64 @@ func projectSwitcher(c *ui.Context, vm *SidebarVM, acts SidebarActions) {
 	})
 }
 
-// backendPicker is the bottom section: the active harness and its menu.
-func backendPicker(c *ui.Context, vm *SidebarVM, acts SidebarActions) {
+// agentPicker is the rail's bottom-left switcher: the agent a new task
+// binds, showing each profile's resolved backend-model. It replaces the
+// old backend switcher — the backend is an agent attribute now, and the
+// composer's picker, the home launcher and this rail bind the same
+// selection (spec/agents.md).
+func agentPicker(c *ui.Context, vm *SidebarVM, acts SidebarActions) {
 	pick := ui.ButtonBase(c).Padding(6, 8).Radius(8).Gap(8).Cursor(ui.CursorPointer)
 	if pick.Hovered() {
 		pick.Background(vm.Pal.Hover)
 	}
 	if pick.Clicked() {
-		vm.BackendMenu = !vm.BackendMenu
+		vm.AgentMenu = !vm.AgentMenu
 	}
 	pick.Children(func() {
-		dot := vm.Pal.Success
-		if vm.Backend == "codex" {
-			dot = vm.Pal.Text
-		}
-		ui.Icon(c, IconDot).FontSize(9).TextColor(dot)
-		ui.Textf(c, "%s", vm.BackendName).FontSize(12).Grow(1)
+		ui.Icon(c, IconBot).FontSize(14).TextColor(vm.Pal.TextMuted)
+		ui.Text(c, vm.AgentName).SingleLine().FontSize(12).Grow(1)
 		chev := ui.Icon(c, IconChevDown).FontSize(12).TextColor(vm.Pal.TextMuted)
-		if vm.BackendMenu {
+		if vm.AgentMenu {
 			chev.Rotate(180)
 		}
 	})
-	ui.Popover(c, pick, &vm.BackendMenu, func() {
-		closeMenu := func() { vm.BackendMenu = false }
-		// Popover's panel already paints the look; more here would read
-		// as a second border inside it.
-		ui.Column(c).Width(250).Padding(4).Children(func() {
-			if MenuItem(c, "Built-in agent — runs in the app", vm.Backend == "builtin", vm.Pal) {
+	ui.Popover(c, pick, &vm.AgentMenu, func() {
+		closeMenu := func() { vm.AgentMenu = false }
+		ui.Column(c).Width(260).Padding(4).Children(func() {
+			ui.Text(c, "AGENT").FontSize(10).FontWeight(600).TextColor(vm.Pal.TextMuted).
+				Padding(6, 10, 2).LetterSpacing(0.6)
+			for i := range vm.Agents {
+				ag := &vm.Agents[i]
+				row := ui.ButtonBase(c).Fill().Padding(6, 10).Radius(7).Gap(8).Cursor(ui.CursorPointer)
+				if row.Hovered() {
+					row.Background(vm.Pal.CardHover)
+				}
+				if row.Clicked() {
+					closeMenu()
+					acts.SetAgent(ag.ID)
+				}
+				row.Children(func() {
+					ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
+						ui.Text(c, strings.TrimSpace(ag.Emoji+" "+ag.Name)).SingleLine().FontSize(12.5)
+						ui.Text(c, ag.Sub).SingleLine().FontSize(10.5).TextColor(vm.Pal.TextMuted)
+					})
+					if ag.ID == vm.AgentID {
+						ui.Icon(c, IconCheck).FontSize(13).TextColor(c.Theme().Text)
+					}
+				})
+			}
+			mng := ui.ButtonBase(c).Fill().Padding(6, 10).Radius(7).Gap(8).Cursor(ui.CursorPointer)
+			if mng.Hovered() {
+				mng.Background(vm.Pal.CardHover)
+			}
+			if mng.Clicked() {
 				closeMenu()
-				acts.SetBackend("builtin")
+				acts.OpenSettings()
 			}
-			if MenuItem(c, "Claude Code — runs the claude binary", vm.Backend == "claude", vm.Pal) {
-				closeMenu()
-				acts.SetBackend("claude")
-			}
-			label := "Codex CLI — runs the codex binary"
-			if !vm.CodexFound {
-				label = "Codex CLI — not found in PATH"
-			}
-			if MenuItemDisabled(c, label, vm.Backend == "codex", !vm.CodexFound, vm.Pal) {
-				closeMenu()
-				acts.SetBackend("codex")
-			}
-			label = "Pi coding agent — runs the pi binary"
-			if !vm.PiFound {
-				label = "Pi coding agent — not found in PATH"
-			}
-			if MenuItemDisabled(c, label, vm.Backend == "pi", !vm.PiFound, vm.Pal) {
-				closeMenu()
-				acts.SetBackend("pi")
-			}
+			mng.Children(func() {
+				ui.Icon(c, IconSliders).FontSize(13).TextColor(c.Theme().TextMuted)
+				ui.Text(c, "Manage agents…").FontSize(12.5).Grow(1)
+			})
 		})
 	})
 }

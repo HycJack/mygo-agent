@@ -43,7 +43,7 @@ done
 
 	waitFor(t, 10*time.Second, func() bool {
 		running := false
-		a.update(func() { running = th.Messages[0].Running && !a.running == false })
+		a.update(func() { running = th.Messages[0].Running && a.isRunning(th.ID) })
 		return running
 	})
 
@@ -57,11 +57,11 @@ done
 		t.Fatal("the grandchild died on its own before the stop")
 	}
 
-	a.stop()
+	a.stopThread(th.ID)
 
 	waitFor(t, 8*time.Second, func() bool {
 		stopped := false
-		a.update(func() { stopped = !a.running })
+		a.update(func() { stopped = !a.isRunning(th.ID) })
 		return stopped && !alive(claudePid)
 	})
 	if alive(claudePid) {

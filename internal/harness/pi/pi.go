@@ -109,7 +109,8 @@ func (h *Harness) Run(ctx context.Context, turn harness.Turn, emit func(harness.
 	}
 	if r.tokens > 0 {
 		r.emit(harness.Event{Kind: harness.EventNote, Text: fmt.Sprintf(
-			"Done · %d tokens · $%.4f · session %s", r.tokens, r.cost, cli.ShortSession(sessionID))})
+			"Done · %d tokens · $%.4f · session %s", r.tokens, r.cost, cli.ShortSession(sessionID)),
+			Tokens: int64(r.tokens), CostUSD: r.cost})
 	}
 	return nil
 }

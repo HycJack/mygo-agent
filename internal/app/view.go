@@ -48,14 +48,17 @@ func (a *app) view(c *ui.Context) {
 			a.refreshGit()
 		}
 	}
+	if c.Shortcut(ui.Cmd, ui.KeyComma) {
+		a.settingsOpen = true
+	}
 	if c.Shortcut(0, ui.KeyEscape) {
 		// Overlays take Escape first while open; then the viewer gives
 		// way, and finally a running agent stops.
 		switch {
 		case a.viewerOpen:
 			a.viewerOpen = false
-		case a.running:
-			a.stop()
+		case a.currentRunning():
+			a.stopThread(a.current)
 		}
 	}
 
@@ -142,7 +145,7 @@ func (a *app) renderHeader(c *ui.Context, tb ui.TitleBar) {
 	th := a.currentThread()
 	vm := &uipkg.HeaderVM{
 		Title:    "New task",
-		Running:  a.running,
+		Running:  a.currentRunning(),
 		NavOpen:  a.navOpen,
 		WsOpen:   a.wsOpen,
 		TermOpen: a.termOpen,
@@ -154,7 +157,9 @@ func (a *app) renderHeader(c *ui.Context, tb ui.TitleBar) {
 		if th.Title != "" {
 			vm.Title = th.Title
 		}
-		vm.Meta = fmt.Sprintf("%s · %s · %s", a.backendLabel(), a.model, uipkg.ModeLabel(a.mode))
+		// The meta line names who answers: the bound agent when the task
+		// has one worth naming, then backend, model and mode.
+		vm.Meta = a.threadMeta(th)
 		vm.Changed = changedFiles(th)
 	}
 	uipkg.Header(c, tb, vm, headerActions{a: a, th: th})
@@ -187,6 +192,41 @@ func (h headerActions) Export() {
 	if h.th != nil {
 		h.a.exportMarkdown(h.a.uiCtx, h.th)
 	}
+}
+
+func (h headerActions) Trace() {
+	if h.th != nil {
+		h.a.openTrace(h.th)
+	}
+}
+
+// threadMeta is the header's "who answers" line: the bound agent when
+// the task has one worth naming, then the resolved backend, model and
+// mode — the same resolution a turn will use (spec/agents.md).
+func (a *app) threadMeta(th *Thread) string {
+	meta := ""
+	if ag := a.agentFor(th); ag != nil {
+		ov := a.resolveAgent(ag)
+		if ag.Name != "Default" {
+			meta = strings.TrimSpace(ag.Emoji+" "+ag.Name) + " · "
+		}
+		mode := uipkg.ModeLabel(min(max(ov.mode, 0), 2))
+		return meta + fmt.Sprintf("%s · %s · %s", backendLabels(ov.backend), ov.model, mode)
+	}
+	return meta + fmt.Sprintf("%s · %s · %s", a.backendLabel(), a.model, uipkg.ModeLabel(a.mode))
+}
+
+// backendLabels names a backend key for display.
+func backendLabels(backend string) string {
+	switch backend {
+	case "claude":
+		return "Claude Code"
+	case "codex":
+		return "Codex CLI"
+	case "pi":
+		return "Pi"
+	}
+	return "Built-in agent"
 }
 
 func (h headerActions) Delete() {

@@ -10,7 +10,7 @@ import (
 )
 
 // waitTurn waits for the running reply at index at to finish — the real
-// completion signal, unlike app.running which only startTurn sets. Reads
+// completion signal, unlike the run registry, which dispatch populates. Reads
 // go through a.update so they are serialized with the run's writes.
 func waitTurn(t *testing.T, a *app, th *Thread, at int) {
 	t.Helper()

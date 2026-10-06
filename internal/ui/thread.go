@@ -58,6 +58,10 @@ type MessageVM struct {
 	ID, Role, Text string
 	At             time.Time
 	Running        bool
+	// AgentLabel / AgentEmoji attribute a group relay's reply to its
+	// member (spec/agents.md); empty on solo threads.
+	AgentLabel string
+	AgentEmoji string
 	// Items is the ordered sequence the transcript draws. Text stays on
 	// the message too: it is the aggregate the copy button, the rail
 	// preview and the built-in transcript seeding all read.
@@ -277,7 +281,13 @@ func messageRow(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, i int) 
 	fadeIn(c, root, m)
 	root.Children(func() {
 		avatar := ui.Box(c).Size(26, 26).Radius(7).Background(vm.Pal.Card).Border(1, vm.Pal.Border).Center()
-		avatar.Children(func() { ui.Icon(c, IconSparkles).FontSize(14).TextColor(t.Text) })
+		avatar.Children(func() {
+			if m.AgentEmoji != "" {
+				ui.Text(c, m.AgentEmoji).FontSize(13)
+			} else {
+				ui.Icon(c, IconSparkles).FontSize(14).TextColor(t.Text)
+			}
+		})
 		ui.Column(c).Grow(1).MinWidth(0).Gap(6).Children(func() {
 			// The turn in arrival order. Prose renders at the point it was
 			// said, so a tool call the agent ran mid-sentence stays between
@@ -427,6 +437,13 @@ func fadeIn(c *ui.Context, root *ui.Element, m *MessageVM) {
 // pressed button keeps itself visible through its own Hovered.
 func messageActions(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, m *MessageVM, canRegenerate, visible bool) {
 	ui.Row(c).Gap(2).AlignItems(ui.Center).Children(func() {
+		if m.AgentLabel != "" {
+			label := ui.Text(c, m.AgentLabel).FontSize(10.5).FontWeight(600).TextColor(vm.Pal.TextMuted)
+			if !visible {
+				label.Opacity(0)
+			}
+			ui.Box(c).Width(4)
+		}
 		stamp := ui.Text(c, m.At.Format("15:04")).FontSize(10.5).TextColor(vm.Pal.TextMuted).
 			Tooltip(m.At.Format("2006-01-02 15:04:05"))
 		if !visible {

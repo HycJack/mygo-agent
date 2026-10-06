@@ -20,6 +20,7 @@ const (
 	ActionShell     Action = "shell.exec"
 	ActionSkill     Action = "skill.read"
 	ActionMCP       Action = "mcp.call"
+	ActionDelegate  Action = "agent.delegate"
 )
 
 // Mode is the approval-mode selector, matching the UI's three segments and
@@ -110,7 +111,7 @@ func (p Policy) actionDefault(a Action) Permission {
 	switch a {
 	case ActionFileRead, ActionSkill:
 		return PermAllow
-	case ActionFileWrite, ActionShell:
+	case ActionFileWrite, ActionShell, ActionDelegate:
 		if p.Mode >= ModeAgent {
 			return PermAllow
 		}

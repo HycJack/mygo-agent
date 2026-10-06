@@ -25,8 +25,42 @@ func Home(c *ui.Context, vm *ViewModel, acts Actions, suggestions []string) {
 				ui.Icon(c, IconSparkles).FontSize(26).TextColor(vm.Pal.Text)
 			})
 			ui.Text(c, "What are we coding next?").FontSize(25).Bold()
-			ui.Text(c, "Codex runs in the background while you keep working.").FontSize(13).TextColor(t.TextMuted)
+			ui.Text(c, "Your agent runs in the background while you keep working.").FontSize(13).TextColor(t.TextMuted)
 			Composer(c, vm, acts)
+			// The agent launcher (spec/agents.md): one card per configured
+			// agent, the chosen one highlighted. Picking one binds it to
+			// the next task — typing straight into the composer still
+			// works and binds whatever the picker last chose.
+			if len(vm.Agents) > 0 {
+				ui.Row(c).Gap(8).Wrap().Justify(ui.Center).Children(func() {
+					for i := range vm.Agents {
+						ag := &vm.Agents[i]
+						active := ag.ID == vm.AgentID
+						card := ui.ButtonBase(c).Padding(8, 14).Radius(12).Gap(8).Cursor(ui.CursorPointer)
+						if active {
+							card.Background(vm.Pal.Sel).Border(1, vm.Pal.Border)
+						} else {
+							card.Border(1, vm.Pal.Border)
+						}
+						if card.Hovered() {
+							card.Background(vm.Pal.Hover)
+						}
+						if card.Clicked() {
+							acts.SetAgent(ag.ID)
+							vm.FocusComposer = true
+						}
+						card.Children(func() {
+							if ag.Emoji != "" {
+								ui.Text(c, ag.Emoji).FontSize(15)
+							}
+							ui.Column(c).Gap(1).Children(func() {
+								ui.Text(c, ag.Name).FontSize(12.5).SingleLine()
+								ui.Text(c, ag.Sub).FontSize(10).TextColor(t.TextMuted).SingleLine()
+							})
+						})
+					}
+				})
+			}
 			ui.Row(c).Gap(8).Wrap().Justify(ui.Center).Children(func() {
 				for _, prompt := range suggestions {
 					prompt := prompt

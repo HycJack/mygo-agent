@@ -89,6 +89,12 @@ process. The prompt is written as one input line:
 
 stdin stays open until the `result` event (or an error) arrives, then closes.
 
+- The agent profile's extras ride two flags (spec/agents.md): the system
+  prompt as `--append-system-prompt`, and the turn's MCP servers as a
+  `--mcp-config` file — stdio servers keep their command, URL servers
+  map to the http type — that is deleted when the turn ends. A server
+  the format cannot express is skipped, not fatal.
+
 - The session id arrives in the `system`/`init` event (`session_id`), as
   today.
 - A context compaction arrives as a `system` frame with

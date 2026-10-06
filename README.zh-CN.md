@@ -11,7 +11,17 @@
 
 - **项目（Projects）** —— 侧栏顶部切换工作目录；任务、文件树、git 面板、
   终端均按项目隔离。
-- **四种 agent 后端**，左下角菜单切换：
+- **Agent（可配置档案）** —— 任务可绑定一个 Agent：后端、厂商/模型、
+  默认审批模式、工具与 MCP 子集、技能过滤、追加系统提示词。在输入框
+  选择器或 home 启动器卡片选择，设置页编辑；空档案沿用应用级选择。
+  任务各自独立运行、独立停止、独立重新生成。Agent 之间可用 `delegate`
+  工具单跳委托子任务；配置 **panel（群聊接力）** 后，线程内成员按顺序
+  各自回复、共享上下文，每条回复标注归属 Agent。
+- **追踪（Tracing）** —— 每个任务旁挂一份只追加的事件轨迹（工具调用
+  与耗时/退出码、note、每回合 tokens/费用汇总），任务菜单 **View
+  trace** 查看；侧栏搜索匹配消息全文，不止标题。
+- **四种 agent 后端** —— builtin / Codex CLI / Claude Code / Pi，由
+  设置中的 Agent 档案决定（未指定的档案沿用应用默认）：
   - *内置 agent* —— 进程内循环（参考 pi）：流式 OpenAI 兼容调用（chat
     completions 或 Responses API）+ 本地工具（`bash`、`read_file`、
     `edit_file`、`list_files`、`grep`、`read_skill`），回复支持表格、

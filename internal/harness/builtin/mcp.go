@@ -17,16 +17,6 @@ import (
 	"time"
 )
 
-// MCPServer is one Model Context Protocol server in the configuration:
-// a command the app spawns and speaks JSON-RPC to over stdio.
-type MCPServer struct {
-	Name    string   `json:"name"`
-	Command string   `json:"command,omitempty"`
-	Args    []string `json:"args,omitempty"`
-	Env     []string `json:"env,omitempty"`
-	URL     string   `json:"url,omitempty"`
-}
-
 // mcpClient is a stdio MCP client for one server: initialize,
 // tools/list and tools/call, with JSON-RPC ids matched to a pending map.
 type mcpClient struct {

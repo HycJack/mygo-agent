@@ -29,7 +29,15 @@ type ViewModel struct {
 	ProviderID    string
 	Providers     []ProviderVM // the model picker's rows
 
+	// The agent the composer shows and new tasks bind (spec/agents.md):
+	// the current thread's binding on a thread, the active selection on
+	// the home screen.
+	AgentID   string
+	AgentName string
+	Agents    []AgentVM // the agent picker's rows
+
 	ModelMenu    bool // the picker popover's open state
+	AgentMenu    bool // the agent popover's open state
 	SettingsSel  string
 	SettingsOpen bool
 
@@ -41,6 +49,14 @@ type ProviderVM struct {
 	ID     string
 	Name   string
 	Models []string
+}
+
+// AgentVM is one agent's row in the picker and on the home launcher.
+type AgentVM struct {
+	ID    string
+	Name  string
+	Emoji string
+	Sub   string // backend · model, as resolved for display
 }
 
 // Actions is the narrow surface the shared views call back through. The
@@ -58,6 +74,9 @@ type Actions interface {
 	// provider manager at a provider ("" keeps the current selection).
 	PickModel(providerID, model string)
 	OpenSettings(providerID string)
+	// SetAgent binds the agent: new tasks start with it, and on a thread
+	// the thread rebinds from the next turn (spec/agents.md).
+	SetAgent(id string)
 	// SaveConfig persists settings after an edit.
 	SaveConfig()
 }
@@ -111,12 +130,13 @@ func Composer(c *ui.Context, vm *ViewModel, acts Actions) {
 // widest element without becoming a banner across a wide display.
 const composerMaxWidth = 1080
 
-// composerRow is the bottom line: approval mode, model, send/stop.
+// composerRow is the bottom line: approval mode, agent, model, send/stop.
 func composerRow(c *ui.Context, vm *ViewModel, acts Actions) {
 	t := c.Theme()
 	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 		Segments(c, vm.Mode, ModeNames, acts.SetMode, vm.Pal)
 		ui.Spacer(c)
+		agentButton(c, vm, acts)
 		modelButton(c, vm, acts)
 		send := ui.ButtonBase(c).Label("Send").Tooltip("Send (Enter)").Size(30, 30).Radius(999).Center()
 		if vm.Running {
@@ -211,12 +231,78 @@ func modelButton(c *ui.Context, vm *ViewModel, acts Actions) {
 			}
 			mng.Children(func() {
 				ui.Icon(c, IconSliders).FontSize(13).TextColor(t.TextMuted)
-				ui.Text(c, "Manage providers & models…").FontSize(12).Grow(1)
+				ui.Text(c, "Settings…").FontSize(12).Grow(1)
 			})
 			Segments(c, vm.Effort, EffortNames, acts.SetEffort, vm.Pal)
 			if vm.Effort != prev {
 				acts.SaveConfig()
 			}
+		})
+	})
+}
+
+// agentButton opens the agent picker: the configured agents, then the
+// manager. The selection binds new tasks; on a thread it rebinds the
+// thread from its next turn (spec/agents.md).
+func agentButton(c *ui.Context, vm *ViewModel, acts Actions) {
+	t := c.Theme()
+	ab := ui.ButtonBase(c).Tooltip("Agent").Gap(6).Padding(4, 8).Radius(8).Cursor(ui.CursorPointer)
+	if ab.Hovered() || vm.AgentMenu {
+		ab.Background(vm.Pal.CardHover)
+	}
+	if ab.Clicked() {
+		vm.AgentMenu = !vm.AgentMenu
+	}
+	ab.Children(func() {
+		ui.Icon(c, IconBot).FontSize(12).TextColor(vm.Pal.TextMuted)
+		ui.Text(c, vm.AgentName).FontSize(11.5).TextColor(t.TextMuted).SingleLine()
+		chev := ui.Icon(c, IconChevDown).FontSize(12).TextColor(vm.Pal.TextMuted)
+		if vm.AgentMenu {
+			chev.Rotate(180)
+		}
+	})
+	ui.Popover(c, ab, &vm.AgentMenu, func() {
+		ui.Column(c).Width(280).Padding(4).Children(func() {
+			ui.Text(c, "AGENT").FontSize(10).FontWeight(600).TextColor(vm.Pal.TextMuted).
+				Padding(6, 10, 2).LetterSpacing(0.6)
+			ui.Scroll(c).MaxHeight(280).Children(func() {
+				ui.Column(c).FillWidth().Children(func() {
+					for i := range vm.Agents {
+						ag := &vm.Agents[i]
+						active := ag.ID == vm.AgentID
+						row := ui.ButtonBase(c).Padding(6, 10).Radius(7).Gap(8).Cursor(ui.CursorPointer)
+						if row.Hovered() {
+							row.Background(vm.Pal.CardHover)
+						}
+						if row.Clicked() {
+							acts.SetAgent(ag.ID)
+							vm.AgentMenu = false
+						}
+						row.Children(func() {
+							ui.Column(c).Grow(1).MinWidth(0).Gap(1).Children(func() {
+								ui.Text(c, strings.TrimSpace(ag.Emoji+" "+ag.Name)).FontSize(12).SingleLine()
+								ui.Text(c, ag.Sub).FontSize(10).TextColor(vm.Pal.TextMuted).SingleLine()
+							})
+							if active {
+								ui.Icon(c, IconCheck).FontSize(13).TextColor(t.Text)
+							}
+						})
+					}
+				})
+			})
+			ui.Box(c).Height(1).Margin(4, 6).Background(vm.Pal.Border)
+			mng := ui.ButtonBase(c).Padding(7, 10).Radius(7).Gap(8).Cursor(ui.CursorPointer)
+			if mng.Hovered() {
+				mng.Background(vm.Pal.CardHover)
+			}
+			if mng.Clicked() {
+				vm.AgentMenu = false
+				acts.OpenSettings(vm.AgentID)
+			}
+			mng.Children(func() {
+				ui.Icon(c, IconSliders).FontSize(13).TextColor(t.TextMuted)
+				ui.Text(c, "Manage agents…").FontSize(12).Grow(1)
+			})
 		})
 	})
 }

@@ -1,6 +1,8 @@
 package app
 
 import (
+	"strings"
+
 	uipkg "mygo-agent/internal/ui"
 
 	"github.com/egoist/mygo"
@@ -24,11 +26,19 @@ func (a *app) sidebarViewModel() *uipkg.SidebarVM {
 	vm.Workdir = a.workdir
 	vm.ActiveProject = a.activeProject
 	vm.Current = a.current
-	vm.Backend = a.backend
-	vm.BackendName = a.backendLabel()
-	vm.CodexFound = a.codexPath != ""
-	vm.PiFound = a.piPath != ""
-	vm.BackendMenu = a.backendMenu
+	// The agent switcher's state: the composer's picker, the home
+	// launcher and this rail bind one selection (spec/agents.md).
+	vm.AgentID = a.activeAgentID()
+	vm.AgentName = vm.AgentID
+	if ag := a.agentByID(vm.AgentID); ag != nil {
+		vm.AgentName = strings.TrimSpace(ag.Emoji + " " + ag.Name)
+	}
+	vm.Agents = vm.Agents[:0]
+	for i := range a.agents {
+		ag := &a.agents[i]
+		vm.Agents = append(vm.Agents, uipkg.AgentVM{ID: ag.ID, Name: ag.Name, Emoji: ag.Emoji, Sub: a.agentSub(ag)})
+	}
+	vm.AgentMenu = a.agentMenu
 	vm.ProjectMenu = a.projectMenu
 	vm.HoverRow = a.hoverRow
 	vm.Width = a.navWidth
@@ -44,7 +54,13 @@ func (a *app) sidebarViewModel() *uipkg.SidebarVM {
 			continue
 		}
 		t := uipkg.ThreadVM{ID: th.ID, Title: th.Title, Updated: th.Updated,
-			Running: th.ID == a.current && a.running}
+			Running: a.isRunning(th.ID)}
+		if a.search != "" {
+			t.Search = th.searchHaystack()
+		}
+		if ag := a.agentFor(th); ag != nil {
+			t.AgentEmoji = ag.Emoji
+		}
 		if th.CodexID != "" {
 			t.BackendTag = "codex"
 		}
@@ -56,7 +72,7 @@ func (a *app) sidebarViewModel() *uipkg.SidebarVM {
 // syncSidebar copies the rail's transient view state back to the host.
 func (a *app) syncSidebar(vm *uipkg.SidebarVM) {
 	a.search = vm.Search
-	a.backendMenu = vm.BackendMenu
+	a.agentMenu = vm.AgentMenu
 	a.projectMenu = vm.ProjectMenu
 	a.hoverRow = vm.HoverRow
 }
@@ -92,14 +108,12 @@ func (h sidebarActions) RenameThread(id string) {
 	h.a.renaming, h.a.renameID, h.a.renameDraft = true, th.ID, th.Title
 }
 
-func (h sidebarActions) SetBackend(kind string) {
-	h.a.backend = kind
-	h.a.saveConfig()
-}
+func (h sidebarActions) SetAgent(id string) { h.a.setActiveAgent(id) }
 
 func (h sidebarActions) SwitchProject(id string) { h.a.switchProject(id) }
 func (h sidebarActions) RemoveProject(id string) { h.a.removeProject(id) }
 func (h sidebarActions) PickProjectDir()         { h.a.pickProjectDir() }
+func (h sidebarActions) OpenSettings()           { h.a.settingsOpen = true }
 
 // renderSidebar assembles the snapshot, renders, and syncs back.
 func (a *app) renderSidebar(c *ui.Context, top float32) {

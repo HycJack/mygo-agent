@@ -424,3 +424,57 @@ func TestOtherSystemFramesAreNotCompactions(t *testing.T) {
 		t.Fatalf("unrelated system frames produced notes: %+v", notes)
 	}
 }
+
+// TestRunFlagsCarryAgentMapping pins the two agent-facing flags
+// (spec/agents.md): the profile's system prompt rides
+// --append-system-prompt and the turn's MCP servers land in a
+// --mcp-config file that is gone when the turn ends. A bare turn asks
+// for neither.
+func TestRunFlagsCarryAgentMapping(t *testing.T) {
+	dir := t.TempDir()
+	argsFile := filepath.Join(dir, "args")
+	script := `#!/bin/bash
+printf '%s\n' "$@" > "` + argsFile + `"
+echo '{"type":"result","subtype":"success","is_error":false,"duration_ms":1,"result":"done"}'
+`
+	scriptPath := filepath.Join(dir, "fake-claude.sh")
+	if err := os.WriteFile(scriptPath, []byte(script), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	h := &Harness{Bin: scriptPath}
+
+	turn := harness.Turn{Workdir: dir, Model: "m", SystemPrompt: "Be terse.",
+		MCPServers: []harness.MCPServer{{Name: "fs", Command: "npx", Args: []string{"-y", "srv"}}}}
+	if err := h.Run(context.Background(), turn, func(harness.Event) {}); err != nil {
+		t.Fatalf("run: %v", err)
+	}
+	raw, err := os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	args := string(raw)
+	if !strings.Contains(args, "--append-system-prompt") || !strings.Contains(args, "Be terse.") {
+		t.Fatalf("system prompt flag missing: %s", args)
+	}
+	at := strings.Index(args, "--mcp-config")
+	if at < 0 {
+		t.Fatalf("mcp-config flag missing: %s", args)
+	}
+	rest := args[at+len("--mcp-config\n"):]
+	path := strings.TrimSpace(rest[:strings.IndexByte(rest, '\n')])
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("the mcp config file outlived the turn: %s", path)
+	}
+
+	// A bare turn asks for neither flag.
+	if err := h.Run(context.Background(), harness.Turn{Workdir: dir, Model: "m"}, func(harness.Event) {}); err != nil {
+		t.Fatalf("bare run: %v", err)
+	}
+	raw, err = os.ReadFile(argsFile)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "append-system-prompt") || strings.Contains(string(raw), "mcp-config") {
+		t.Fatalf("bare turn grew agent flags: %s", raw)
+	}
+}

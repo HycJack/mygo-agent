@@ -47,11 +47,10 @@ func TestDeletingTheRunningThreadStopsTheRun(t *testing.T) {
 	a.current = "t1"
 	a.startTurn(th, "keep running")
 
-	var running bool
-	var runningID string
-	a.update(func() { running, runningID = a.running, a.runningID })
-	if !running || runningID != "t1" {
-		t.Fatalf("the turn is not running: running=%v runningID=%q", running, runningID)
+	running := false
+	a.update(func() { running = a.isRunning("t1") })
+	if !running {
+		t.Fatal("the turn is not running")
 	}
 
 	// Another task is on screen when the running one is deleted — the
@@ -66,15 +65,15 @@ func TestDeletingTheRunningThreadStopsTheRun(t *testing.T) {
 	deadline := time.Now().Add(10 * time.Second)
 	for {
 		settled := false
-		a.update(func() { settled = !a.running && a.runningID == "" && a.current == "t2" })
+		a.update(func() { settled = !a.isRunning("t1") && a.current == "t2" })
 		if settled {
 			break
 		}
 		if time.Now().After(deadline) {
-			a.update(func() {
-				t.Fatalf("the run never settled after the delete: running=%v runningID=%q current=%q",
-					a.running, a.runningID, a.current)
-			})
+			running := false
+			a.update(func() { running = a.isRunning("t1") })
+			t.Fatalf("the run never settled after the delete: running=%v current=%q",
+				running, a.current)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}

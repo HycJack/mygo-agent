@@ -24,10 +24,12 @@ type HeaderActions interface {
 	ToggleNav()
 	ToggleWorkspace()
 	ToggleTerminal()
-	// Rename opens the rename dialog; Export writes the thread out as
-	// Markdown; Delete removes the task.
 	Rename()
+	// Export writes the thread out as Markdown.
 	Export()
+	// Trace opens the thread's event trace in the viewer.
+	Trace()
+	// Delete removes the task (the undo toast is the way back).
 	Delete()
 }
 
@@ -109,6 +111,10 @@ func taskMenu(c *ui.Context, vm *HeaderVM, acts HeaderActions) {
 			if MenuItem(c, "Rename task", false, vm.Pal) {
 				closeMenu()
 				acts.Rename()
+			}
+			if MenuItem(c, "View trace", false, vm.Pal) {
+				closeMenu()
+				acts.Trace()
 			}
 			if MenuItem(c, "Export as Markdown", false, vm.Pal) {
 				closeMenu()

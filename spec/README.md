@@ -14,10 +14,15 @@ state invariants; code and tests follow them.
 | [data.md](data.md) | The persistence formats: versioning, strict decode, load-failure handling |
 
 Proposals are not contracts: [agents.md](agents.md) is a staged plan
-(agents as configured entities, a web governance plane, tracing) whose
-"current state" section tracks the code as it stands. It becomes
-normative per stage, as each stage lands and its spec rows move into the
-table above.
+(agents as configured entities, a web governance plane, tracing). Its
+P0–P3 and P6 stages have landed — their data contract moved into
+[data.md](data.md) (config v2, the thread's `agent_id`, the trace
+file), their rule layering and the delegate action into
+[permissions.md](permissions.md), and the claude mappings into
+[cli-backends.md](cli-backends.md); P4/P5 (the server layer and the
+web console) are deferred. Its "current state" section tracks the code
+as it stands. The remaining stages become normative the same way, as
+each lands.
 
 ## Rules for every spec
 

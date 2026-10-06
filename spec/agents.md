@@ -1,6 +1,6 @@
 # 方案：Agent 化与多端管理（配置化工具 / MCP / Skills / 模型，单与多 Agent，Web 管理，会话追踪）
 
-状态：提案（待评审拍板后按阶段实施）。本文给出概念模型、与现有代码的衔接点、数据与协议演进、分阶段计划。
+状态：**P0、P1、P2、P3、P6 已落地**（✅ 标注）；**P4、P5 暂缓**（2026-10 决定：服务层与 Web 控制台延后）；P7 可选未启动。已落地部分的契约移入正式 spec —— 数据格式在 data.md（config v2、thread `agent_id`、trace 文件）、规则叠加与 `agent.delegate` 在 permissions.md、claude 的映射在 cli-backends.md；本节的"现状盘点"随代码保持更新。
 
 ## 1. 目标与产品分工
 
@@ -18,7 +18,7 @@
 - **工具**：`harness.Tools(workdir, skills, ToolOptions)` 构建内置 6 件（bash / read_file / edit_file / list_files / grep / read_skill），每个 `Tool{Name, Description, Actions, Parameters, Execute}` —— 天然的注册表素材。
 - **Skills**：`DiscoverSkills(projectDir)` 从项目目录发现，经 `read_skill` 工具暴露。
 - **MCP**：运行时 `a.effectiveMCPServers()`（全局配置 + 项目 `.mcp.json`；stdio 命令或 streamable HTTP `url` 均可）spawn 后把工具并入工具集（仅 builtin）。
-- **运行态**：`a.running`/`a.cancel` **全局单飞** —— 同一时刻只能有一个回合。这是多 Agent 的第一个硬阻塞点。
+- **运行态**：~~`a.running`/`a.cancel` 全局单飞~~ → **已改**（P2 ✅）：`runs map[threadID]*runState`，多个回合并发，composer 的 Stop、Escape 和删除任务都只作用于自己那个线程；sidebar 每行显示各自的转圈。
 - **会话存储**：`threads/<projectID>/<threadID>.json`（meta + messages + chat_log），原子写，版本化（spec/data.md）。无线程 ↔ Agent 绑定，无事件级 trace；用量采集部分就位：builtin 已采集 prompt/completion tokens（驱动水位压缩；chat wire 需声明 `context_window` 才会请求 usage），cost 未采集；claude 的 result 行带 `duration_ms/total_cost_usd/usage`（时长/费用/tokens 均已进完成卡片）；codex 已读 `turn/completed` 的 usage 与 `thread/tokenUsage/updated`（完成卡片显示 tokens），cost 无来源。
 - **UI**：`internal/ui` 已全部 ViewModel+Actions 化（Transcript/Viewer/Settings/Header/Sidebar/Home/Composer）；`internal/app` 只剩状态、分发、持久化与桥接。这个形状就是为"第二个 UI 表面"准备的。
 - **UI 框架**：mygo 支持**两种**窗口：native（当前，GPU 直绘）与 **web page**（系统 webview + 由 Go 服务定义生成的 TS client，typed IPC：bind 服务 / channel 流 / 类型化事件）。二者可混用 —— Web 端有现成路径，不必自起前端脚手架之外的东西。
@@ -86,10 +86,10 @@
 | 能力 | builtin | claude CLI | codex app-server |
 | --- | --- | --- | --- |
 | 模型/effort | 全支持 | `--model` | thread/start `model`、`model_reasoning_effort`（已接） |
-| 内置工具启停 | 完整（注册表过滤） | `--allowedTools/--disallowedTools` 映射 | **弱**：仅 sandbox/approval 策略级 |
-| MCP 挂载 | 完整（进程内） | `--mcp-config` | 配置覆盖，按名单映射 |
-| Skills | read_skill + 过滤 | CLI 自读项目 skills | 同左 |
-| 系统提示词 | LoopConfig 追加 | `--append-system-prompt` | 不可注入（写明限制） |
+| 内置工具启停 | 完整（注册表过滤，`ToolOptions.Enabled`） | **弱**：仅 sandbox/approval 策略级 | **弱**：仅 sandbox/approval 策略级 |
+| MCP 挂载 | 完整（进程内，`Turn.MCPServers` 按名单） | `--mcp-config`（已接，stdio+http） | 未映射（配置覆盖为后续工作） |
+| Skills | read_skill + allow/deny 过滤（已接） | CLI 自读项目 skills | 同左 |
+| 系统提示词 | 种子转录追加（已接） | `--append-system-prompt`（已接） | 不可注入（写明限制） |
 | 用量统计 | tokens 已采集（水位压缩用），cost 未采集 | result 行已带（时长/费用/tokens 已展示） | usage 已读（完成卡片显示 tokens），cost 无来源 |
 
 原则：配置统一声明，各适配器**尽力映射**，做不到的在 UI 上标注"该后端不支持"，不静默忽略。
@@ -160,33 +160,40 @@
 
 > 量为专注人日的相对估算；每阶段独立可交付、可停。
 
-**P0 配置地基（2–3 天）**
+**P0 配置地基（2–3 天）✅ 已落地**
 config v2 + Default Agent 迁移；`Thread.AgentID`；Host 增 `agents` 状态与解析。
 验收：旧配置/旧线程无感升级；设置页能读出 Default。
+（落地形态：空 profile 继承应用级选择，v1 折叠为裸 Default agent——与 §3 的快照式迁移略有出入，继承语义让旧配置行为完全不变；迁移契约在 data.md。）
 
-**P1 Agent 配置化 + 桌面使用面（5–6 天，核心）**
-`ToolCatalog` + `ToolOptions.Enabled`；`Turn` 增 MCPServers/Skills/SystemPrompt；turnFor 按 Agent 组装；桌面 home 改 **Agent 启动器**，composer 换 Agent 选择器；设置页放最小 Agent CRUD（过渡，Web 为最终归属）。
-验收：建"只读 + 只开 grep/read + 挂 filesystem MCP"的 Agent 并跑通；从启动器选 Agent 开会话；claude/codex 的映射行为与 §4.5 表一致。
+**P1 Agent 配置化 + 桌面使用面（5–6 天，核心）✅ 已落地**
+`ToolCatalog` + `ToolOptions.Enabled`；`Turn` 增 MCPServers/Skills/SystemPrompt；`planTurn`（原 turnFor）按 Agent 组装；桌面 home 增 **Agent 启动器卡片**，composer 增 Agent 选择器；设置页含 Agent CRUD（Agents 区，与 Providers 同面板）。
+验收：建"只读 + 只开 grep/read + 挂 filesystem MCP"的 Agent 并跑通；从启动器选 Agent 开会话；claude 的映射行为与 §4.5 表一致（codex 的 MCP 映射未做，表中已如实标注）。
 
-**P2 并发多会话（2–3 天）**
-`runs map[threadID]…`；全部 `a.running` 读取面切到 per-thread；sidebar/header/composer 显示各自状态。
-验收：两个会话分别用不同 Agent 同时跑、分别停。
+**P2 并发多会话（2–3 天）✅ 已落地**
+`runs map[threadID]*runState`；全部 `a.running` 读取面切到 per-thread；sidebar 每行、header 徽标、composer 的 Stop 各自显示/作用于当前线程。
+验收：两个会话分别用不同 Agent 同时跑、分别停（`TestTwoThreadsRunConcurrently`，含 race 检测）。
+（落地形态：`runState` 只持 `cancel`——计划的 `startedAt` 暂无消费者，未加。）
 
-**P3 会话追踪（3–4 天）**
-projector 写 events.jsonl；三后端 usage 采集与聚合；搜索（文件扫描版）；线程详情 trace 视图。
-验收：一次会话后能看到每工具调用的耗时/token；按关键词搜到历史会话。
+**P3 会话追踪（3–4 天）✅ 已落地**
+projector 写 `<threadID>.events.jsonl`（tool/note/error/session/file_change；文本与 reasoning 增量不入轨——那是线程文件自己的内容）；finish 追加 `turn` 汇总行（工具数、耗时、tokens、cost）。用量：claude/pi/codex 的完成卡片携带结构化 tokens/cost（`Event.Tokens/CostUSD`）并入轨，builtin 仍只有水位用 tokens。搜索：线程全在内存，"文件扫描"即内存扫描（标题 + 消息全文，形状戳缓存）；trace 查看：任务菜单 **View trace** 进查看器。
+验收：一次会话后能看到每工具调用的耗时/token；按关键词搜到历史会话（`TestTraceRecordsTheTurn`、`TestSearchMatchesMessageText`）。用量聚合面板随 Web 端（P4/P5）暂缓。
 
-**P4 服务层 agentd（4–5 天）**
+**P4 服务层 agentd（4–5 天）⏸ 暂缓（2026-10 决定）**
 `internal/server`：agents/threads/config API + SSE；桌面进程内同源。
 验收：curl 能建 Agent、发消息、收到 SSE 事件流；桌面与 API 操作同一份数据无冲突。
 
-**P5 Web 管理端（5–6 天）**
+**P5 Web 管理端（5–6 天）⏸ 暂缓（2026-10 决定，随 P4）**
 内嵌控制台：Agent CRUD 与资源库（工具/MCP/Skills/Provider）、会话列表与 trace 回放、用量面板；`mygo-agent web` 一键打开；桌面设置页降级为只读详情 + 轻量覆盖。
 验收：浏览器完成"建 Agent → 配资源 → 桌面立即可见可用 → 看 trace"全流程；桌面不再出现复杂编排表单。
 
-**P6 多 Agent 协作（3–5 天）**
-消息记录产生者 Agent；`delegate` 工具（builtin）+ claude 子 Agent 映射；协作卡片 UI。
-验收：父 Agent 委托子 Agent 完成子任务并在会话中可见两端流水。
+**P6 多 Agent 协作（3–5 天）✅ 已落地（M1 + M2 单跳）**
+消息记录产生者 Agent（`Message.AgentID`，线程文件随之升 v2）；`delegate` 内置工具：新动作 `agent.delegate`（permissions.md 目录与默认值同步），只读模式拒绝、无候选时不注册；子回合 = 目标 Agent 档案的完整解析（`agentOverlay`，与 planTurn 同一算术），全新种子（看不到父对话）、继承父回合的审批模式起点、审批卡仍弹给用户（同一 OnApproval）；一跳为止（子回合的工具集不含 delegate）。
+验收：父 Agent 委托子 Agent 完成子任务，子回答作为工具结果落卡、父继续收尾（`TestDelegateRunsTheSubAgent`）。
+（未做：claude 子 Agent 能力映射——其子 Agent 由自身配置定义，无法映射本应用的档案；M3 编排视图仍为提案；协作流水以工具结果呈现，非并排卡片。）
+
+**M2b 群聊接力（panel）✅ 已落地（2026-10）**
+Agent 档案新增 `panel`（成员**名字**列表，沿用 mcp_servers 的命名约定）：绑定该档案的线程变为**接力式群聊**——一条消息触发成员按顺序各回复一条，每个成员都通过**共享会话**看到此前全部发言（这是与 delegate 单跳私有子任务的本质区别）。机制：host 持 `groupQueue`，finish 链式派发下一位（整条接力是**一个**注册运行——Stop/Escape/删除中断整条链）；builtin 成员共享线程 ChatLog 且**每回合替换系统头**为自己档案的（顺带修复了切换 Agent 继承旧提示词的旧问题）；CLI 成员读不到共享转录，由 host 注入有界的对话摘要（诚实映射，已注明）；回复按 `Message.AgentID` 归属显示（emoji 头像 + 名字标签，仅群聊线程显示）；regenerate 重跑整条接力。
+（边界：成员按顺序串行，非同时发言；成员的 backend 固定按各自档案运行，无法在群聊中混用对方的工具选择之外的东西；panel 存名字，重命名成员会破坏引用——与 mcp_servers 同样代价。）
 
 **P7（可选）桌面远程连接**
 桌面 Host 支持远程后端：连接常驻 agentd，会话与事件走 API+SSE，支撑团队共享 Agent 库（§6.4 远端形态）。

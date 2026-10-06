@@ -21,6 +21,7 @@ whether that is allowed. Adding an action is a spec change.
 | `shell.exec` | Run a process on the host | bash |
 | `skill.read` | Load bundled project skills | read_skill |
 | `mcp.call` | Call a tool on a configured MCP server | mcp_* |
+| `agent.delegate` | Hand a sub-task to another configured agent | delegate |
 
 Rules:
 
@@ -72,6 +73,7 @@ per action:
 | `file.write` | deny | allow | allow |
 | `shell.exec` | deny | allow (sandboxed, see sandbox.md) | allow (unsandboxed) |
 | `mcp.call` | deny | ask | allow |
+| `agent.delegate` | deny | allow | allow |
 
 - In `agent` mode `file.write` is additionally confined to the workspace by
   the file tools themselves (writes outside the workdir are rejected); in
@@ -98,6 +100,11 @@ per tool:
   mode or force `bash: ask` in full mode. There is no rule the UI applies
   that config cannot express — interactive decisions never write back to the
   rules.
+- An agent profile layers its own rules over the global ones
+  (spec/agents.md): the agent's rule is the more specific grant and wins.
+  A profile may also leave tools out of its registry entirely
+  (`tools.disabled`), which is a denial by absence — the gate never sees
+  the call.
 
 ## The gate
 
