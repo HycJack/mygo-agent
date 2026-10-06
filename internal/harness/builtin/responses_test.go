@@ -174,3 +174,29 @@ func TestStreamResponsesFailed(t *testing.T) {
 		t.Fatalf("error %v", err)
 	}
 }
+
+// TestStreamResponsesReadsTheUsage pins the token accounting: the
+// completed event carries the response's usage, and the watermark reads
+// the prompt side of it.
+func TestStreamResponsesReadsTheUsage(t *testing.T) {
+	sse := "event: response.output_text.delta\n" +
+		`data: {"type":"response.output_text.delta","delta":"hi"}` + "\n\n" +
+		"event: response.completed\n" +
+		`data: {"type":"response.completed","response":{"usage":{"input_tokens":9000,"output_tokens":42}}}` + "\n\n"
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, sse)
+	}))
+	defer srv.Close()
+
+	res, err := streamChat(t.Context(), StreamConfig{
+		BaseURL: srv.URL, Wire: WireResponses, Model: "gpt-5.2-codex",
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+	}, func(string) {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.PromptTokens != 9000 || res.CompletionTokens != 42 {
+		t.Fatalf("usage not read: %d/%d", res.PromptTokens, res.CompletionTokens)
+	}
+}
