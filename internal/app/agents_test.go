@@ -11,6 +11,8 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -396,5 +398,173 @@ func TestTwoThreadsRunConcurrently(t *testing.T) {
 	})
 	if thB.Messages[0].Text != "done" {
 		t.Fatalf("the untouched thread lost its reply: %q", thB.Messages[0].Text)
+	}
+}
+
+// TestTraceRecordsTheTurn is the P3 acceptance (spec/agents.md): the
+// projector writes one trace line per recorded event and finish adds
+// the turn summary; the trace dies with its thread.
+func TestTraceRecordsTheTurn(t *testing.T) {
+	dir := t.TempDir()
+	a, srv := builtinFixture(t, dir)
+	defer srv.Close()
+	a.threadsDir = threadsLayout{root: t.TempDir()}
+
+	th := &Thread{ID: "t1", ProjectID: "p1"}
+	th.Messages = []Message{{ID: "m0", Role: "assistant", Running: true, At: time.Now()}}
+	a.threads = append(a.threads, th)
+	a.runStart("t1", func() {})
+	runBackend(a, th, "run the tool", 0)
+	waitTurn(t, a, th, 0)
+
+	raw, err := os.ReadFile(filepath.Join(a.threadsDir.root, "p1", "t1.events.jsonl"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(raw)
+	for _, want := range []string{`"kind":"tool_start"`, `"tool":"bash"`, `"kind":"tool_end"`, `"kind":"turn"`} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("trace lacks %s:\n%s", want, text)
+		}
+	}
+	// The trace dies with the thread — deletion removes both files.
+	a.removeThreadFile(th)
+	if _, err := os.Stat(filepath.Join(a.threadsDir.root, "p1", "t1.events.jsonl")); !os.IsNotExist(err) {
+		t.Fatal("the trace outlived the thread")
+	}
+}
+
+// TestSearchMatchesMessageText pins the full-text half of the sidebar's
+// search (spec/agents.md): a task whose title says nothing is found by
+// what its messages say.
+func TestSearchMatchesMessageText(t *testing.T) {
+	a := newTestApp(t)
+	a.threads = append(a.threads, &Thread{ID: "t1", ProjectID: "default", Title: "untitled",
+		Messages: []Message{{ID: "m0", Text: "the quantum widget refactor plan"}}})
+	a.threads = append(a.threads, &Thread{ID: "t2", ProjectID: "default", Title: "other task",
+		Messages: []Message{{ID: "m0", Text: "nothing to see"}}})
+	a.search = "quantum"
+
+	found := map[string]bool{}
+	for _, g := range uipkg.GroupThreads(a.sidebarViewModel().Threads, a.search) {
+		for _, r := range g.Threads {
+			found[r.ID] = true
+		}
+	}
+	if !found["t1"] || found["t2"] {
+		t.Fatalf("full-text search picked %+v", found)
+	}
+	// The haystack is title plus message text, cached on the thread.
+	h := a.threads[0].searchHaystack()
+	if !strings.Contains(h, "untitled") || !strings.Contains(h, "quantum widget") {
+		t.Fatalf("haystack = %q", h)
+	}
+}
+
+// TestStartTurnRecordsTheAgent pins the P6 attribution: the reply
+// message records the agent that produced it.
+func TestStartTurnRecordsTheAgent(t *testing.T) {
+	a := newTestApp(t)
+	a.agents = append(a.agents, Agent{ID: "ag-2", Name: "Two"})
+	th := &Thread{ID: "t1", ProjectID: "default", AgentID: "ag-2"}
+
+	a.startTurn(th, "hi")
+	if got := th.Messages[1].AgentID; got != "ag-2" {
+		t.Fatalf("reply attributed to %q", got)
+	}
+	// An unbound thread attributes to the default agent.
+	th2 := &Thread{ID: "t2", ProjectID: "default"}
+	a.startTurn(th2, "hi")
+	if got := th2.Messages[1].AgentID; got != "default" {
+		t.Fatalf("unbound reply attributed to %q", got)
+	}
+}
+
+// TestDelegateCandidates pins the snapshot: one candidate per other
+// agent, resolved on the main thread; none in read-only, and the
+// thread's own agent never delegates to itself.
+func TestDelegateCandidates(t *testing.T) {
+	a := newTestApp(t)
+	a.mode = int(harness.ModeFull)
+	a.agents = append(a.agents, Agent{ID: "ag-b", Name: "B"})
+	a.providers = []Provider{{ID: "p1", Name: "one", BaseURL: "https://one.test", APIKey: "k", Models: []string{"m"}}}
+	a.providerID = "p1"
+
+	th := &Thread{ID: "t1", ProjectID: "default", AgentID: "ag-b"}
+	h := newBuiltinHarness(a, th, a.planTurn(th, "hi").turn)
+	if len(h.delegates) != 1 || h.delegates[0].id != "default" {
+		t.Fatalf("candidates = %+v, want the default agent only", h.delegates)
+	}
+
+	// Read-only offers nobody.
+	thRO := &Thread{ID: "t2", ProjectID: "default", AgentID: "ag-b"}
+	turn := a.planTurn(thRO, "hi").turn
+	turn.Mode = harness.ModeReadOnly
+	h2 := newBuiltinHarness(a, thRO, turn)
+	if len(h2.delegates) != 0 {
+		t.Fatalf("read-only candidates = %+v", h2.delegates)
+	}
+}
+
+// TestDelegateRunsTheSubAgent is the P6 acceptance (spec/agents.md):
+// the parent agent delegates a sub-task, the sub-agent answers with its
+// own profile, the answer lands as the tool result, and the parent
+// wraps it.
+func TestDelegateRunsTheSubAgent(t *testing.T) {
+	a := newTestApp(t)
+	a.backend = "builtin"
+	a.mode = int(harness.ModeFull)
+	var calls atomic.Int64
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := calls.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		switch n {
+		case 1: // the parent asks for a delegate
+			fmt.Fprint(w, "event: response.output_item.added\n"+
+				`data: {"type":"response.output_item.added","item":{"type":"function_call","id":"fc_1","call_id":"call_1","name":"delegate","arguments":"{\"agent\":\"Sub\",\"task\":\"Do the thing\"}"}}`+"\n\n"+
+				"event: response.output_item.done\n"+
+				`data: {"type":"response.output_item.done","item":{"type":"function_call","call_id":"call_1","name":"delegate","arguments":"{\"agent\":\"Sub\",\"task\":\"Do the thing\"}"}}`+"\n\n"+
+				"event: response.completed\n"+
+				`data: {"type":"response.completed","response":{"output":[]}}`+"\n\n")
+		case 2: // the sub-run answers plain
+			fmt.Fprint(w, "event: response.output_text.delta\n"+
+				`data: {"type":"response.output_text.delta","delta":"sub done"}`+"\n\n"+
+				"event: response.completed\n"+
+				`data: {"type":"response.completed","response":{"output":[]}}`+"\n\n")
+		default: // the parent wraps the result
+			fmt.Fprint(w, "event: response.output_text.delta\n"+
+				`data: {"type":"response.output_text.delta","delta":"wrapped ok"}`+"\n\n"+
+				"event: response.completed\n"+
+				`data: {"type":"response.completed","response":{"output":[]}}`+"\n\n")
+		}
+	}))
+	defer srv.Close()
+	a.providers = []Provider{{ID: "p1", Name: "Test", BaseURL: srv.URL, APIKey: "k",
+		Models: []string{"test-model"}, Wire: harness.WireResponses}}
+	a.providerID, a.model = "p1", "test-model"
+	a.agents = append(a.agents, Agent{ID: "ag-sub", Name: "Sub"})
+
+	now := time.Now()
+	th := &Thread{ID: "t1", ProjectID: "default", Created: now, Updated: now}
+	th.Messages = []Message{{ID: "m0", Role: "assistant", Running: true, At: now}}
+	a.threads = append(a.threads, th)
+	runBackend(a, th, "do the big thing", 0)
+	waitTurn(t, a, th, 0)
+
+	// The delegate card carried the sub-agent's answer as its output.
+	var sawDelegate, sawSub bool
+	for _, b := range th.Messages[0].Blocks {
+		if b.Type == blockCommand && strings.Contains(b.Text, "delegate") {
+			sawDelegate = true
+			if strings.Contains(b.Output, "sub done") {
+				sawSub = true
+			}
+		}
+	}
+	if !sawDelegate || !sawSub {
+		t.Fatalf("delegate card: saw=%v sub=%v\nblocks: %+v", sawDelegate, sawSub, th.Messages[0].Blocks)
+	}
+	if !strings.Contains(th.Messages[0].Text, "wrapped ok") {
+		t.Fatalf("parent reply: %q", th.Messages[0].Text)
 	}
 }

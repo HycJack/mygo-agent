@@ -45,6 +45,9 @@ func (a *app) sidebarViewModel() *uipkg.SidebarVM {
 		}
 		t := uipkg.ThreadVM{ID: th.ID, Title: th.Title, Updated: th.Updated,
 			Running: a.isRunning(th.ID)}
+		if a.search != "" {
+			t.Search = th.searchHaystack()
+		}
 		if th.CodexID != "" {
 			t.BackendTag = "codex"
 		}

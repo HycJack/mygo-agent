@@ -1,6 +1,6 @@
 # 方案：Agent 化与多端管理（配置化工具 / MCP / Skills / 模型，单与多 Agent，Web 管理，会话追踪）
 
-状态：**P0、P1、P2 已落地**（✅ 标注）；P3–P7 仍是提案。已落地部分的契约移入正式 spec —— 数据格式在 data.md（config v2、thread `agent_id`）、规则叠加在 permissions.md、claude 的映射在 cli-backends.md；本节的"现状盘点"随代码保持更新。
+状态：**P0、P1、P2、P3、P6 已落地**（✅ 标注）；**P4、P5 暂缓**（2026-10 决定：服务层与 Web 控制台延后）；P7 可选未启动。已落地部分的契约移入正式 spec —— 数据格式在 data.md（config v2、thread `agent_id`、trace 文件）、规则叠加与 `agent.delegate` 在 permissions.md、claude 的映射在 cli-backends.md；本节的"现状盘点"随代码保持更新。
 
 ## 1. 目标与产品分工
 
@@ -174,21 +174,22 @@ config v2 + Default Agent 迁移；`Thread.AgentID`；Host 增 `agents` 状态�
 验收：两个会话分别用不同 Agent 同时跑、分别停（`TestTwoThreadsRunConcurrently`，含 race 检测）。
 （落地形态：`runState` 只持 `cancel`——计划的 `startedAt` 暂无消费者，未加。）
 
-**P3 会话追踪（3–4 天）**
-projector 写 events.jsonl；三后端 usage 采集与聚合；搜索（文件扫描版）；线程详情 trace 视图。
-验收：一次会话后能看到每工具调用的耗时/token；按关键词搜到历史会话。
+**P3 会话追踪（3–4 天）✅ 已落地**
+projector 写 `<threadID>.events.jsonl`（tool/note/error/session/file_change；文本与 reasoning 增量不入轨——那是线程文件自己的内容）；finish 追加 `turn` 汇总行（工具数、耗时、tokens、cost）。用量：claude/pi/codex 的完成卡片携带结构化 tokens/cost（`Event.Tokens/CostUSD`）并入轨，builtin 仍只有水位用 tokens。搜索：线程全在内存，"文件扫描"即内存扫描（标题 + 消息全文，形状戳缓存）；trace 查看：任务菜单 **View trace** 进查看器。
+验收：一次会话后能看到每工具调用的耗时/token；按关键词搜到历史会话（`TestTraceRecordsTheTurn`、`TestSearchMatchesMessageText`）。用量聚合面板随 Web 端（P4/P5）暂缓。
 
-**P4 服务层 agentd（4–5 天）**
+**P4 服务层 agentd（4–5 天）⏸ 暂缓（2026-10 决定）**
 `internal/server`：agents/threads/config API + SSE；桌面进程内同源。
 验收：curl 能建 Agent、发消息、收到 SSE 事件流；桌面与 API 操作同一份数据无冲突。
 
-**P5 Web 管理端（5–6 天）**
+**P5 Web 管理端（5–6 天）⏸ 暂缓（2026-10 决定，随 P4）**
 内嵌控制台：Agent CRUD 与资源库（工具/MCP/Skills/Provider）、会话列表与 trace 回放、用量面板；`mygo-agent web` 一键打开；桌面设置页降级为只读详情 + 轻量覆盖。
 验收：浏览器完成"建 Agent → 配资源 → 桌面立即可见可用 → 看 trace"全流程；桌面不再出现复杂编排表单。
 
-**P6 多 Agent 协作（3–5 天）**
-消息记录产生者 Agent；`delegate` 工具（builtin）+ claude 子 Agent 映射；协作卡片 UI。
-验收：父 Agent 委托子 Agent 完成子任务并在会话中可见两端流水。
+**P6 多 Agent 协作（3–5 天）✅ 已落地（M1 + M2 单跳）**
+消息记录产生者 Agent（`Message.AgentID`，线程文件随之升 v2）；`delegate` 内置工具：新动作 `agent.delegate`（permissions.md 目录与默认值同步），只读模式拒绝、无候选时不注册；子回合 = 目标 Agent 档案的完整解析（`agentOverlay`，与 planTurn 同一算术），全新种子（看不到父对话）、继承父回合的审批模式起点、审批卡仍弹给用户（同一 OnApproval）；一跳为止（子回合的工具集不含 delegate）。
+验收：父 Agent 委托子 Agent 完成子任务，子回答作为工具结果落卡、父继续收尾（`TestDelegateRunsTheSubAgent`）。
+（未做：claude 子 Agent 能力映射——其子 Agent 由自身配置定义，无法映射本应用的档案；M3 编排视图仍为提案；协作流水以工具结果呈现，非并排卡片。）
 
 **P7（可选）桌面远程连接**
 桌面 Host 支持远程后端：连接常驻 agentd，会话与事件走 API+SSE，支撑团队共享 Agent 库（§6.4 远端形态）。

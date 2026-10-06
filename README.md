@@ -17,7 +17,12 @@ English | [简体中文](README.zh-CN.md)
   filters, an appended system prompt. Pick one from the composer's
   picker or the home launcher, edit them in settings; an empty profile
   follows the app's selection. Tasks run independently — each thread
-  starts, stops and regenerates on its own.
+  starts, stops and regenerates on its own — and one agent can hand a
+  sub-task to another through the `delegate` tool.
+- **Tracing** — every task keeps an append-only event trace beside its
+  file (tool calls with durations and exits, notes, per-turn token and
+  cost totals), viewable from the task menu; the sidebar's search
+  matches message text, not just titles.
 - **Four agent backends**, switchable from the menu at the bottom left:
   - *Built-in agent* — an in-process loop (modeled on pi): streaming
     OpenAI-compatible calls (chat completions or the Responses API) +

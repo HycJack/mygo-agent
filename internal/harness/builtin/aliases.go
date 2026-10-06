@@ -63,6 +63,7 @@ const (
 	ActionShell     = harness.ActionShell
 	ActionSkill     = harness.ActionSkill
 	ActionMCP       = harness.ActionMCP
+	ActionDelegate  = harness.ActionDelegate
 )
 
 var (

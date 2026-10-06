@@ -48,6 +48,10 @@ type ThreadVM struct {
 	Updated    time.Time
 	BackendTag string // non-empty appends " · <tag>" under the title
 	Running    bool
+	// Search is the row's full-text haystack (title + messages), filled
+	// by the host only while a search is active; empty matches on the
+	// title alone.
+	Search string
 }
 
 // SidebarActions is what the rail calls back for.
@@ -114,7 +118,9 @@ func threadMatches(th ThreadVM, q string) bool {
 	if strings.Contains(strings.ToLower(th.Title), q) {
 		return true
 	}
-	return false
+	// Full text (spec/agents.md, tracing): the host fills the haystack
+	// only while a search is on, so the empty default costs nothing.
+	return th.Search != "" && strings.Contains(strings.ToLower(th.Search), q)
 }
 
 func sameDay(a, b time.Time) bool {

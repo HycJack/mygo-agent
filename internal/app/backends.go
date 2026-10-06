@@ -88,13 +88,103 @@ type turnPlan struct {
 	backend string
 }
 
+// agentOverlay is one agent profile resolved over the app-level
+// defaults: the arithmetic planTurn applies to a thread and the delegate
+// tool applies to a sub-run (spec/agents.md). An empty field on the
+// profile inherits the app's selection; a set one overrides it.
+type agentOverlay struct {
+	backend      string
+	providerID   string
+	model        string
+	mode         int
+	effort       int
+	maxTurns     int
+	rules        harness.Rules
+	endpoint     *harness.Endpoint
+	mcpServers   []builtin.MCPServer
+	toolEnabled  map[string]bool
+	skills       harness.SkillSelection
+	systemPrompt string
+}
+
+// resolveAgent computes the overlay for one configured agent. Nil
+// resolves to the pure app defaults.
+func (a *app) resolveAgent(ag *Agent) agentOverlay {
+	ov := agentOverlay{
+		backend: a.backend, providerID: a.providerID, model: a.model,
+		mode: a.mode, effort: a.effort, maxTurns: a.maxTurns,
+		rules: a.permRules,
+	}
+	if ag == nil {
+		return ov
+	}
+	if ag.Backend != "" {
+		ov.backend = ag.Backend
+	}
+	if ag.Provider != "" {
+		ov.providerID = ag.Provider
+	}
+	if ag.Model != "" {
+		ov.model = ag.Model
+	}
+	if ag.Mode != nil {
+		ov.mode = *ag.Mode
+	}
+	if ag.Effort != nil {
+		ov.effort = *ag.Effort
+	}
+	if ag.MaxTurns > 0 {
+		ov.maxTurns = ag.MaxTurns
+	}
+	// The agent's permission rules layer over the global ones: the agent
+	// is the more specific grant and wins (spec/permissions.md).
+	if len(ag.Tools.Rules) > 0 {
+		rules := make(harness.Rules, len(a.permRules)+len(ag.Tools.Rules))
+		maps.Copy(rules, a.permRules)
+		for sel, perm := range ag.Tools.Rules {
+			rules[sel] = harness.PermissionFromConfig(perm)
+		}
+		ov.rules = rules
+	}
+	// The resolved provider rides the Endpoint: the built-in loop reads
+	// its connection from there, the codex adapter maps it onto the
+	// model_providers override. A CLI provider (no base URL) leaves it
+	// nil — the CLI's own sign-in applies.
+	if p := a.providerByID(ov.providerID); p != nil && p.BaseURL != "" {
+		ov.endpoint = &harness.Endpoint{
+			ID: p.ID, Name: p.Name, BaseURL: p.BaseURL, APIKey: p.APIKey,
+			Wire: p.Wire, ContextWindow: p.ContextWindow,
+		}
+	}
+	// MCP: the agent names a subset of the effective servers; an empty
+	// list mounts all of them (spec/agents.md).
+	ov.mcpServers = a.effectiveMCPServers()
+	if len(ag.MCPServers) > 0 {
+		ov.mcpServers = slices.DeleteFunc(ov.mcpServers, func(s builtin.MCPServer) bool {
+			return !slices.Contains(ag.MCPServers, s.Name)
+		})
+	}
+	// Tools: the disabled registry names become explicit "off" entries;
+	// absent stays on.
+	if len(ag.Tools.Disabled) > 0 {
+		ov.toolEnabled = make(map[string]bool, len(ag.Tools.Disabled))
+		for _, name := range ag.Tools.Disabled {
+			ov.toolEnabled[name] = false
+		}
+	}
+	// The allow/deny lists select; every other mode discovers as usual.
+	if ag.Skills.Mode == "custom" || len(ag.Skills.Allow) > 0 || len(ag.Skills.Deny) > 0 {
+		ov.skills = harness.SkillSelection{Allow: ag.Skills.Allow, Deny: ag.Skills.Deny}
+	}
+	ov.systemPrompt = ag.SystemPrompt
+	return ov
+}
+
 // planTurn assembles the turn from the thread's agent over the
-// app-level defaults: an empty field on the agent inherits the app's
-// selection, a set one overrides it (spec/agents.md). Everything is
-// snapshotted here, on the main thread — the snapshot, not a live
-// reference: config may change mid-run, and a run that changed its
-// endpoint under itself would be a different agent than the one the
-// approval cards were about.
+// app-level defaults. Everything is snapshotted here, on the main
+// thread — the snapshot, not a live reference: config may change
+// mid-run, and a run that changed its endpoint under itself would be a
+// different agent than the one the approval cards were about.
 func (a *app) planTurn(th *Thread, prompt string) turnPlan {
 	ag := a.agentFor(th)
 	// A thread from before the agents block picks up its binding here;
@@ -102,32 +192,11 @@ func (a *app) planTurn(th *Thread, prompt string) turnPlan {
 	if th.AgentID == "" && ag != nil {
 		th.AgentID = ag.ID
 	}
-	backend, providerID, model := a.backend, a.providerID, a.model
-	mode, effort, maxTurns := a.mode, a.effort, a.maxTurns
-	if ag != nil {
-		if ag.Backend != "" {
-			backend = ag.Backend
-		}
-		if ag.Provider != "" {
-			providerID = ag.Provider
-		}
-		if ag.Model != "" {
-			model = ag.Model
-		}
-		if ag.Mode != nil {
-			mode = *ag.Mode
-		}
-		if ag.Effort != nil {
-			effort = *ag.Effort
-		}
-		if ag.MaxTurns > 0 {
-			maxTurns = ag.MaxTurns
-		}
-	}
+	ov := a.resolveAgent(ag)
 	// Clamp at the boundary: mode and effort index arrays and flag lists
 	// inside the adapters, and there is no recover() anywhere in the app.
-	mode = clampMode(mode)
-	effort = clampInt(effort, 0, 2)
+	mode := clampMode(ov.mode)
+	effort := clampInt(ov.effort, 0, 2)
 	var sb harness.Sandbox
 	if harness.Mode(mode) == harness.ModeAgent {
 		sb = sandboxProvider()
@@ -137,63 +206,23 @@ func (a *app) planTurn(th *Thread, prompt string) turnPlan {
 		Prompt:   prompt,
 		Workdir:  a.workdir,
 		Mode:     harness.Mode(mode),
-		Model:    model,
+		Rules:    ov.rules,
+		Model:    ov.model,
 		Effort:   effort,
-		MaxTurns: maxTurns,
+		MaxTurns: ov.maxTurns,
 		SessionID: map[string]string{
 			"codex": th.CodexID, "claude": th.ClaudeID, "pi": th.PiID,
-		}[backend],
-		Sandbox:   sb,
-		Memory:    threadMemory{a: a},
-		MemoryKey: key,
+		}[ov.backend],
+		Sandbox:      sb,
+		Memory:       threadMemory{a: a},
+		MemoryKey:    key,
+		Endpoint:     ov.endpoint,
+		MCPServers:   ov.mcpServers,
+		ToolEnabled:  ov.toolEnabled,
+		Skills:       ov.skills,
+		SystemPrompt: ov.systemPrompt,
 	}
-	// The agent's permission rules layer over the global ones: the agent
-	// is the more specific grant and wins (spec/permissions.md).
-	rules := a.permRules
-	if ag != nil && len(ag.Tools.Rules) > 0 {
-		rules = make(harness.Rules, len(a.permRules)+len(ag.Tools.Rules))
-		maps.Copy(rules, a.permRules)
-		for sel, perm := range ag.Tools.Rules {
-			rules[sel] = harness.PermissionFromConfig(perm)
-		}
-	}
-	turn.Rules = rules
-	// The resolved provider rides the Endpoint: the built-in loop reads
-	// its connection from there, the codex adapter maps it onto the
-	// model_providers override. A CLI provider (no base URL) leaves it
-	// nil — the CLI's own sign-in applies.
-	if p := a.providerByID(providerID); p != nil && p.BaseURL != "" {
-		turn.Endpoint = &harness.Endpoint{
-			ID: p.ID, Name: p.Name, BaseURL: p.BaseURL, APIKey: p.APIKey,
-			Wire: p.Wire, ContextWindow: p.ContextWindow,
-		}
-	}
-	if ag != nil {
-		// MCP: the agent names a subset of the effective servers; an
-		// empty list mounts all of them (spec/agents.md).
-		servers := a.effectiveMCPServers()
-		if len(ag.MCPServers) > 0 {
-			servers = slices.DeleteFunc(servers, func(s builtin.MCPServer) bool {
-				return !slices.Contains(ag.MCPServers, s.Name)
-			})
-		}
-		turn.MCPServers = servers
-		// Tools: the disabled registry names become explicit "off"
-		// entries; absent stays on.
-		if len(ag.Tools.Disabled) > 0 {
-			turn.ToolEnabled = make(map[string]bool, len(ag.Tools.Disabled))
-			for _, name := range ag.Tools.Disabled {
-				turn.ToolEnabled[name] = false
-			}
-		}
-		// Skills: the custom mode applies the allow/deny lists; every
-		// other mode discovers as usual.
-		if ag.Skills.Mode == "custom" {
-			turn.Skills = harness.SkillSelection{Allow: ag.Skills.Allow, Deny: ag.Skills.Deny}
-		}
-		turn.SystemPrompt = ag.SystemPrompt
-	}
-	return turnPlan{turn: turn, backend: backend}
+	return turnPlan{turn: turn, backend: ov.backend}
 }
 
 // builtinHarness binds the built-in loop to one turn of one thread.
@@ -211,6 +240,11 @@ type builtinHarness struct {
 	provider      Provider
 	mcpServers    []builtin.MCPServer
 	approvalLimit time.Duration
+
+	// delegates are the other configured agents, fully resolved here on
+	// the main thread (spec/agents.md, P6): the delegate tool's Execute
+	// runs on the loop goroutine and must not touch live state.
+	delegates []delegateTarget
 
 	// at is the index of the running reply this turn writes into, and
 	// priorMessages is the visible history to seed a fresh transcript
@@ -237,6 +271,19 @@ func newBuiltinHarness(a *app, th *Thread, turn harness.Turn) builtinHarness {
 	}
 	h.mcpServers = turn.MCPServers
 	h.approvalLimit = a.approvalTimeout
+	// The delegate candidates: everyone but this thread's own agent.
+	// Read-only denies the action, so none are offered there.
+	if turn.Mode != harness.ModeReadOnly && len(a.agents) > 1 {
+		for i := range a.agents {
+			if a.agents[i].ID == th.AgentID {
+				continue
+			}
+			h.delegates = append(h.delegates, delegateTarget{
+				id: a.agents[i].ID, name: a.agents[i].Name,
+				ov: a.resolveAgent(&a.agents[i]),
+			})
+		}
+	}
 	for i := range th.Messages {
 		if th.Messages[i].Running {
 			h.at = i

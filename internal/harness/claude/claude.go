@@ -393,13 +393,16 @@ func (r *run) handle(line string) {
 			verb = "Stopped"
 		}
 		text := fmt.Sprintf("%s in %.1fs · $%.4f", verb, ev.Duration/1000, ev.Cost)
+		var tokens int64
 		if ev.Usage != nil {
-			if tokens := ev.Usage.InputTokens + ev.Usage.OutputTokens; tokens > 0 {
+			tokens = int64(ev.Usage.InputTokens + ev.Usage.OutputTokens)
+			if tokens > 0 {
 				text += fmt.Sprintf(" · %d tokens", tokens)
 			}
 		}
 		r.send(harness.Event{Kind: harness.EventNote,
-			Text: text + " · session " + cli.ShortSession(r.turn.SessionID)})
+			Text:   text + " · session " + cli.ShortSession(r.turn.SessionID),
+			Tokens: tokens, CostUSD: ev.Cost})
 	}
 }
 

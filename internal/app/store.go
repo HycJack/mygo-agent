@@ -124,7 +124,7 @@ func (a *app) saveThread(th *Thread) {
 		return
 	}
 	data, err := json.MarshalIndent(threadFile{
-		Version: 1, Meta: metaOf(th), Messages: th.Messages, ChatLog: th.ChatLog,
+		Version: 2, Meta: metaOf(th), Messages: th.Messages, ChatLog: th.ChatLog,
 	}, "", "  ")
 	if err != nil {
 		a.threadsErr = "this task could not be saved: " + err.Error()
@@ -140,8 +140,10 @@ func (a *app) saveThread(th *Thread) {
 	a.threadsErr = ""
 }
 
-// removeThreadFile deletes one thread's file. The caller keeps the
-// thread in memory for the undo toast.
+// removeThreadFile deletes one thread's file and its trace. The caller
+// keeps the thread in memory for the undo toast — which restores the
+// conversation from those bytes; the trace is derived and not kept, so
+// an undone task starts its trace over (spec/agents.md, tracing).
 func (a *app) removeThreadFile(th *Thread) {
 	if path, ok := a.threadsDir.file(th); ok {
 		// A file that survives deletion comes back on the next launch, so
@@ -152,6 +154,9 @@ func (a *app) removeThreadFile(th *Thread) {
 		}
 		// The project dir, now empty. A non-empty dir is not an error.
 		os.Remove(filepath.Dir(path))
+	}
+	if path, ok := a.threadsDir.eventFile(th); ok {
+		os.Remove(path)
 	}
 }
 
@@ -226,7 +231,7 @@ func decodeThreadFile(path string) (*Thread, error) {
 	if err := dec.Decode(&tf); err != nil {
 		return nil, err
 	}
-	if tf.Version > 1 {
+	if tf.Version > 2 {
 		return nil, fmt.Errorf("%w (thread schema %d)", errThreadsUnsupported, tf.Version)
 	}
 	return &Thread{

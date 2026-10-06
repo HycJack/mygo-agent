@@ -189,6 +189,12 @@ func (h headerActions) Export() {
 	}
 }
 
+func (h headerActions) Trace() {
+	if h.th != nil {
+		h.a.openTrace(h.th)
+	}
+}
+
 func (h headerActions) Delete() {
 	if h.th != nil {
 		h.a.deleteThread(h.a.uiCtx, h.th.ID)

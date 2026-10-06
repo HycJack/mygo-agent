@@ -155,6 +155,12 @@ type Event struct {
 	// shows the duration.
 	Ms int64 // EventToolEnd: how long the tool took
 
+	// Usage, on EventNote: the turn's token total and cost, when the
+	// backend reported them (spec/agents.md, tracing). The projector
+	// records them into the thread's trace; zero means unknown.
+	Tokens  int64
+	CostUSD float64
+
 	// EventSession: the harness session id to persist for resume.
 	SessionID string
 }

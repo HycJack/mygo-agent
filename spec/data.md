@@ -38,9 +38,16 @@ this app's snapshot model.
   Empty resolves to the default agent; the resolution is stamped back
   on the next save, so a thread from before the agents block picks up
   its binding on first use — never a rewrite on load alone.
-- `version` is the schema version; the current version is 1; every
-  write stamps it; a file from a newer schema is refused (see Load
-  failures).
+- `version` is the schema version; the current version is 2 (version 2
+  added the messages' producer attribution and the sidecar trace file);
+  every write stamps it; a file from a newer schema is refused (see
+  Load failures). Version 1 files still load: their messages simply
+  carry no attribution.
+- Beside the thread file lives `<threadID>.events.jsonl` — the turn's
+  trace (spec/agents.md): append-only, written by the projector, one
+  summary line per turn from finish. It is derived data, never read
+  back into state, and dies with the thread; undo restores the
+  conversation but not the trace.
 
 ## config.json — version 2
 

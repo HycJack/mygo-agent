@@ -396,7 +396,8 @@ func (r *run) notify(method string, params json.RawMessage) {
 		r.mu.Unlock()
 		if tokens > 0 {
 			r.send(harness.Event{Kind: harness.EventNote,
-				Text: fmt.Sprintf("Done · %d tokens", tokens)})
+				Text:   fmt.Sprintf("Done · %d tokens", tokens),
+				Tokens: int64(tokens)})
 		}
 	case method == "error":
 		var p struct {

@@ -1,6 +1,7 @@
 package app
 
 import (
+	"strings"
 	"time"
 
 	"github.com/egoist/mygo/ui"
@@ -70,6 +71,45 @@ type Message struct {
 	// LogAt marks where this assistant turn begins in the thread's
 	// ChatLog, so regenerate can rewind it.
 	LogAt int
+
+	// AgentID records which configured agent produced this message
+	// (spec/agents.md, P6): a thread can hand work to another agent via
+	// delegate, and the record of who said what survives the transcript.
+	AgentID string
+
+	// Per-turn usage accumulators (spec/agents.md, tracing): the
+	// projector bumps them from the events; finish writes them into the
+	// trace's turn summary and clears them. Unexported, so they never
+	// reach the thread file.
+	turnTokens int64
+	turnCost   float64
+	turnTools  int
+}
+
+// searchHaystack is the thread's haystack for the sidebar's search:
+// title plus every message's text. The threads are already in memory,
+// so the "file scan" the plan describes is a memory scan with a shape
+// stamp — no index, no dependency, recomputed only when the count moves.
+func (th *Thread) searchHaystack() string {
+	stamp := uint64(len(th.Messages))
+	if th.searchDone && th.searchStamp == stamp {
+		return th.searchCache
+	}
+	var b strings.Builder
+	b.WriteString(th.Title)
+	b.WriteByte('\n')
+	for i := range th.Messages {
+		b.WriteString(th.Messages[i].Text)
+		b.WriteByte('\n')
+	}
+	out := b.String()
+	if len(out) > 256<<10 {
+		// A haystack cap: half a megabyte of prose is enough to find a
+		// task by. The cut may split a rune; contains still matches.
+		out = out[:256<<10]
+	}
+	th.searchStamp, th.searchDone, th.searchCache = stamp, true, out
+	return out
 }
 
 // Thread is one Codex task, belonging to a project.
@@ -87,6 +127,12 @@ type Thread struct {
 	// Empty resolves to the default agent; the resolution is stamped
 	// back here the next time the thread is saved.
 	AgentID string
+
+	// The full-text search cache: the haystack is computed only while a
+	// search is active, invalidated when the message list changes shape.
+	searchStamp uint64
+	searchDone  bool
+	searchCache string
 
 	// dropped marks a thread the host has deleted while events from its
 	// last turn could still be in flight. Such an event can still reach

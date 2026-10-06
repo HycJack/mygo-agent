@@ -43,6 +43,11 @@ func (h builtinHarness) runBuiltin(ctx context.Context, emit func(harness.Event)
 		ConfineWrites: turn.Mode != harness.ModeFull,
 		Enabled:       turn.ToolEnabled,
 	})
+	// The delegate tool (spec/agents.md, P6): present when the turn's
+	// snapshot found another agent to call.
+	if len(h.delegates) > 0 {
+		tools = append(tools, h.delegateTool())
+	}
 	mcpClients := a.connectMCP(ctx, h.mcpServers)
 	defer func() {
 		for _, c := range mcpClients {
@@ -240,6 +245,9 @@ func parseToolDiff(out string) []DiffLine {
 // then the prompt. Tool round-trips from earlier app sessions are not
 // carried over. The history it walks is the copy taken on the main thread
 // at construction, never the live thread.
+// seedTail is what every built-in transcript's system head ends with.
+const seedTail = "\n\nAnswer in the user's language. When you have the result, summarise what you did and stop; do not call tools without a reason."
+
 func (h builtinHarness) seedChatLog(prompt string) []harness.ChatMessage {
 	prior := h.priorMessages
 	// The system head: the built-in prompt, the skills the agent's
@@ -249,11 +257,7 @@ func (h builtinHarness) seedChatLog(prompt string) []harness.ChatMessage {
 	if h.turn.SystemPrompt != "" {
 		sys += "\n\n" + h.turn.SystemPrompt
 	}
-	msgs := []harness.ChatMessage{{
-		Role: "system",
-		Content: sys +
-			"\n\nAnswer in the user's language. When you have the result, summarise what you did and stop; do not call tools without a reason.",
-	}}
+	msgs := []harness.ChatMessage{{Role: "system", Content: sys + seedTail}}
 	for _, m := range prior {
 		switch m.Role {
 		case "user":
