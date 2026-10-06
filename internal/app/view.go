@@ -290,6 +290,9 @@ func (a *app) backendLabel() string {
 func (a *app) overlays(c *ui.Context) {
 	vm := &uipkg.RenameVM{Open: a.renaming, Title: a.renameDraft}
 	uipkg.RenameDialog(c, vm, renameActions{a: a})
+
+	// The new-group dialog, rendered above whatever surface opened it.
+	a.groupDialogModal(c)
 	a.renaming, a.renameDraft = vm.Open, vm.Title
 	a.settingsModal(c)
 }
@@ -336,4 +339,87 @@ func (a *app) exportMarkdown(c *ui.Context, th *Thread) {
 		return
 	}
 	c.Toast("Exported to " + path)
+}
+
+// groupDialogModal renders the new-group dialog over the current
+// surface and mirrors its bindings back (spec/agents.md).
+func (a *app) groupDialogModal(c *ui.Context) {
+	if !a.groupDrafting {
+		return
+	}
+	vm := &uipkg.GroupVM{Open: true, Name: a.groupDraftName, Pal: a.pal}
+	for i := range a.agents {
+		ag := &a.agents[i]
+		vm.Members = append(vm.Members, uipkg.GroupMemberVM{
+			ID: ag.ID, Name: ag.Name, Emoji: ag.Emoji, Checked: a.groupDraftOn[ag.ID],
+		})
+	}
+	if len(vm.Members) == 0 {
+		vm.Err = "no agents to invite — create agent profiles in settings first"
+	} else if len(a.groupDraftOn) == 0 {
+		vm.Err = "pick at least one member"
+	}
+	uipkg.GroupDialog(c, vm, groupActions{a: a})
+	// Mirror the name only. The checkboxes reach the host through
+	// ToggleMember the moment they flip — mirroring the frame's stale
+	// Checked flags here would wipe the very tick the user just made.
+	a.groupDraftName = vm.Name
+}
+
+// groupActions adapts *app to ui.GroupActions.
+type groupActions struct{ a *app }
+
+func (h groupActions) ToggleMember(id string, on bool) {
+	println("TOGGLE", id, on)
+	if on {
+		h.a.groupDraftOn[id] = true
+	} else {
+		delete(h.a.groupDraftOn, id)
+	}
+}
+
+// Start creates the group profile and a thread bound to it: the chat
+// begins here, with the composer focused (spec/agents.md).
+func (h groupActions) Start() {
+	println("START clicked, members:", len(h.a.groupDraftOn))
+	h.a.startGroupChat()
+}
+
+func (h groupActions) Cancel() {
+	h.a.groupDrafting = false
+	clear(h.a.groupDraftOn)
+}
+
+// startGroupChat is the new-group dialog's Start: create the group
+// profile (panel = the picked members) and a thread bound to it, and
+// land in that thread with the composer focused (spec/agents.md).
+func (a *app) startGroupChat() {
+	members := make([]string, 0, len(a.groupDraftOn))
+	for i := range a.agents {
+		if a.groupDraftOn[a.agents[i].ID] {
+			members = append(members, a.agents[i].Name)
+		}
+	}
+	if len(members) == 0 {
+		return
+	}
+	name := strings.TrimSpace(a.groupDraftName)
+	if name == "" {
+		name = "Group"
+	}
+	ag := Agent{ID: "ag-" + uid(), Name: name, Panel: members}
+	a.agents = append(a.agents, ag)
+	a.activeAgent = ag.ID
+	a.groupDrafting = false
+	clear(a.groupDraftOn)
+	a.saveConfig()
+	a.createThread()
+	a.focusComposer = true
+}
+
+// openGroupDraft opens the new-group dialog with a clean draft.
+func (a *app) openGroupDraft() {
+	a.groupDrafting = true
+	a.groupDraftName = "Group"
+	clear(a.groupDraftOn)
 }

@@ -101,6 +101,9 @@ type app struct {
 	// The dialog's per-open data: skills discovered for the active
 	// project when it opened, and each provider's own /models listing
 	// for this session (never persisted).
+	groupDrafting    bool // the new-group dialog is open (spec/agents.md)
+	groupDraftName   string
+	groupDraftOn     map[string]bool // member id -> checked
 	dialogSkills     []builtin.Skill
 	fetchedModels    map[string][]string
 	fetchErrs        map[string]string

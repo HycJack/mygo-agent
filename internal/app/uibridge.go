@@ -189,9 +189,9 @@ func (h homeActions) PickModel(pid, m string) {
 // would (spec/agents.md).
 func (h homeActions) SetAgent(id string) { h.a.setActiveAgent(id) }
 
-// NewGroup creates a group profile and opens its form — the visible
-// entry to the relay (spec/agents.md).
-func (h homeActions) NewGroup() { h.a.addGroup() }
+// NewGroup opens the new-group-chat dialog: name it, tick the members,
+// start — the chat begins before any settings visit (spec/agents.md).
+func (h homeActions) NewGroup() { h.a.openGroupDraft() }
 
 // setActiveAgent is the host half of the picker and the home launcher.
 func (a *app) setActiveAgent(id string) {

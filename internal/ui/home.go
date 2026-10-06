@@ -59,6 +59,21 @@ func Home(c *ui.Context, vm *ViewModel, acts Actions, suggestions []string) {
 							})
 						})
 					}
+					// Creating a group happens here, before the chatting
+					// does: the trailing card opens the new-group dialog
+					// (spec/agents.md).
+					grp := ui.ButtonBase(c).Padding(8, 14).Radius(12).Gap(8).
+						Cursor(ui.CursorPointer).Border(1, vm.Pal.Border)
+					if grp.Hovered() {
+						grp.Background(vm.Pal.Hover)
+					}
+					if grp.Clicked() {
+						acts.NewGroup()
+					}
+					grp.Children(func() {
+						ui.Icon(c, IconPlus).FontSize(14).TextColor(t.TextMuted)
+						ui.Text(c, "New group chat").FontSize(12.5).TextColor(t.TextMuted)
+					})
 				})
 			}
 			ui.Row(c).Gap(8).Wrap().Justify(ui.Center).Children(func() {
