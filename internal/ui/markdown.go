@@ -209,17 +209,15 @@ func (md markdownRenderer) renderLines(c *ui.Context, text string, t *ui.Theme) 
 		case strings.HasPrefix(trimmed, "> "):
 			ui.Row(c).Gap(8).AlignItems(ui.Start).Children(func() {
 				ui.Box(c).Width(2).Background(t.Border)
-				ui.RichText(c).FontSize(14).LineHeight(1.6).Selectable().Children(func() {
-					md.renderInline(c, strings.TrimPrefix(trimmed, "> "), t)
-				}).TextColor(t.TextMuted)
+				md.inlineSelectable(c, strings.TrimPrefix(trimmed, "> "), t,
+					func(rt *ui.Element) { rt.FontSize(14).LineHeight(1.6).TextColor(t.TextMuted) })
 			})
 		case strings.HasPrefix(trimmed, "- "), strings.HasPrefix(trimmed, "* "):
 			openList(&listBase, ind)
 			ui.Row(c).Gap(8).AlignItems(ui.Start).Margin(0, 0, 0, depthIndent(ind)).Children(func() {
 				ui.Text(c, "•").FontSize(14).LineHeight(1.6).TextColor(md.pal.TextMuted)
-				ui.RichText(c).Grow(1).MinWidth(0).FontSize(14).LineHeight(1.6).Selectable().Children(func() {
-					md.renderInline(c, strings.TrimPrefix(strings.TrimPrefix(trimmed, "- "), "* "), t)
-				})
+				md.inlineSelectable(c, strings.TrimPrefix(strings.TrimPrefix(trimmed, "- "), "* "), t,
+					func(rt *ui.Element) { rt.Grow(1).MinWidth(0).FontSize(14).LineHeight(1.6) })
 			})
 		default:
 			if n, rest := numberedItem(trimmed); n != "" {
@@ -227,9 +225,8 @@ func (md markdownRenderer) renderLines(c *ui.Context, text string, t *ui.Theme) 
 				ui.Row(c).Gap(8).AlignItems(ui.Start).Margin(0, 0, 0, depthIndent(ind)).Children(func() {
 					ui.Text(c, n+".").Font("monospace").FontSize(12).TextColor(md.pal.TextMuted).
 						Width(22).TextAlign(ui.End)
-					ui.RichText(c).Grow(1).MinWidth(0).FontSize(14).LineHeight(1.6).Selectable().Children(func() {
-						md.renderInline(c, rest, t)
-					})
+					md.inlineSelectable(c, rest, t,
+						func(rt *ui.Element) { rt.Grow(1).MinWidth(0).FontSize(14).LineHeight(1.6) })
 				})
 				continue
 			}
@@ -403,9 +400,7 @@ func (md markdownRenderer) tableBlock(c *ui.Context, run []string) {
 					weight = 600
 				}
 				cell.Children(func() {
-					ui.RichText(c).Selectable().Children(func() {
-						md.renderInline(c, text, t)
-					}).FontWeight(weight)
+					md.inlineSelectable(c, text, t, func(rt *ui.Element) { rt.FontWeight(weight) })
 				})
 			}
 		}
@@ -431,6 +426,27 @@ func splitTableRow(line string) []string {
 // (a RichText built from Children elements has its presses swallowed by
 // them, spec/relay-lessons.md §8.5). Links stay element-form and keep
 // their click; a line carrying one must render through renderInline.
+// inlineSelectable renders one line's inline markdown as a selectable
+// text: constructor spans when the line carries no link (the form
+// whose selectable editor receives presses), the element form when it
+// does — a link is a clickable element and cannot be a span. style
+// tweaks the element (size, weight, indent-filling) in either form.
+func (md markdownRenderer) inlineSelectable(c *ui.Context, line string, t *ui.Theme, style func(*ui.Element)) {
+	if paragraphHasLink([]string{line}) {
+		rt := ui.RichText(c).Selectable().Children(func() {
+			md.renderInline(c, line, t)
+		})
+		if style != nil {
+			style(rt)
+		}
+		return
+	}
+	rt := ui.RichText(c, md.inlineSpans(line, t)...).Selectable()
+	if style != nil {
+		style(rt)
+	}
+}
+
 func (md markdownRenderer) inlineSpans(line string, t *ui.Theme) []ui.Span {
 	var out []ui.Span
 	plain := &strings.Builder{}

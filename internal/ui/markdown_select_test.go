@@ -54,3 +54,46 @@ func TestMarkdownMultiLineParagraphSelectsAcrossLines(t *testing.T) {
 		t.Fatalf("a drag across the paragraph copied %q; visible: %v", got, tt.Texts())
 	}
 }
+
+// TestMarkdownListItemSelectsAndCopies: a bullet's text is selectable —
+// a drag over the item copies it (marker excluded).
+func TestMarkdownListItemSelectsAndCopies(t *testing.T) {
+	cache := NewMdCache()
+	tt := ui.NewTester(func(c *ui.Context) {
+		Markdown(c, cache, "m1", "- retry the flaky case twice", true, CodexPalette())
+	}, 600, 120)
+	tt.Frame()
+	r, ok := tt.Find("retry the flaky case twice")
+	if !ok {
+		t.Fatalf("the item text did not render; visible: %v", tt.Texts())
+	}
+	tt.Press(r.X+2, r.Y+8)
+	tt.Move(r.X+r.W-2, r.Y+8)
+	tt.Release(r.X+r.W-2, r.Y+8)
+	tt.Key(ui.Cmd, ui.KeyC)
+	if got := tt.Clipboard(); got != "retry the flaky case twice" {
+		t.Fatalf("a drag over the list item copied %q", got)
+	}
+}
+
+// TestMarkdownTableCellSelectsAndCopies: table cells are selectable —
+// the header's weight rides the spans form.
+func TestMarkdownTableCellSelectsAndCopies(t *testing.T) {
+	const src = "| Plan | Status |\n| --- | --- |\n| ship it | green |"
+	cache := NewMdCache()
+	tt := ui.NewTester(func(c *ui.Context) {
+		Markdown(c, cache, "m1", src, true, CodexPalette())
+	}, 600, 160)
+	tt.Frame()
+	r, ok := tt.Find("ship it")
+	if !ok {
+		t.Fatalf("the cell did not render; visible: %v", tt.Texts())
+	}
+	tt.Press(r.X+1, r.Y+8)
+	tt.Move(r.X+r.W-1, r.Y+8)
+	tt.Release(r.X+r.W-1, r.Y+8)
+	tt.Key(ui.Cmd, ui.KeyC)
+	if got := tt.Clipboard(); got != "ship it" {
+		t.Fatalf("a drag over the cell copied %q", got)
+	}
+}
