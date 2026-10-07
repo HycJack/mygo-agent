@@ -22,6 +22,7 @@ type RailItem struct {
 	ID      any    // stable identity across frames
 	Preview string // a few lines of the message, shown in the hover card
 	Active  bool   // the message the reader is on right now
+	MsgIndex int   // the message's row in the transcript list — what a jump glides to (the rail skips rows, so this is not the dash's own position)
 }
 
 // The wave, in DIPs: the dash under the pointer is the longest, and the
@@ -133,7 +134,10 @@ func AnchorRail(c *ui.Context, items []RailItem, colors Colors, onJump func(item
 				})
 
 				if dash.Clicked() && onJump != nil {
-					onJump(*it, i)
+					// The dash's own position is i; the jump target is
+					// the message the dash stands for, which a filtered
+					// rail skips rows to reach.
+					onJump(*it, it.MsgIndex)
 				}
 				if dash.Hovered() {
 					// The preview paints in an overlay, above the

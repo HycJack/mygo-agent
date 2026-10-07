@@ -148,9 +148,13 @@ func Transcript(c *ui.Context, vm *TranscriptVM, acts TranscriptActions) {
 		}
 	}
 	root.Children(func() {
-		// The anchor rail: one dash per message, hover previews it,
-		// click glides to it.
-		items := make([]RailItem, len(vm.Messages))
+		// The anchor rail: one dash per anchor message, hover previews
+		// it, click glides to it. The anchors are the conversation's
+		// skeleton — every user message, plus each turn's LAST reply
+		// (in a relay that is the wrap-up or the member who closed the
+		// round). Every member reply taking a dash buried the skeleton
+		// under the work-log noise (spec/relay-router.md).
+		items := make([]RailItem, 0, len(vm.Messages))
 		first, last := st.Visible()
 		// Where the reader is. Mid-transcript that is the top of the
 		// viewport, but at the end it is the last row: the list settles
@@ -165,7 +169,10 @@ func Transcript(c *ui.Context, vm *TranscriptVM, acts TranscriptActions) {
 		}
 		for i := range vm.Messages {
 			m := &vm.Messages[i]
-			items[i] = RailItem{ID: m.ID, Preview: railPreview(m), Active: i == at}
+			if m.Role != "user" && i+1 < len(vm.Messages) && vm.Messages[i+1].Role != "user" {
+				continue // a mid-turn reply: the turn's last dash covers it
+			}
+			items = append(items, RailItem{ID: m.ID, Preview: railPreview(m), Active: i == at, MsgIndex: i})
 		}
 		AnchorRail(c, items, Colors{
 			Active:    vm.Pal.Text,
