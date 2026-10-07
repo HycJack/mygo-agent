@@ -294,18 +294,6 @@ func agentButton(c *ui.Context, vm *ViewModel, acts Actions) {
 				})
 			})
 			ui.Box(c).Height(1).Margin(4, 6).Background(vm.Pal.Border)
-			grp := ui.ButtonBase(c).Fill().Padding(7, 10).Radius(7).Gap(8).Cursor(ui.CursorPointer)
-			if grp.Hovered() {
-				grp.Background(vm.Pal.CardHover)
-			}
-			if grp.Clicked() {
-				vm.AgentMenu = false
-				acts.NewGroup()
-			}
-			grp.Children(func() {
-				ui.Icon(c, IconBot).FontSize(13).TextColor(t.TextMuted)
-				ui.Text(c, "New group chat…").FontSize(12).Grow(1)
-			})
 			mng := ui.ButtonBase(c).Padding(7, 10).Radius(7).Gap(8).Cursor(ui.CursorPointer)
 			if mng.Hovered() {
 				mng.Background(vm.Pal.CardHover)
