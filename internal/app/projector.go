@@ -145,7 +145,12 @@ func (a *app) projectEvent(th *Thread, at int, kind string, ev harness.Event) {
 		b.Ms = ev.Ms
 		if b.Type == blockCommand {
 			b.Output = cli.TrimOutput(ev.Output, 16<<10)
-			b.Open = b.Edit
+			// A multi-line command is its own deliverable — a heredoc
+			// file-write carries the content in the command text, and a
+			// relay member's writes are the work the user wants to see —
+			// so it opens on finish instead of hiding behind one
+			// truncated title line.
+			b.Open = b.Edit || strings.Contains(b.Text, "\n")
 		}
 		// A diff card already shows what changed; leave it be.
 	case harness.EventFileChange:

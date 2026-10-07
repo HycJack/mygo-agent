@@ -304,10 +304,17 @@ func messageRow(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, i int) 
 			for ii := range m.Items {
 				item(c, vm, acts, m, &m.Items[ii])
 			}
-			if m.Running && len(m.Items) == 0 {
+			if m.Running {
+				// The turn is streaming: a spinner after the last item —
+				// before anything arrives it is the only indicator, once
+				// prose flows it reads as "more is coming".
 				ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 					ui.Spinner(c)
-					ui.Text(c, "Working…").FontSize(12).TextColor(t.TextMuted)
+					text := "Working…"
+					if len(m.Items) > 0 {
+						text = "…"
+					}
+					ui.Text(c, text).FontSize(12).TextColor(t.TextMuted)
 				})
 			}
 			bar := ui.Row(c).MinHeight(actionRowHeight).AlignItems(ui.Center)
@@ -547,15 +554,28 @@ func blockCommand(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, m *Me
 		}
 	})
 	if b.Open {
+		// A multi-line command carries its content in the text — a
+		// heredoc file-write's payload is the code, and the title
+		// truncates it to one line — so the expanded card shows the
+		// full command; the output rides beneath when there is any.
+		multi := strings.Contains(b.Text, "\n")
 		out := b.Output
-		if strings.TrimSpace(out) == "" {
+		if strings.TrimSpace(out) == "" && !multi {
 			out = "(no output)"
 		}
-		ui.Column(c).Padding(0, 28, 6).Children(func() {
-			ui.ScrollBoth(c).MaxHeight(260).Radius(6).Background(vm.Pal.CodeBG).Children(func() {
-				ui.Text(c, strings.TrimRight(out, "\n")).Font("monospace").FontSize(11.5).
-					Padding(8, 10).NoWrap().TextColor(t.Text)
-			})
+		ui.Column(c).Padding(0, 28, 6).Gap(4).Children(func() {
+			if multi {
+				ui.ScrollBoth(c).MaxHeight(320).Radius(6).Background(vm.Pal.CodeBG).Children(func() {
+					ui.Text(c, strings.TrimRight(b.Text, "\n")).Font("monospace").FontSize(11.5).
+						Padding(8, 10).TextColor(vm.Pal.TextMuted)
+				})
+			}
+			if strings.TrimSpace(out) != "" {
+				ui.ScrollBoth(c).MaxHeight(260).Radius(6).Background(vm.Pal.CodeBG).Children(func() {
+					ui.Text(c, strings.TrimRight(out, "\n")).Font("monospace").FontSize(11.5).
+						Padding(8, 10).NoWrap().TextColor(t.Text)
+				})
+			}
 		})
 	}
 }

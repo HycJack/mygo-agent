@@ -347,3 +347,23 @@ func TestReasoningRunExpandsIntoFoldedMembers(t *testing.T) {
 		}
 	}
 }
+
+// TestHeredocCommandShowsItsTextWhenOpen: a multi-line command is its
+// own deliverable — a heredoc file-write's payload is the code, and the
+// single-line title truncates it away. Open, the card shows the full
+// command; its (near-empty) output does not blank the pane.
+func TestHeredocCommandShowsItsTextWhenOpen(t *testing.T) {
+	items := []ItemVM{{
+		Kind: ItemBlock, Type: "command", At: 0,
+		Blocks: []BlockVM{{Type: "command", Open: true,
+			Text:   "$ cat > sandbox.ts <<'EOF'\nexport const x = 1\nEOF\n",
+			Output: ""}},
+	}}
+	tt := renderItems(t, &stubActs{}, items, false)
+	if !tt.HasText("export const x = 1") {
+		t.Fatalf("the heredoc payload is not shown: %v", tt.Texts())
+	}
+	if tt.HasText("(no output)") {
+		t.Fatal("an empty output still says (no output) over the command text")
+	}
+}

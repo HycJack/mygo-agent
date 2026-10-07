@@ -201,15 +201,15 @@ func (md markdownRenderer) renderLines(c *ui.Context, text string, t *ui.Theme) 
 		case trimmed == "---" || trimmed == "***" || trimmed == "___":
 			ui.Divider(c).MarginY(6)
 		case strings.HasPrefix(trimmed, "### "):
-			ui.Text(c, strings.TrimPrefix(trimmed, "### ")).FontSize(14).Bold()
+			ui.Text(c, strings.TrimPrefix(trimmed, "### ")).FontSize(14).Bold().Selectable()
 		case strings.HasPrefix(trimmed, "## "):
-			ui.Text(c, strings.TrimPrefix(trimmed, "## ")).FontSize(15.5).Bold()
+			ui.Text(c, strings.TrimPrefix(trimmed, "## ")).FontSize(15.5).Bold().Selectable()
 		case strings.HasPrefix(trimmed, "# "):
-			ui.Text(c, strings.TrimPrefix(trimmed, "# ")).FontSize(17).Bold()
+			ui.Text(c, strings.TrimPrefix(trimmed, "# ")).FontSize(17).Bold().Selectable()
 		case strings.HasPrefix(trimmed, "> "):
 			ui.Row(c).Gap(8).AlignItems(ui.Start).Children(func() {
 				ui.Box(c).Width(2).Background(t.Border)
-				ui.RichText(c).FontSize(14).LineHeight(1.6).Children(func() {
+				ui.RichText(c).FontSize(14).LineHeight(1.6).Selectable().Children(func() {
 					md.renderInline(c, strings.TrimPrefix(trimmed, "> "), t)
 				}).TextColor(t.TextMuted)
 			})
@@ -217,7 +217,7 @@ func (md markdownRenderer) renderLines(c *ui.Context, text string, t *ui.Theme) 
 			openList(&listBase, ind)
 			ui.Row(c).Gap(8).AlignItems(ui.Start).Margin(0, 0, 0, depthIndent(ind)).Children(func() {
 				ui.Text(c, "•").FontSize(14).LineHeight(1.6).TextColor(md.pal.TextMuted)
-				ui.RichText(c).Grow(1).MinWidth(0).FontSize(14).LineHeight(1.6).Children(func() {
+				ui.RichText(c).Grow(1).MinWidth(0).FontSize(14).LineHeight(1.6).Selectable().Children(func() {
 					md.renderInline(c, strings.TrimPrefix(strings.TrimPrefix(trimmed, "- "), "* "), t)
 				})
 			})
@@ -227,13 +227,13 @@ func (md markdownRenderer) renderLines(c *ui.Context, text string, t *ui.Theme) 
 				ui.Row(c).Gap(8).AlignItems(ui.Start).Margin(0, 0, 0, depthIndent(ind)).Children(func() {
 					ui.Text(c, n+".").Font("monospace").FontSize(12).TextColor(md.pal.TextMuted).
 						Width(22).TextAlign(ui.End)
-					ui.RichText(c).Grow(1).MinWidth(0).FontSize(14).LineHeight(1.6).Children(func() {
+					ui.RichText(c).Grow(1).MinWidth(0).FontSize(14).LineHeight(1.6).Selectable().Children(func() {
 						md.renderInline(c, rest, t)
 					})
 				})
 				continue
 			}
-			ui.RichText(c).FontSize(14).LineHeight(1.6).Children(func() {
+			ui.RichText(c).FontSize(14).LineHeight(1.6).Selectable().Children(func() {
 				md.renderInline(c, trimmed, t)
 			})
 		}
@@ -350,7 +350,7 @@ func (md markdownRenderer) tableBlock(c *ui.Context, run []string) {
 					weight = 600
 				}
 				cell.Children(func() {
-					ui.RichText(c).Children(func() {
+					ui.RichText(c).Selectable().Children(func() {
 						md.renderInline(c, text, t)
 					}).FontWeight(weight)
 				})
@@ -377,7 +377,7 @@ func (md markdownRenderer) renderInline(c *ui.Context, line string, t *ui.Theme)
 	var plain strings.Builder
 	flush := func() {
 		if plain.Len() > 0 {
-			ui.Text(c, plain.String())
+			ui.Text(c, plain.String()).Selectable()
 			plain.Reset()
 		}
 	}
@@ -387,7 +387,7 @@ func (md markdownRenderer) renderInline(c *ui.Context, line string, t *ui.Theme)
 			if end := strings.IndexByte(line[i+1:], '`'); end >= 0 {
 				flush()
 				ui.Text(c, line[i+1:i+1+end]).Font("monospace").FontSize(11.5).
-					TextBackground(t.Surface)
+					TextBackground(t.Surface).Selectable()
 				i += end + 2
 				continue
 			}
@@ -396,7 +396,7 @@ func (md markdownRenderer) renderInline(c *ui.Context, line string, t *ui.Theme)
 		case strings.HasPrefix(line[i:], "**"):
 			if end := strings.Index(line[i+2:], "**"); end >= 0 {
 				flush()
-				ui.Text(c, line[i+2:i+2+end]).FontWeight(700)
+				ui.Text(c, line[i+2:i+2+end]).FontWeight(700).Selectable()
 				i += end + 4
 				continue
 			}
@@ -405,7 +405,7 @@ func (md markdownRenderer) renderInline(c *ui.Context, line string, t *ui.Theme)
 		case strings.HasPrefix(line[i:], "~~"):
 			if end := strings.Index(line[i+2:], "~~"); end >= 0 {
 				flush()
-				ui.Text(c, line[i+2:i+2+end]).Strikethrough().TextColor(t.TextMuted)
+				ui.Text(c, line[i+2:i+2+end]).Strikethrough().TextColor(t.TextMuted).Selectable()
 				i += end + 4
 				continue
 			}
@@ -461,7 +461,7 @@ func (md markdownRenderer) codeCard(c *ui.Context, p fencePart) {
 			cp.Children(func() { ui.Icon(c, IconCopy).FontSize(12).TextColor(t.TextMuted) })
 		})
 		ui.ScrollBoth(c).MaxHeight(360).Children(func() {
-			ui.Text(c, strings.TrimRight(p.text, "\n")).Font("monospace").FontSize(12).
+			ui.Text(c, strings.TrimRight(p.text, "\n")).Font("monospace").FontSize(12).Selectable().
 				Padding(10, 12).NoWrap()
 		})
 	})
@@ -494,7 +494,7 @@ func (md markdownRenderer) renderLive(c *ui.Context, st *mdState, t *ui.Theme) {
 		if last == "" {
 			return
 		}
-		ui.RichText(c).FontSize(14).LineHeight(1.6).Children(func() {
+		ui.RichText(c).FontSize(14).LineHeight(1.6).Selectable().Children(func() {
 			md.renderInline(c, last, t)
 		})
 	})

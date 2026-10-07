@@ -8,6 +8,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"mygo-agent/internal/config"
 	"mygo-agent/internal/harness"
@@ -149,5 +150,26 @@ func TestRegenerateRewindsChatLog(t *testing.T) {
 	}
 	if len(th.Messages) != 2 || th.Messages[1].Role != "assistant" {
 		t.Fatalf("messages after regenerate: %d", len(th.Messages))
+	}
+}
+
+// TestToolEndOpensHeredocWrites: a multi-line command opens on finish —
+// a relay member's heredoc file-writes are the work, and hiding them
+// behind one truncated title line made the transcript read as nothing
+// but collapsed rows.
+func TestToolEndOpensHeredocWrites(t *testing.T) {
+	a := newTestApp(t)
+	now := time.Now()
+	th := &Thread{ID: "t1", ProjectID: "default", Created: now, Updated: now,
+		Messages: []Message{{ID: "m0", Role: "assistant", Running: true, At: now}}}
+	a.threads = append(a.threads, th)
+	th.Messages[0].Blocks = []Block{{Type: blockCommand, Text: "$ cat > f <<'EOF'\ncode\nEOF", Running: true, Exit: -1}}
+
+	a.applyEvent(th, 0, "builtin", harness.Event{
+		Kind: harness.EventToolEnd, Exit: 0, Ms: 12, Output: "",
+	})
+
+	if !th.Messages[0].Blocks[0].Open {
+		t.Fatal("a heredoc write stayed collapsed on finish")
 	}
 }
