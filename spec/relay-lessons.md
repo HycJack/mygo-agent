@@ -73,6 +73,10 @@
 - **heredoc 写文件自动展开**：成员通过 `cat > f <<EOF` 写代码时，内容在命令文本里、标题单行截断、输出近空——不展开等于工作成果不可见（用户报告："点击没有命令行，全都收起来了"）。多行命令落定即展开，展示完整命令文本。
 - **流式全程有 spinner**（内容到了也不撤）；**markdown 全部 Selectable**（不能复制是硬伤）。
 
+## 8.5 工具包边界：RichText 不可拖选（上游限制）
+
+`RichText(c).Selectable().Children(内联 span)` **同步了整段文本到 editor**（官方测试只断言 `editor.source`），但点击/拖选被 span 子元素截走、父 editor 收不到——拖选复制为空。纯 `Text(...).Selectable()` 正常。复现：三形态对照（纯 Text ✓ / 官方字面 RichText ✗ / 样式链 RichText ✗，双击 Cmd+C 均复制空）。上游修复前，可靠的复制出口是消息悬停 Copy 按钮（`WriteClipboard(整条文本)`）；按段落合并 RichText 的渲染保留——上游接通点击路径后即生效。
+
 ## 9. 测试复盘（本项目真实踩的）
 
 - fixture 的共享变量（请求体记录、计数器）必须加锁——HTTP handler goroutine 与测试主 goroutine 的数据竞争只在 `-race` 全量下偶现。

@@ -662,9 +662,11 @@ func blockReasoning(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, m *
 	})
 	if b.Open {
 		// The thought itself, indented under its preview the way an
-		// expanded command's output is.
-		ui.Column(c).Padding(2, 8, 4, 28).Children(func() {
-			ui.Text(c, b.Text).Italic().FontSize(12).TextColor(t.TextMuted).Grow(1).MinWidth(0)
+		// expanded command's output is. The column must claim the
+		// transcript's width or a long thought runs one unwrapped line
+		// past the window edge, right through the messages below it.
+		ui.Column(c).FillWidth().Padding(2, 8, 4, 28).Children(func() {
+			ui.Text(c, b.Text).Italic().FontSize(12).TextColor(t.TextMuted)
 		})
 	}
 }

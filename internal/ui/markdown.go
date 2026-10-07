@@ -233,11 +233,51 @@ func (md markdownRenderer) renderLines(c *ui.Context, text string, t *ui.Theme) 
 				})
 				continue
 			}
+			// One selectable element per PARAGRAPH, not per line:
+			// selection lives inside a single text element, and the
+			// per-line fragments made a drag stop at every line break —
+			// message content read as unselectable. The paragraph's
+			// lines ride one RichText as spans, styling intact.
+			para := []string{trimmed}
+			for li+1 < len(lines) && paragraphContinues(lines[li+1]) {
+				li++
+				para = append(para, strings.TrimSpace(lines[li]))
+			}
 			ui.RichText(c).FontSize(14).LineHeight(1.6).Selectable().Children(func() {
-				md.renderInline(c, trimmed, t)
+				for pi, pl := range para {
+					if pi > 0 {
+						md.renderInline(c, "\n", t)
+					}
+					md.renderInline(c, pl, t)
+				}
 			})
 		}
 	}
+}
+
+// paragraphContinues reports whether a line is still plain paragraph
+// prose — a run of such lines renders as one selectable paragraph. Every
+// other block kind (heading, list item, quote, table, rule, indented
+// code, a table's separator neighbor) ends the paragraph.
+func paragraphContinues(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	switch {
+	case strings.HasPrefix(trimmed, "#"), strings.HasPrefix(trimmed, "> "),
+		strings.HasPrefix(trimmed, "- "), strings.HasPrefix(trimmed, "* "),
+		trimmed == "---", trimmed == "***", trimmed == "___",
+		strings.HasPrefix(trimmed, "|"):
+		return false
+	}
+	if ind := indentOf(line); ind >= 4 {
+		return false // an indented code block
+	}
+	if n, _ := numberedItem(trimmed); n != "" {
+		return false
+	}
+	return true
 }
 
 // indentOf is the width of a line's leading indent, a tab counting as
@@ -377,7 +417,7 @@ func (md markdownRenderer) renderInline(c *ui.Context, line string, t *ui.Theme)
 	var plain strings.Builder
 	flush := func() {
 		if plain.Len() > 0 {
-			ui.Text(c, plain.String()).Selectable()
+			ui.Text(c, plain.String())
 			plain.Reset()
 		}
 	}
@@ -387,7 +427,7 @@ func (md markdownRenderer) renderInline(c *ui.Context, line string, t *ui.Theme)
 			if end := strings.IndexByte(line[i+1:], '`'); end >= 0 {
 				flush()
 				ui.Text(c, line[i+1:i+1+end]).Font("monospace").FontSize(11.5).
-					TextBackground(t.Surface).Selectable()
+					TextBackground(t.Surface)
 				i += end + 2
 				continue
 			}
@@ -396,7 +436,7 @@ func (md markdownRenderer) renderInline(c *ui.Context, line string, t *ui.Theme)
 		case strings.HasPrefix(line[i:], "**"):
 			if end := strings.Index(line[i+2:], "**"); end >= 0 {
 				flush()
-				ui.Text(c, line[i+2:i+2+end]).FontWeight(700).Selectable()
+				ui.Text(c, line[i+2:i+2+end]).FontWeight(700)
 				i += end + 4
 				continue
 			}
@@ -405,7 +445,7 @@ func (md markdownRenderer) renderInline(c *ui.Context, line string, t *ui.Theme)
 		case strings.HasPrefix(line[i:], "~~"):
 			if end := strings.Index(line[i+2:], "~~"); end >= 0 {
 				flush()
-				ui.Text(c, line[i+2:i+2+end]).Strikethrough().TextColor(t.TextMuted).Selectable()
+				ui.Text(c, line[i+2:i+2+end]).Strikethrough().TextColor(t.TextMuted)
 				i += end + 4
 				continue
 			}
