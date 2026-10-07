@@ -6,10 +6,10 @@ package app
 
 import (
 	"encoding/json"
-	"strings"
 	"image/png"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
