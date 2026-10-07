@@ -828,7 +828,7 @@ func sectionLabel(c *ui.Context, label string) {
 func checkboxRow(c *ui.Context, pal Palette, title, sub, badge string, checked *bool) bool {
 	t := c.Theme()
 	flipped := false
-	row := ui.ButtonBase(c).FillWidth().Padding(8, 12).Radius(8).Gap(10).
+	row := ui.ButtonBase(c).Padding(8, 12).Radius(8).Gap(10).
 		AlignItems(ui.Center).Cursor(ui.CursorPointer)
 	if *checked {
 		row.Background(pal.Card)
