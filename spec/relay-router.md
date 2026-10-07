@@ -82,7 +82,7 @@ decision 线要点：
 
 ## 4. 路由器实现（新文件 `internal/app/relayrouter.go`）
 
-- **请求**：非流式 `POST {base}/chat/completions`，`stream:false`、`temperature:0`、`response_format:{"type":"json_object"}`（Ollama 支持；不支持时靠解析兜底）。带 `Authorization: Bearer <key>`（Ollama 可留空 key）。超时 30s，2 次尝试（429/5xx 与传输错误重试）。
+- **请求**：非流式 `POST {base}/chat/completions`，`stream:false`、`temperature:0`、`response_format:{"type":"json_object"}`（Ollama 支持；不支持时靠解析兜底）。带 `Authorization: Bearer <key>`（Ollama 可留空 key）。单次调用超时 2 分钟（推理模型读长摘要可能超过半分钟，2026-10 实测 30s 会把健康路由掐成 "coordinator unavailable"），2 次尝试（429/5xx 与传输错误重试）。
 - **System prompt**（草案）：
 
 ```

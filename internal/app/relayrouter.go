@@ -12,6 +12,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -45,6 +46,13 @@ const (
 // maxDecisionOptions is the decision API's choice-question ceiling: a
 // panel larger than that cannot be routed by the decision wire.
 const maxDecisionOptions = 26
+
+// routerCallTimeout bounds one coordinator call. Two minutes, not a
+// token-windows worry — the inputs are bounded to kilobytes — but a
+// reasoning model reading a long digest can legitimately think past
+// half a minute, and a premature deadline ends the relay as
+// "coordinator unavailable".
+const routerCallTimeout = 2 * time.Minute
 
 // doneProbability is where a decision router's noul answer counts as
 // "the work is done": the answer IS the probability, so the honest
@@ -432,7 +440,7 @@ func routeDecisionChat(ctx context.Context, snap panelSnapshot) (relayRoute, err
 	}
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
-		callCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		callCtx, cancel := context.WithTimeout(ctx, routerCallTimeout)
 		content, err := routerChat(callCtx, snap, msgs)
 		cancel()
 		if err != nil {
@@ -691,7 +699,7 @@ func notYetSpoken(snap panelSnapshot) []string {
 // URL ("/chat/completions", "/systemone").
 func routerPost(ctx context.Context, baseURL, apiKey, path string, body []byte) ([]byte, error) {
 	url := strings.TrimRight(baseURL, "/") + path
-	client := &http.Client{Timeout: 30 * time.Second}
+	client := &http.Client{Timeout: routerCallTimeout}
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		if attempt > 0 {
@@ -728,6 +736,9 @@ func routerPost(ctx context.Context, baseURL, apiKey, path string, body []byte) 
 			continue
 		}
 		return data, nil
+	}
+	if errors.Is(lastErr, context.DeadlineExceeded) {
+		return nil, fmt.Errorf("coordinator call timed out (limit %v per attempt)", routerCallTimeout)
 	}
 	return nil, lastErr
 }
