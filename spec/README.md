@@ -13,6 +13,11 @@ state invariants; code and tests follow them.
 | [architecture.md](architecture.md) | The layer map: harness / providers / host / UI and their import rules |
 | [data.md](data.md) | The persistence formats: versioning, strict decode, load-failure handling |
 
+Experience documents distill what a landed feature taught us — pitfalls,
+patterns and test methods worth reusing. [relay-lessons.md](relay-lessons.md)
+is the first: the multi-agent group relay's design patterns and dead ends,
+companions to the [relay-router.md](relay-router.md) contract.
+
 Proposals are not contracts: [agents.md](agents.md) is a staged plan
 (agents as configured entities, a web governance plane, tracing). Its
 P0–P3 and P6 stages have landed — their data contract moved into
