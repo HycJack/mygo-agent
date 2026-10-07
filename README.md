@@ -18,10 +18,18 @@ English | [简体中文](README.zh-CN.md)
   picker or the home launcher, edit them in settings; an empty profile
   follows the app's selection. Tasks run independently — each thread
   starts, stops and regenerates on its own. An agent can hand a
-  sub-task to another through the `delegate` tool, and a **panel** turns
-  a thread into a group relay: its members answer in order, each seeing
-  the earlier replies in the shared conversation, every reply labeled
-  with its agent.
+  sub-task to another through the `delegate` tool, and a **panel**
+  turns a thread into a group relay: `@member` mentions (from the
+  composer, an interjection, or a member's own reply) call on
+  teammates — several named members run in parallel — and otherwise a
+  **coordinator model** decides after every reply who speaks next and
+  when the work is done (three wires: chat JSON, the Jev decision API,
+  or a hybrid; configurable guards: rounds, token budget, timeout,
+  stall detection). The relay ends with a synthesized conclusion, you
+  can interject while it runs, and every reply is labeled with its
+  agent and the routing reason behind it (contract in
+  [spec/relay-router.md](spec/relay-router.md), lessons in
+  [spec/relay-lessons.md](spec/relay-lessons.md)).
 - **Tracing** — every task keeps an append-only event trace beside its
   file (tool calls with durations and exits, notes, per-turn token and
   cost totals), viewable from the task menu; the sidebar's search
