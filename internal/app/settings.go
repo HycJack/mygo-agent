@@ -136,6 +136,20 @@ func (a *app) settingsVM() *uipkg.SettingsVM {
 			SkillsDeny:    slices.Clone(ag.Skills.Deny),
 			Panel:         slices.Clone(ag.Panel),
 		}
+		// The routed relay's knobs (spec/relay-router.md): numbers as
+		// text, "" = default or off; the route and wire are segments.
+		if ag.PanelRoute == "router" {
+			ve.PanelRoute = 1
+		}
+		ve.PanelBlurb = ag.PanelBlurb
+		ve.PanelMaxRounds = optNum(ag.PanelMaxRounds)
+		ve.PanelStall = optNum(ag.PanelStallRounds)
+		ve.PanelMaxTokens = optNum(ag.PanelMaxTokens)
+		ve.PanelTimeout = optNum(ag.PanelTimeout)
+		ve.PanelSummarizer = ag.PanelSummarizer
+		ve.RouterWire = routerWireIndex(ag.RouterWire)
+		ve.RouterProvider = ag.RouterProvider
+		ve.RouterModel = ag.RouterModel
 		// The VM's 0 means "follow the app", so a set value loads
 		// shifted up by one — mirroring syncAgent's minus one on the way
 		// back. Without the shift every rendered frame dragged the value
@@ -211,6 +225,37 @@ func (a *app) skillsVM() []uipkg.SkillVM {
 	return out
 }
 
+// optNum renders an optional number for its form field: "" means the
+// default or off.
+func optNum(n int) string {
+	if n <= 0 {
+		return ""
+	}
+	return strconv.Itoa(n)
+}
+
+// routerWireIndex maps the config's router_wire to the form segment.
+func routerWireIndex(wire string) int {
+	switch wire {
+	case "decision":
+		return 1
+	case "hybrid":
+		return 2
+	}
+	return 0
+}
+
+// routerWireFromIndex is the config value the form segment writes.
+func routerWireFromIndex(i int) string {
+	switch i {
+	case 1:
+		return "decision"
+	case 2:
+		return "hybrid"
+	}
+	return ""
+}
+
 // syncSettings mirrors the form's bindings into host state and saves
 // when the frame actually changed a provider or an agent.
 func (a *app) syncSettings(vm *uipkg.SettingsVM) {
@@ -266,6 +311,27 @@ func (a *app) syncAgent(v *uipkg.AgentEditVM) bool {
 	if v.Mode >= 0 {
 		mode = v.Mode - 1
 	}
+	// The routed relay's knobs (spec/relay-router.md). A typo in a
+	// number keeps what the profile had — the MaxTurns convention.
+	route := "sequence"
+	if v.PanelRoute == 1 {
+		route = "router"
+	}
+	panelNum := func(s string, cur int) int {
+		s = strings.TrimSpace(s)
+		if s == "" {
+			return 0
+		}
+		if n, err := strconv.Atoi(s); err == nil && n >= 0 {
+			return n
+		}
+		return cur
+	}
+	maxRounds := panelNum(v.PanelMaxRounds, ag.PanelMaxRounds)
+	stall := panelNum(v.PanelStall, ag.PanelStallRounds)
+	maxTokens := panelNum(v.PanelMaxTokens, ag.PanelMaxTokens)
+	timeout := panelNum(v.PanelTimeout, ag.PanelTimeout)
+	wire := routerWireFromIndex(v.RouterWire)
 	sameInt := func(p *int, n int) bool {
 		if (p == nil) != (n < 0) {
 			return false
@@ -280,7 +346,13 @@ func (a *app) syncAgent(v *uipkg.AgentEditVM) bool {
 		!slices.Equal(ag.MCPServers, v.MCPServers) ||
 		!slices.Equal(ag.Skills.Allow, v.SkillsAllow) ||
 		!slices.Equal(ag.Skills.Deny, v.SkillsDeny) ||
-		!slices.Equal(ag.Panel, v.Panel) {
+		!slices.Equal(ag.Panel, v.Panel) ||
+		ag.PanelRoute != route || ag.PanelBlurb != v.PanelBlurb ||
+		ag.PanelMaxRounds != maxRounds || ag.PanelStallRounds != stall ||
+		ag.PanelMaxTokens != maxTokens || ag.PanelTimeout != timeout ||
+		ag.PanelSummarizer != v.PanelSummarizer ||
+		ag.RouterWire != wire || ag.RouterProvider != v.RouterProvider ||
+		ag.RouterModel != v.RouterModel {
 		ag.Name, ag.Emoji, ag.Backend = v.Name, v.Emoji, v.Backend
 		ag.Provider, ag.Model, ag.SystemPrompt = v.Provider, v.Model, v.SystemPrompt
 		ag.MaxTurns = maxTurns
@@ -312,6 +384,15 @@ func (a *app) syncAgent(v *uipkg.AgentEditVM) bool {
 			}
 		}
 		ag.Panel = v.Panel
+		ag.PanelRoute = route
+		ag.PanelBlurb = strings.TrimSpace(v.PanelBlurb)
+		ag.PanelMaxRounds = maxRounds
+		ag.PanelStallRounds = stall
+		ag.PanelMaxTokens = maxTokens
+		ag.PanelTimeout = timeout
+		ag.PanelSummarizer = strings.TrimSpace(v.PanelSummarizer)
+		ag.RouterWire = wire
+		ag.RouterProvider, ag.RouterModel = v.RouterProvider, v.RouterModel
 		return true
 	}
 	return false

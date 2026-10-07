@@ -315,8 +315,16 @@ func (a *app) finish(th *Thread, at int, errText string) {
 			}
 			// The relay's token budget counts what its members spend
 			// (spec/relay-router.md); traceTurn clears the accumulators.
+			// The outline is the relay's rolling memory: one bounded gist
+			// per reply, so a long discussion's early decisions survive
+			// the tail-bounded digest.
 			if st := a.groupQueue[th.ID]; st != nil {
 				st.tokens += m.turnTokens
+				if ag := a.agentByID(m.AgentID); ag != nil {
+					if line := strings.TrimSpace(m.Text); line != "" {
+						st.outline = append(st.outline, ag.Name+": "+truncRunes(line, 120))
+					}
+				}
 			}
 			th.Updated = time.Now()
 			a.saveThread(th)

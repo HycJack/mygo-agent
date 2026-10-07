@@ -1,6 +1,6 @@
 # 方案：群聊接力路由（Panel Router）
 
-状态：**P1、P2 已落地**（sequence 模式零行为变化；router 模式 + 三层护栏 + note 呈现 + 测试在 `internal/app/relayrouter.go` / `relayrouter_test.go`）；P3（@mention、设置 UI、路由器选首位发言者、`panel_blurb`）未启动。设置界面暂不暴露新字段，手编 config.json 即可；`syncAgent` 只回写 VM 已有字段，编辑其他设置不会抹掉新配置。目标：解决"群聊接力必须人工发一条消息才能推进、无法决定谁下一个发言、何时结束"的问题——引入 host 侧的路由决策步骤（supervisor 模式），由本地 Ollama 小模型担任协调者。仍不引入消息总线/常驻守护（spec/agents.md 的红线不变）：接力骨架（`finish()` → `dispatchParticipant`）保留，只把"固定 FIFO 队列"换成"每轮结束后的路由决策"。
+状态：**P1、P2 已落地 + 四轮迭代**（纲要/直通交接/总结/插话/护栏可配/trace/黄金集均已落地）（sequence 模式零行为变化；router 模式 + 三层护栏 + note 呈现 + 测试在 `internal/app/relayrouter.go` / `relayrouter_test.go`）；P3（@mention、设置 UI、路由器选首位发言者、`panel_blurb`）未启动。设置界面暂不暴露新字段，手编 config.json 即可；`syncAgent` 只回写 VM 已有字段，编辑其他设置不会抹掉新配置。目标：解决"群聊接力必须人工发一条消息才能推进、无法决定谁下一个发言、何时结束"的问题——引入 host 侧的路由决策步骤（supervisor 模式），由本地 Ollama 小模型担任协调者。仍不引入消息总线/常驻守护（spec/agents.md 的红线不变）：接力骨架（`finish()` → `dispatchParticipant`）保留，只把"固定 FIFO 队列"换成"每轮结束后的路由决策"。
 
 ## 1. 问题（代码事实）
 
@@ -127,6 +127,18 @@ type relayState struct {
   4. 每次派发前 `rounds++`，更新 `last`/`sameStreak`。
 
 `startTurn`/`regenerate` 在 router 模式下仍以 `panel[0]` 起步（首发言者固定，后续全由路由器接管）；"路由器也选首位发言者"列为 P3 备选。
+
+## 5.5 接力纲要（rolling outline）
+
+每条成员回复落定时，`finish` 把一条有界 gist 追加进 `relayState.outline`（`名字: 要点≤120字`）。三条协调者线都读它：chat 简报在轮次状态后列出 "What each reply established: …"，decision 线进 `state.outline`，hybrid 的 advisor 同样可见。长讨论的早期决策不再被 6KB 尾巴截掉——这是摘要截尾问题的接力层解法。
+
+## 5.6 成员直通交接（explicit handoff，swarm 混合）
+
+成员回复末尾 `@成员名` 即直接交棒：`routeRelay` 的 default 分支先查 `explicitHandoff`，命中（且非自指）就直接派发——省一次路由调用；同名连讲/轮数等护栏先于直通交接评估，是中央权威的底线。面板协议教成员在"明确知道谁接棒"时使用，否则留给协调者。trace 里记 `handed off directly by X (@Y)`。
+
+## 5.7 路由黄金回归集（golden set）
+
+`relayrouter_golden_test.go`：四个脚本化场景（固定转录+轮次状态 → 期望 next 集合或 done），`MYGO_GOLDEN_BASEURL`(+MODEL/KEY) 门控跑在真模型上。断言是性质（接受名字集合、负向断言"已发言者不得重复"），不钉死唯一答案——真模型是概率性的，钉死名字的黄金集会按日程表失败。2026-10 对 MiniMax M3.1 Flash 四场景全命中。
 
 ## 6. 护栏（终止条件可配置，spec/relay-router.md）
 

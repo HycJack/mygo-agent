@@ -175,11 +175,31 @@ func TestPanelSettingsRoundTrip(t *testing.T) {
 		}
 	}
 	vm.Agents[ai].Panel = []string{"A", "B"}
+	vm.Agents[ai].PanelRoute = 1
+	vm.Agents[ai].PanelBlurb = "routing duty line"
+	vm.Agents[ai].PanelMaxRounds = "12"
+	vm.Agents[ai].RouterWire = 1
+	vm.Agents[ai].RouterModel = "tev1:latest"
 	a.syncSettings(vm)
 
 	team := a.agentByName("Team")
 	if team == nil || len(team.Panel) != 2 || team.Panel[0] != "A" {
 		t.Fatalf("panel did not sync: %+v", team)
+	}
+	if team.PanelRoute != "router" || team.PanelBlurb != "routing duty line" ||
+		team.PanelMaxRounds != 12 || team.RouterWire != "decision" || team.RouterModel != "tev1:latest" {
+		t.Fatalf("relay knobs did not sync: %+v", team)
+	}
+	// A re-render must not drag the values: every frame rebuilds the VM
+	// from the profile, so the round trip has to be stable.
+	vm2 := a.settingsVM()
+	for i := range vm2.Agents {
+		if vm2.Agents[i].ID == "ag-team" {
+			if vm2.Agents[i].PanelRoute != 1 || vm2.Agents[i].PanelMaxRounds != "12" ||
+				vm2.Agents[i].RouterWire != 1 {
+				t.Fatalf("the knobs drifted on re-render: %+v", vm2.Agents[i])
+			}
+		}
 	}
 	if sub := a.agentSub(team); sub != "panel · 2 agents" {
 		t.Fatalf("subtitle = %q", sub)

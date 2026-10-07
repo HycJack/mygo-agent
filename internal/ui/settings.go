@@ -95,6 +95,21 @@ type AgentEditVM struct {
 	// Panel is the group relay's member names, in answer order
 	// (spec/agents.md); empty means a solo agent.
 	Panel []string
+	// The routed relay's knobs (spec/relay-router.md). PanelRoute is a
+	// segment (0 sequence, 1 router); the numeric budgets are text, ""
+	// = default or off; RouterWire is a segment (0 chat, 1 decision,
+	// 2 hybrid). RouterProvider/Model are provider id + model, empty
+	// follows the app.
+	PanelRoute      int
+	PanelBlurb      string
+	PanelMaxRounds  string
+	PanelStall      string
+	PanelMaxTokens  string
+	PanelTimeout    string
+	PanelSummarizer string
+	RouterWire      int
+	RouterProvider  string
+	RouterModel     string
 	// ProviderOpts are the real configured providers (the Provider row
 	// picks from these), and ModelOptions are the models of whichever
 	// provider this agent resolves to — or the pinned CLI backend's own
@@ -799,11 +814,38 @@ func agentForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, ag *AgentEdi
 	}
 
 	sectionLabel(c, "GROUP RELAY")
-	ui.Column(c).Gap(4).Children(func() {
+	ui.Column(c).Gap(6).Children(func() {
 		ui.Text(c, "Panel members").FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
 		ui.TokenField(c, &ag.Panel, nil)
 		ui.Textf(c, "Agent names, in answer order: each member sees the earlier replies in the shared conversation. Available: %s",
 			vm.AgentNames).FontSize(11).TextColor(t.TextMuted)
+
+		ui.Row(c).Gap(8).Children(func() {
+			Segments(c, ag.PanelRoute, []string{"Sequence", "Router"}, func(i int) { ag.PanelRoute = i }, vm.Pal)
+			Segments(c, ag.RouterWire, []string{"Chat", "Decision", "Hybrid"}, func(i int) { ag.RouterWire = i }, vm.Pal)
+		})
+		ui.Textf(c, "Router: a coordinator model picks who speaks next and when the relay ends. Decision and hybrid need a Jev decision model (Ollama /v1/systemone) as the judge. Numbers left empty use their default; budgets left empty are off.").FontSize(11).TextColor(t.TextMuted)
+
+		formField(c, "Routing blurb", &ag.PanelBlurb, false, "duty line the coordinator reads — defaults to the system prompt's first line")
+		ui.Row(c).Gap(8).Children(func() {
+			ui.Column(c).Gap(4).Grow(1).Children(func() {
+				formField(c, "Max rounds", &ag.PanelMaxRounds, false, "8")
+			})
+			ui.Column(c).Gap(4).Grow(1).Children(func() {
+				formField(c, "Stall cap", &ag.PanelStall, false, "5")
+			})
+		})
+		ui.Row(c).Gap(8).Children(func() {
+			ui.Column(c).Gap(4).Grow(1).Children(func() {
+				formField(c, "Token budget", &ag.PanelMaxTokens, false, "off")
+			})
+			ui.Column(c).Gap(4).Grow(1).Children(func() {
+				formField(c, "Timeout (s)", &ag.PanelTimeout, false, "off")
+			})
+		})
+		formField(c, "Summarizer", &ag.PanelSummarizer, false, "the bound agent writes the wrap-up")
+		formField(c, "Router provider id", &ag.RouterProvider, false, "app default")
+		formField(c, "Router model", &ag.RouterModel, false, "app default")
 	})
 
 	ui.Row(c).Justify(ui.End).Children(func() {

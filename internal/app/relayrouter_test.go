@@ -319,16 +319,19 @@ func routerRelayFixture(t *testing.T, release <-chan struct{}, memberReplies []s
 	a := newTestApp(t)
 	a.backend = "builtin"
 	a.mode = 2
+	var mu sync.Mutex
 	var bodies []string
 	var calls int
 	memberSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		data, _ := io.ReadAll(r.Body)
+		mu.Lock()
 		bodies = append(bodies, string(data))
 		text := "all done"
 		if calls < len(memberReplies) {
 			text = memberReplies[calls]
 		}
 		calls++
+		mu.Unlock()
 		w.Header().Set("Content-Type", "text/event-stream")
 		fmt.Fprint(w, "event: response.output_text.delta\n"+
 			`data: {"type":"response.output_text.delta","delta":"`+text+`"}`+"\n\n"+
@@ -658,27 +661,16 @@ func TestRouterRelayFollowsCoordinator(t *testing.T) {
 	if th.Messages[1].AgentID != "ag-b" {
 		t.Fatalf("first speaker = %q, want the coordinator's pick B", th.Messages[1].AgentID)
 	}
-	// The first routing call sees the request and the roster before
-	// anyone has spoken.
-	if !strings.Contains((*routerBodies)[0], "plan the thing") || !strings.Contains((*routerBodies)[0], "MEMBER-B-HEAD") {
-		t.Fatalf("the first brief lacks the request or the roster: %s", (*routerBodies)[0])
-	}
 	// The coordinator's decision rides along as a note and reaches the
 	// member in the handoff prompt.
 	if note := noteText(th.Messages[1]); !strings.Contains(note, "→ B") || !strings.Contains(note, "needs review") {
 		t.Fatalf("B's note = %q", note)
 	}
-	if !strings.Contains((*bodies)[0], "handed the floor") {
-		t.Fatal("B never learned why the floor came to it")
-	}
-	// Members speak under the panel protocol: they decide and recommend
-	// instead of handing choices back to the user.
-	if !strings.Contains((*bodies)[0], "do not end your reply by handing the question back to the user") {
-		t.Fatal("the panel protocol never reached the member")
-	}
 	// The coordinator ended the relay — and said so on the transcript —
 	// then the wrap-up turn synthesizes the conclusion. The end decision
-	// is a second router call, so settle before asserting.
+	// is a second router call, so settle before asserting anything that
+	// reads the fixtures' recorded bodies: a handler goroutine may still
+	// be appending.
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		settled := false
@@ -692,6 +684,19 @@ func TestRouterRelayFollowsCoordinator(t *testing.T) {
 			t.Fatal("the relay never settled")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	// The first routing call sees the request and the roster before
+	// anyone has spoken.
+	if !strings.Contains((*routerBodies)[0], "plan the thing") || !strings.Contains((*routerBodies)[0], "MEMBER-B-HEAD") {
+		t.Fatalf("the first brief lacks the request or the roster: %s", (*routerBodies)[0])
+	}
+	if !strings.Contains((*bodies)[0], "handed the floor") {
+		t.Fatal("B never learned why the floor came to it")
+	}
+	// Members speak under the panel protocol: they decide and recommend
+	// instead of handing choices back to the user.
+	if !strings.Contains((*bodies)[0], "do not end your reply by handing the question back to the user") {
+		t.Fatal("the panel protocol never reached the member")
 	}
 	if note := noteText(th.Messages[1]); !strings.Contains(note, "all done") {
 		t.Fatalf("the coordinator's end reason never surfaced: %q", note)
@@ -991,5 +996,75 @@ func TestRelayMemberRetry(t *testing.T) {
 	}
 	if note := noteText(th.Messages[2]); !strings.Contains(note, "retrying") {
 		t.Fatalf("the retry note is missing: %q", note)
+	}
+}
+
+// TestRelayHandoffSkipsTheCoordinator: a member who names the next
+// member with @ passes the floor directly — one routing call for the
+// whole turn instead of two.
+func TestRelayHandoffSkipsTheCoordinator(t *testing.T) {
+	a, th, srv, _, routerBodies := routerRelayFixture(t, nil,
+		[]string{"alpha @B 该你了", "beta"},
+		`{"next":"A","reason":"start at the top"}`,
+		`{"next":"","reason":"all done"}`)
+	defer srv.Close()
+	a.startTurn(th, "go")
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		settled := false
+		a.update(func() { settled = !a.isRunning("t1") && a.groupQueue["t1"] == nil })
+		if settled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the relay never settled")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// user + A + B + wrap-up; the router was called twice — first
+	// speaker and the end — the handoff between them never asked.
+	if len(th.Messages) != 4 {
+		t.Fatalf("messages = %d, want user + A + B + wrap-up", len(th.Messages))
+	}
+	if th.Messages[2].AgentID != "ag-b" {
+		t.Fatalf("the handoff landed on %q, want B", th.Messages[2].AgentID)
+	}
+	if len(*routerBodies) != 2 {
+		t.Fatalf("router calls = %d, want the handoff to skip the coordinator", len(*routerBodies))
+	}
+	if note := noteText(th.Messages[2]); !strings.Contains(note, "straight from A") {
+		t.Fatalf("B's note lost the handoff: %q", note)
+	}
+}
+
+// TestRelayOutlineRidesTheBrief: each settled reply contributes a
+// bounded gist to the coordinator's brief, so early decisions survive
+// the tail-bounded digest.
+func TestRelayOutlineRidesTheBrief(t *testing.T) {
+	a, th, srv, _, routerBodies := routerRelayFixture(t, nil,
+		[]string{"beta"},
+		`{"next":"B","reason":"needs review"}`,
+		`{"next":"","reason":"all done"}`)
+	defer srv.Close()
+	a.startTurn(th, "plan the thing")
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		settled := false
+		a.update(func() { settled = !a.isRunning("t1") && a.groupQueue["t1"] == nil })
+		if settled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the relay never settled")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// The end decision's brief carries the outline: what B established.
+	if len(*routerBodies) < 2 {
+		t.Fatalf("router calls = %d", len(*routerBodies))
+	}
+	if !strings.Contains((*routerBodies)[1], "What each reply established") ||
+		!strings.Contains((*routerBodies)[1], "- B: beta") {
+		t.Fatalf("the end brief lacks the outline: %s", (*routerBodies)[1])
 	}
 }

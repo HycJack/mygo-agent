@@ -72,6 +72,7 @@ type relayState struct {
 	pending    []string  // user interjections awaiting the next handoff
 	spoken     []string  // member names in dispatch order (the rotation state the coordinator reads)
 	retries    int       // member turns replayed after a wire failure
+	outline    []string  // one bounded gist per member reply — the relay's rolling memory
 }
 
 // relayRoute is the coordinator's decision, with what it cost.
@@ -107,6 +108,7 @@ type panelSnapshot struct {
 	last    string
 	spoken  []string
 	rounds  int
+	outline []string
 
 	// The chat side: the chat coordinator, or the hybrid advisor.
 	baseURL string
@@ -177,6 +179,7 @@ func (a *app) panelSnapshot(th *Thread, ag *Agent, at int) panelSnapshot {
 		snap.last = st.last
 		snap.spoken = append([]string(nil), st.spoken...)
 		snap.rounds = st.rounds
+		snap.outline = append([]string(nil), st.outline...)
 	}
 	// Chat side: the chat coordinator, or the hybrid advisor — the
 	// router fields over the app's.
@@ -243,8 +246,34 @@ func (a *app) routeRelay(th *Thread, at int) {
 		a.wrapUpRelay(th, fmt.Sprintf("relay stalled on %q for %d rounds", st.last, st.sameStreak))
 	default:
 		snap := a.panelSnapshot(th, ag, at)
+		// A member who knows exactly who is next says so: "@Name" in
+		// their reply passes the floor directly — no coordinator call.
+		// The guards above are the central authority that can still stop
+		// it (spec/relay-router.md).
+		if h := explicitHandoff(th.Messages[at].Text, snap.roster); h != "" && h != st.last {
+			if next := a.memberByName(ag, h); next != nil {
+				a.traceRoute(th, 0, relayRoute{Next: h,
+					Reason: "handed off directly by " + st.last + " (@" + h + ")"}, nil)
+				a.dispatchRouterMember(th, next,
+					fmt.Sprintf("the floor came straight from %s, who named you (@%s)", st.last, h), "")
+				return
+			}
+		}
 		go a.askRouter(snap)
 	}
+}
+
+// explicitHandoff reads the floor handoff a member wrote into their
+// reply: a mention of a panel member's name with @ ("@B — your call").
+// The last mention wins.
+func explicitHandoff(text string, roster []relayMember) string {
+	best, name := -1, ""
+	for _, m := range roster {
+		if at := strings.LastIndex(text, "@"+m.Name); at > best {
+			best, name = at, m.Name
+		}
+	}
+	return name
 }
 
 // endRelay settles the group turn: the registry entry goes, the state
@@ -491,7 +520,7 @@ func (a *app) dispatchRouterMember(th *Thread, next *Agent, reason, base string)
 // user — which stalls the panel the router exists to drive. The panel
 // decides; the user is asked only when a real business trade-off needs
 // them.
-const panelProtocol = "\n\n[Panel protocol] You are a member of a multi-agent panel, with a routing coordinator deciding who speaks next. When you hit a choice: give a clear recommendation (option, rationale, cost) and let the panel carry it forward — do not end your reply by handing the question back to the user. Reserve the user only for a genuine business trade-off they must own, and state your recommendation even then."
+const panelProtocol = "\n\n[Panel protocol] You are a member of a multi-agent panel, with a routing coordinator deciding who speaks next. When you hit a choice: give a clear recommendation (option, rationale, cost) and let the panel carry it forward — do not end your reply by handing the question back to the user. Reserve the user only for a genuine business trade-off they must own, and state your recommendation even then. You may hand the floor directly: end your reply with a line naming the member who should take over, like \"@B — this needs your call\" — use it when you know exactly who is next; otherwise the coordinator routes."
 
 // panelMemberAgent returns the member's profile with the panel
 // protocol appended. A copy: the profile itself is untouched, so the
@@ -706,6 +735,9 @@ func decisionState(snap panelSnapshot, brief string) map[string]any {
 	if len(snap.spoken) > 0 {
 		state["spoken_history"] = snap.spoken
 	}
+	if len(snap.outline) > 0 {
+		state["outline"] = snap.outline
+	}
 	if brief != "" {
 		state["brief"] = brief
 	} else {
@@ -741,6 +773,12 @@ func advisorSystemPrompt(snap panelSnapshot) string {
 	}
 	if snap.request != "" {
 		b.WriteString("\nThe user's request:\n" + snap.request)
+	}
+	if len(snap.outline) > 0 {
+		b.WriteString("\nWhat each reply established:")
+		for _, line := range snap.outline {
+			b.WriteString("\n- " + line)
+		}
 	}
 	b.WriteString("\nConversation so far:\n" + snap.digest + `
 Write a brief for the routing decision, 2-3 sentences, in the user's
@@ -805,6 +843,12 @@ func routerSystemPrompt(snap panelSnapshot) string {
 			snap.rounds, strings.Join(snap.spoken, " → "))
 		if pending := notYetSpoken(snap); len(pending) > 0 {
 			b.WriteString(" Not yet spoken: " + strings.Join(pending, ", ") + ".")
+		}
+	}
+	if len(snap.outline) > 0 {
+		b.WriteString("\nWhat each reply established:")
+		for _, line := range snap.outline {
+			b.WriteString("\n- " + line)
 		}
 	}
 	b.WriteString("\nConversation so far:\n" + snap.digest + `
