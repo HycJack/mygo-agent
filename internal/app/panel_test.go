@@ -224,6 +224,19 @@ func TestPanelDigestBoundsAndFormats(t *testing.T) {
 	if strings.Contains(got, "B:") {
 		t.Fatalf("the digest includes the member being briefed: %q", got)
 	}
+	// Work rides along: what a member ran, changed and failed is part
+	// of what the next reader needs.
+	th.Messages[1].Blocks = []Block{
+		{Type: blockCommand, Text: "go test ./..."},
+		{Type: blockDiff, File: "main.go", Add: 12, Del: 3},
+		{Type: blockError, Text: "config missing"},
+	}
+	got = a.panelDigest(th, 3, 8<<10)
+	for _, want := range []string{"ran: go test ./...", "edited: main.go (+12/-3)", "error: config missing"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("digest lacks the work trace %q: %q", want, got)
+		}
+	}
 	small := a.panelDigest(th, 3, 16)
 	if len(small) > 16+2+len("User: plan the thing") {
 		t.Fatalf("the tail bound did not hold: %d bytes", len(small))

@@ -26,9 +26,12 @@ import (
 const defaultPanelMaxRounds = 8
 
 // maxSameStreak ends a relay that keeps handing the floor to the same
-// member: two agents complimenting each other in a loop is the classic
-// coordinator failure (Magentic-One's stall detection, minimal form).
-const maxSameStreak = 3
+// member without new substance: two agents complimenting each other in
+// a loop is the classic coordinator failure (Magentic-One's stall
+// detection, minimal form). Five, not three: a member deep in real
+// work — writing code, running tests — legitimately speaks many times
+// in a row, and a tight cap kills exactly the execution a task needs.
+const maxSameStreak = 5
 
 // routerChatDigestLimit bounds the transcript tail a chat coordinator
 // sees; routerDecisionDigestLimit the much shorter tail a decision
@@ -335,6 +338,9 @@ func (a *app) dispatchRouterMember(th *Thread, next *Agent, reason string) {
 		prompt = fmt.Sprintf("You are %s in a panel of agents. The conversation so far:\n\n%s\n\n%s",
 			next.Name, a.panelDigest(th, at, 8<<10), prompt)
 	}
+	if a.protocolViaPrompt(next) {
+		prompt += panelProtocol
+	}
 	a.dispatchParticipant(th, prompt, at, panelMemberAgent(next))
 }
 
@@ -354,6 +360,19 @@ func panelMemberAgent(ag *Agent) *Agent {
 	c := *ag
 	c.SystemPrompt = strings.TrimSpace(ag.SystemPrompt) + panelProtocol
 	return &c
+}
+
+// protocolViaPrompt reports whether this member can only receive the
+// panel protocol through the handoff text: the codex adapter drops
+// turn.SystemPrompt entirely and pi never reads it, so for them the
+// prompt is the only channel (claude carries it via
+// --append-system-prompt, builtin via its per-turn system head).
+func (a *app) protocolViaPrompt(next *Agent) bool {
+	switch a.resolveAgent(next).backend {
+	case "codex", "pi":
+		return true
+	}
+	return false
 }
 
 // routeDecision asks the coordinator which member speaks next. Three

@@ -550,7 +550,7 @@ func TestRelayGuards(t *testing.T) {
 		{"timeout", Agent{PanelTimeout: 10},
 			relayState{rounds: 1, start: time.Now().Add(-time.Minute)}, "timed out after 10s"},
 		{"stall default", Agent{},
-			relayState{rounds: 1, last: "A", sameStreak: 3, start: time.Now()}, `stalled on "A" for 3`},
+			relayState{rounds: 1, last: "A", sameStreak: 5, start: time.Now()}, `stalled on "A" for 5`},
 		{"stall custom", Agent{PanelStallRounds: 2},
 			relayState{rounds: 1, last: "B", sameStreak: 2, start: time.Now()}, `stalled on "B" for 2`},
 	}
@@ -589,6 +589,34 @@ func TestRelayGuards(t *testing.T) {
 				t.Fatalf("note = %q, want it to carry %q", note, tc.value)
 			}
 		})
+	}
+}
+
+// TestPanelProtocolReachesEveryBackend pins the channel split: builtin
+// and claude members get the protocol via their system prompt, codex
+// and pi — which drop turn.SystemPrompt — via the handoff text.
+func TestPanelProtocolReachesEveryBackend(t *testing.T) {
+	a := newTestApp(t)
+	a.agents = []Agent{
+		{ID: "default", Name: "Default"},
+		{ID: "ag-builtin", Name: "B", Backend: "builtin"},
+		{ID: "ag-claude", Name: "C", Backend: "claude"},
+		{ID: "ag-codex", Name: "X", Backend: "codex"},
+	}
+	if a.protocolViaPrompt(a.agentByID("ag-builtin")) || a.protocolViaPrompt(a.agentByID("ag-claude")) {
+		t.Fatal("builtin/claude should carry the protocol in their system prompt")
+	}
+	if !a.protocolViaPrompt(a.agentByID("ag-codex")) {
+		t.Fatal("codex drops the system prompt — the protocol must ride the handoff text")
+	}
+	// The profile itself stays clean: routing and settings read the
+	// original prompt.
+	proto := panelMemberAgent(a.agentByID("ag-codex"))
+	if !strings.Contains(proto.SystemPrompt, panelProtocol) {
+		t.Fatal("the dispatched profile lost the protocol")
+	}
+	if strings.Contains(a.agentByID("ag-codex").SystemPrompt, panelProtocol) {
+		t.Fatal("the protocol leaked into the stored profile")
 	}
 }
 
@@ -708,8 +736,10 @@ func TestRouterRelayStallGuard(t *testing.T) {
 		[]string{"alpha", "alpha", "alpha", "alpha"},
 		`{"next":"A","reason":"keep going"}`)
 	defer srv.Close()
-	// No PanelMaxRounds: the default 8 applies, the stall guard ends it
-	// first.
+	// A tight stall cap: three consecutive replies from one member end
+	// the relay (the default is five — a member deep in real work
+	// legitimately speaks more than three times in a row).
+	a.update(func() { a.agentByName("Team").PanelStallRounds = 3 })
 	a.startTurn(th, "go")
 	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {

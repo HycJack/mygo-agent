@@ -137,7 +137,10 @@ const panelNudge = "(Panel relay: it is your turn — add your contribution.)"
 
 // panelDigest renders the thread's conversation for a member whose
 // backend cannot read the shared transcript (the CLI sessions are
-// private): who said what, bounded to the most recent tail.
+// private): who said what, bounded to the most recent tail. A member's
+// work rides along — the commands they ran, the files they changed,
+// what failed — because "I verified the fix" without the runs behind
+// it is how a relay loses the plot (spec/relay-router.md).
 func (a *app) panelDigest(th *Thread, at int, limit int) string {
 	var b strings.Builder
 	for _, m := range th.Messages[:min(at, len(th.Messages))] {
@@ -149,10 +152,17 @@ func (a *app) panelDigest(th *Thread, at int, limit int) string {
 			}
 		}
 		text := strings.TrimSpace(m.Text)
-		if text == "" {
+		work := blockDigest(&m)
+		if text == "" && work == "" {
 			continue
 		}
-		fmt.Fprintf(&b, "%s: %s\n\n", who, text)
+		if text != "" {
+			fmt.Fprintf(&b, "%s: %s\n", who, text)
+		} else {
+			fmt.Fprintf(&b, "%s:", who)
+		}
+		b.WriteString(work)
+		fmt.Fprintf(&b, "\n\n")
 	}
 	out := b.String()
 	if len(out) > limit {
@@ -163,6 +173,42 @@ func (a *app) panelDigest(th *Thread, at int, limit int) string {
 		out = out[cut:]
 	}
 	return strings.TrimSpace(out)
+}
+
+// blockDigest summarizes one message's tool work, bounded: what ran,
+// what changed, what failed. The card outputs stay out — the transcript
+// holds them — this is the trace a relay reader needs.
+func blockDigest(m *Message) string {
+	var b strings.Builder
+	n := 0
+	for _, blk := range m.Blocks {
+		if n >= 8 {
+			fmt.Fprintf(&b, "  … %d more actions\n", len(m.Blocks)-n)
+			break
+		}
+		switch blk.Type {
+		case blockCommand:
+			if blk.Text == "" {
+				continue
+			}
+			fmt.Fprintf(&b, "  ran: %s", truncRunes(blk.Text, 120))
+			if blk.Exit > 0 {
+				fmt.Fprintf(&b, " (failed, exit %d)", blk.Exit)
+			}
+			b.WriteString("\n")
+			n++
+		case blockDiff:
+			if blk.File == "" {
+				continue
+			}
+			fmt.Fprintf(&b, "  edited: %s (+%d/-%d)\n", blk.File, blk.Add, blk.Del)
+			n++
+		case blockError:
+			fmt.Fprintf(&b, "  error: %s\n", truncRunes(blk.Text, 120))
+			n++
+		}
+	}
+	return b.String()
 }
 
 // startTurn appends the user's prompt and a placeholder reply, then
@@ -285,6 +331,9 @@ func (a *app) finish(th *Thread, at int, errText string) {
 			// digest (spec/agents.md, honest mapping).
 			prompt = fmt.Sprintf("You are %s in a panel of agents. The conversation so far:\n\n%s\n\n%s",
 				next.Name, a.panelDigest(th, at, 8<<10), panelNudge)
+		}
+		if a.protocolViaPrompt(next) {
+			prompt += panelProtocol
 		}
 		a.dispatchParticipant(th, prompt, at, panelMemberAgent(next))
 	})
