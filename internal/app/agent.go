@@ -104,21 +104,26 @@ func (a *app) regenerate(th *Thread) {
 	}
 	th.invalidateDiffCount() // the messages were rewound
 	now := time.Now()
-	th.Messages = append(th.Messages, Message{ID: uid(), Role: "assistant", Running: true, At: now, LogAt: logAt,
-		AgentID: a.agentFor(th).ID})
-	a.saveThread(th)
-	at := len(th.Messages) - 1
 	// The built-in transcript already holds the user's turn — re-sending
 	// the prompt would append it twice. The CLI backends start from their
 	// own session and need the prompt again.
 	if a.backendFor(th) == "builtin" {
 		promptForSend = ""
 	}
+	if len(panel) > 0 && a.relayRouteMode(th) == "router" {
+		// A routed relay re-runs the way it started: the coordinator
+		// picks the first speaker (spec/relay-router.md). No placeholder
+		// yet — the routing decision names who it belongs to.
+		a.routeFirstSpeaker(th, promptForSend)
+		return
+	}
+	th.Messages = append(th.Messages, Message{ID: uid(), Role: "assistant", Running: true, At: now, LogAt: logAt,
+		AgentID: a.agentFor(th).ID})
+	a.saveThread(th)
+	at := len(th.Messages) - 1
 	if len(panel) > 0 {
 		// The relay re-runs whole: this dispatch is member one, the rest
-		// queue for finish to hand over to. Router mode re-runs the same
-		// way — member one first, the coordinator takes over from there
-		// (spec/relay-router.md).
+		// queue for finish to hand over to.
 		ids := make([]string, 0, len(panel)-1)
 		for _, m := range panel[1:] {
 			ids = append(ids, m.ID)
@@ -226,6 +231,18 @@ func (a *app) startTurn(th *Thread, prompt string) {
 	panel := a.panelFor(a.agentFor(th))
 	first := a.agentFor(th)
 	if len(panel) > 0 {
+		if a.relayRouteMode(th) == "router" {
+			// Who answers a fresh ask is the same routing question as
+			// who speaks next: the coordinator picks the first speaker
+			// off the context and the request (spec/relay-router.md) —
+			// a fixed panel[0] made every conversation open with the
+			// same agent.
+			if a.win != nil {
+				a.win.SetTitle("Codex — " + th.Title)
+			}
+			a.routeFirstSpeaker(th, prompt)
+			return
+		}
 		first = panel[0]
 		ids := make([]string, 0, len(panel)-1)
 		for _, m := range panel[1:] {

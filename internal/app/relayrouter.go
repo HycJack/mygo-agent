@@ -263,6 +263,50 @@ func (a *app) noteLast(th *Thread, text string) {
 	}
 }
 
+// routeFirstSpeaker starts a routed relay with the coordinator picking
+// the first speaker: who answers a fresh ask is the same routing
+// question as who speaks next, and a fixed panel[0] made every
+// conversation open with the same agent (spec/relay-router.md). The
+// registry entry is held while routing — the thread is running, a stop
+// drops the decision, and an interjection rides the first handoff.
+// base is the turn's own user text, needed by members whose backend
+// cannot read the transcript.
+func (a *app) routeFirstSpeaker(th *Thread, base string) {
+	a.groupQueue[th.ID] = &relayState{rounds: 0, start: time.Now()}
+	a.saveThread(th)
+	a.runStart(th.ID, nil)
+	snap := a.panelSnapshot(th, a.agentFor(th), len(th.Messages)-1)
+	go a.askFirstSpeaker(snap, base)
+}
+
+// askFirstSpeaker applies the first-speaker decision. With no
+// coordinator opinion — call failed, relay done, unknown name — the
+// configured order takes the first turn: a relay that dies before
+// anyone spoke is worse than a default pick.
+func (a *app) askFirstSpeaker(snap panelSnapshot, base string) {
+	route, err := routeDecision(context.Background(), snap)
+	a.update(func() {
+		th := a.byID(snap.threadID)
+		if th == nil || !a.isRunning(snap.threadID) {
+			return // stopped or deleted mid-route: nothing to start
+		}
+		if a.groupQueue[snap.threadID] == nil {
+			return
+		}
+		members := a.panelFor(a.agentFor(th))
+		if len(members) == 0 {
+			a.endRelay(th, "the panel is empty")
+			return
+		}
+		next := a.memberByName(a.agentFor(th), route.Next)
+		reason := route.Reason
+		if err != nil || next == nil {
+			next, reason = members[0], ""
+		}
+		a.dispatchRouterMember(th, next, reason, base)
+	})
+}
+
 // askRouter applies the coordinator's decision against live state. It
 // runs after the off-thread call, back inside update: the thread may
 // have been stopped or deleted meanwhile, and that outcome wins — the
@@ -290,7 +334,7 @@ func (a *app) askRouter(snap panelSnapshot) {
 			a.endRelay(th, fmt.Sprintf("coordinator named %q, who is not on the panel", route.Next))
 			return
 		}
-		a.dispatchRouterMember(th, next, route.Reason)
+		a.dispatchRouterMember(th, next, route.Reason, "")
 	})
 }
 
@@ -307,8 +351,11 @@ func (a *app) memberByName(ag *Agent, name string) *Agent {
 // dispatchRouterMember appends the chosen member's placeholder and
 // dispatches it — the router-mode twin of finish's sequence tail. The
 // decision rides along as a note and in the member's handoff prompt,
-// so a member knows why the floor came to it.
-func (a *app) dispatchRouterMember(th *Thread, next *Agent, reason string) {
+// so a member knows why the floor came to it. base is the turn's own
+// user text for the FIRST dispatch — no turn has run yet, so the
+// transcript does not hold the request; later dispatches pass "" and
+// rely on the shared transcript.
+func (a *app) dispatchRouterMember(th *Thread, next *Agent, reason, base string) {
 	st := a.groupQueue[th.ID]
 	if st == nil {
 		a.endRelay(th, "")
@@ -332,7 +379,16 @@ func (a *app) dispatchRouterMember(th *Thread, next *Agent, reason string) {
 	th.Messages = append(th.Messages, msg)
 	at := len(th.Messages) - 1
 	a.saveThread(th)
-	prompt := fmt.Sprintf("(Panel coordinator handed the floor to you: %s)", reason)
+	prompt := base
+	if reason != "" {
+		if prompt != "" {
+			prompt += "\n\n"
+		}
+		prompt += fmt.Sprintf("(Panel coordinator handed the floor to you: %s)", reason)
+	}
+	if prompt == "" {
+		prompt = panelNudge
+	}
 	// The user may have spoken while the panel was talking: the floor
 	// comes with what they added (the messages already sit in the
 	// transcript; the CLI digest picks them up from there).

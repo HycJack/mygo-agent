@@ -312,8 +312,9 @@ func TestRouteDecisionCoversTheWire(t *testing.T) {
 
 // routerRelayFixture wires a two-member panel whose relay is routed by
 // the fake coordinator. The member server is the responses-wire fixture
-// the sequence tests use; the router server is chat JSON.
-func routerRelayFixture(t *testing.T, release <-chan struct{}, memberReplies []string, routes ...string) (*app, *Thread, *httptest.Server, *[]string) {
+// the sequence tests use; the router server is chat JSON. Both sides'
+// request bodies are recorded.
+func routerRelayFixture(t *testing.T, release <-chan struct{}, memberReplies []string, routes ...string) (*app, *Thread, *httptest.Server, *[]string, *[]string) {
 	t.Helper()
 	a := newTestApp(t)
 	a.backend = "builtin"
@@ -351,8 +352,7 @@ func routerRelayFixture(t *testing.T, release <-chan struct{}, memberReplies []s
 	now := time.Now()
 	th := &Thread{ID: "t1", ProjectID: "default", AgentID: "ag-team", Created: now, Updated: now}
 	a.threads = append(a.threads, th)
-	_ = routerBodies
-	return a, th, memberSrv, &bodies
+	return a, th, memberSrv, &bodies, routerBodies
 }
 
 func noteText(m Message) string {
@@ -479,13 +479,25 @@ func TestRouteDecisionHybrid(t *testing.T) {
 // and rides the next handoff prompt.
 func TestRelayInterjection(t *testing.T) {
 	release := make(chan struct{})
-	a, th, srv, bodies := routerRelayFixture(t, release,
+	a, th, srv, bodies, _ := routerRelayFixture(t, release,
 		[]string{"alpha", "beta"},
 		`{"next":"B","reason":"after the user's note"}`)
 	defer srv.Close()
 	a.current = "t1"
 	a.startTurn(th, "plan the thing")
-	waitTurn(t, a, th, 1) // A settled; the coordinator is thinking
+	// The first-speaker routing is in flight (the run registry is held).
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		running := false
+		a.update(func() { running = a.isRunning("t1") })
+		if running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the first routing never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
 
 	a.draft = "focus on the security angle"
 	a.send()
@@ -494,15 +506,15 @@ func TestRelayInterjection(t *testing.T) {
 			t.Fatal("the interjection left the draft behind")
 		}
 	})
-	if len(th.Messages) != 3 || th.Messages[2].Role != "user" || th.Messages[2].Text != "focus on the security angle" {
+	if len(th.Messages) != 2 || th.Messages[1].Role != "user" || th.Messages[1].Text != "focus on the security angle" {
 		t.Fatalf("the interjection never joined the transcript: %+v", th.Messages)
 	}
 	close(release) // the coordinator answers; B is dispatched with the user's words
-	waitTurn(t, a, th, 3)
-	if !strings.Contains((*bodies)[1], "focus on the security angle") {
+	waitTurn(t, a, th, 2)
+	if !strings.Contains((*bodies)[0], "focus on the security angle") {
 		t.Fatal("B never saw the user's interjection")
 	}
-	if !strings.Contains((*bodies)[1], "The user added while the panel was talking") {
+	if !strings.Contains((*bodies)[0], "The user added while the panel was talking") {
 		t.Fatal("B was not told the words came mid-relay")
 	}
 }
@@ -623,31 +635,36 @@ func TestPanelProtocolReachesEveryBackend(t *testing.T) {
 // TestRouterRelayFollowsCoordinator runs the relay end to end against
 // the fake members and the fake coordinator.
 func TestRouterRelayFollowsCoordinator(t *testing.T) {
-	a, th, srv, bodies := routerRelayFixture(t, nil,
+	a, th, srv, bodies, routerBodies := routerRelayFixture(t, nil,
 		[]string{"alpha", "beta"},
 		`{"next":"B","reason":"needs review"}`,
 		`{"next":"","reason":"all done"}`)
 	defer srv.Close()
 	a.startTurn(th, "plan the thing")
-	waitTurn(t, a, th, 2)
+	waitTurn(t, a, th, 1) // the coordinator picks the first speaker too
 
-	if len(th.Messages) != 3 {
-		t.Fatalf("messages = %d, want user + A + B", len(th.Messages))
+	if len(th.Messages) != 2 {
+		t.Fatalf("messages = %d, want user + the routed first speaker", len(th.Messages))
 	}
-	if th.Messages[1].AgentID != "ag-a" || th.Messages[2].AgentID != "ag-b" {
-		t.Fatalf("attribution: %q then %q", th.Messages[1].AgentID, th.Messages[2].AgentID)
+	if th.Messages[1].AgentID != "ag-b" {
+		t.Fatalf("first speaker = %q, want the coordinator's pick B", th.Messages[1].AgentID)
+	}
+	// The first routing call sees the request and the roster before
+	// anyone has spoken.
+	if !strings.Contains((*routerBodies)[0], "plan the thing") || !strings.Contains((*routerBodies)[0], "MEMBER-B-HEAD") {
+		t.Fatalf("the first brief lacks the request or the roster: %s", (*routerBodies)[0])
 	}
 	// The coordinator's decision rides along as a note and reaches the
 	// member in the handoff prompt.
-	if note := noteText(th.Messages[2]); !strings.Contains(note, "→ B") || !strings.Contains(note, "needs review") {
+	if note := noteText(th.Messages[1]); !strings.Contains(note, "→ B") || !strings.Contains(note, "needs review") {
 		t.Fatalf("B's note = %q", note)
 	}
-	if !strings.Contains((*bodies)[1], "handed the floor") {
+	if !strings.Contains((*bodies)[0], "handed the floor") {
 		t.Fatal("B never learned why the floor came to it")
 	}
 	// Members speak under the panel protocol: they decide and recommend
 	// instead of handing choices back to the user.
-	if !strings.Contains((*bodies)[1], "do not end your reply by handing the question back to the user") {
+	if !strings.Contains((*bodies)[0], "do not end your reply by handing the question back to the user") {
 		t.Fatal("the panel protocol never reached the member")
 	}
 	// The coordinator ended the relay — and said so on the transcript:
@@ -667,11 +684,11 @@ func TestRouterRelayFollowsCoordinator(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if note := noteText(th.Messages[2]); !strings.Contains(note, "all done") {
+	if note := noteText(th.Messages[1]); !strings.Contains(note, "all done") {
 		t.Fatalf("the coordinator's end reason never surfaced: %q", note)
 	}
 	for deadline := time.Now().Add(500 * time.Millisecond); time.Now().Before(deadline); {
-		if len(th.Messages) > 3 {
+		if len(th.Messages) > 2 {
 			t.Fatal("the relay continued past the coordinator's end")
 		}
 		time.Sleep(20 * time.Millisecond)
@@ -703,7 +720,7 @@ func TestGroupDialogStartsRouted(t *testing.T) {
 }
 
 func TestRouterRelayRoundLimit(t *testing.T) {
-	a, th, srv, _ := routerRelayFixture(t, nil,
+	a, th, srv, _, _ := routerRelayFixture(t, nil,
 		[]string{"alpha", "alpha", "alpha"},
 		`{"next":"A","reason":"keep going"}`)
 	defer srv.Close()
@@ -732,13 +749,14 @@ func TestRouterRelayRoundLimit(t *testing.T) {
 }
 
 func TestRouterRelayStallGuard(t *testing.T) {
-	a, th, srv, _ := routerRelayFixture(t, nil,
-		[]string{"alpha", "alpha", "alpha", "alpha"},
+	a, th, srv, _, _ := routerRelayFixture(t, nil,
+		[]string{"alpha", "alpha", "alpha"},
 		`{"next":"A","reason":"keep going"}`)
 	defer srv.Close()
 	// A tight stall cap: three consecutive replies from one member end
 	// the relay (the default is five — a member deep in real work
-	// legitimately speaks more than three times in a row).
+	// legitimately speaks more than three times in a row). The cap
+	// counts the routed first speaker too.
 	a.update(func() { a.agentByName("Team").PanelStallRounds = 3 })
 	a.startTurn(th, "go")
 	deadline := time.Now().Add(20 * time.Second)
@@ -752,16 +770,16 @@ func TestRouterRelayStallGuard(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if len(th.Messages) != 5 {
-		t.Fatalf("messages = %d, want the stall guard to stop at four replies", len(th.Messages))
+	if len(th.Messages) != 4 {
+		t.Fatalf("messages = %d, want the stall guard to stop at three replies", len(th.Messages))
 	}
-	if note := noteText(th.Messages[4]); !strings.Contains(note, "stalled") {
+	if note := noteText(th.Messages[3]); !strings.Contains(note, "stalled") {
 		t.Fatalf("the stall note is missing: %q", note)
 	}
 }
 
 func TestRouterRelayUnknownMemberDegrades(t *testing.T) {
-	a, th, srv, _ := routerRelayFixture(t, nil,
+	a, th, srv, _, _ := routerRelayFixture(t, nil,
 		[]string{"alpha"},
 		`{"next":"Zed","reason":"who?"}`)
 	defer srv.Close()
@@ -787,15 +805,26 @@ func TestRouterRelayUnknownMemberDegrades(t *testing.T) {
 
 func TestRouterRelayStopDuringRouting(t *testing.T) {
 	release := make(chan struct{})
-	a, th, srv, _ := routerRelayFixture(t, release,
+	a, th, srv, _, _ := routerRelayFixture(t, release,
 		[]string{"alpha"},
 		`{"next":"B","reason":"needs review"}`)
 	defer srv.Close()
 	a.startTurn(th, "go")
-	waitTurn(t, a, th, 1) // A's reply settled; the router call is now in flight
-	a.stopThread("t1")    // while the coordinator thinks
+	// The first-speaker routing is in flight (the run registry is held).
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		running := false
+		a.update(func() { running = a.isRunning("t1") })
+		if running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the first routing never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	a.stopThread("t1") // while the coordinator thinks
 	close(release)
-	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		done := false
 		a.update(func() { done = !a.isRunning("t1") })
@@ -804,7 +833,7 @@ func TestRouterRelayStopDuringRouting(t *testing.T) {
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	if len(th.Messages) != 2 {
+	if len(th.Messages) != 1 {
 		t.Fatalf("messages = %d, want the stop to drop the routing decision", len(th.Messages))
 	}
 }
