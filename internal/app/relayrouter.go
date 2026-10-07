@@ -83,6 +83,14 @@ type relayState struct {
 	batchLeft int
 	batchByAt map[int]*batchMember
 	batchSeq  []*batchMember // non-builtin members run one at a time after the batch
+
+	// honored are the members a MEMBER's reply has already handed the
+	// floor to this turn. A reply quotes the ask — "@A" echoes through
+	// the transcript — and honoring the echo would re-dispatch the same
+	// member on every landing: a round-bounded loop where the
+	// coordinator never thinks. Member mentions fire once per turn; the
+	// user's own @ bypasses the set (saying it twice means twice).
+	honored map[string]bool
 }
 
 // batchMember is one member of a parallel handoff.
@@ -278,12 +286,24 @@ func (a *app) routeRelay(th *Thread, at int) {
 		// their reply passes the floor directly — no coordinator call.
 		// Two or more names run as a parallel batch. The guards above
 		// are the central authority that can still stop it.
-		if names := a.mentionedMembers(ag, th.Messages[at].Text); len(names) > 0 && !(len(names) == 1 && names[0] == st.last) {
+		names := a.mentionedMembers(ag, th.Messages[at].Text)
+		filtered := names[:0]
+		for _, n := range names {
+			if !st.honored[n] {
+				filtered = append(filtered, n)
+			}
+		}
+		names = filtered
+		if len(names) > 0 && !(len(names) == 1 && names[0] == st.last) {
 			who := st.last
 			if len(names) == 1 {
 				a.traceRoute(th, 0, relayRoute{Next: names[0],
 					Reason: "handed off directly by " + who + " (@" + names[0] + ")"}, nil)
 				if next := a.memberByName(ag, names[0]); next != nil {
+					if st.honored == nil {
+						st.honored = map[string]bool{}
+					}
+					st.honored[names[0]] = true
 					a.dispatchRouterMember(th, next,
 						fmt.Sprintf("the floor came straight from %s, who named you (@%s)", who, names[0]), "")
 					return
@@ -363,6 +383,10 @@ func (a *app) startFanout(th *Thread, ag *Agent, names []string, reason, base st
 		}
 		st.rounds++
 		st.spoken = append(st.spoken, name)
+		if st.honored == nil {
+			st.honored = map[string]bool{}
+		}
+		st.honored[name] = true
 	}
 	st.last = "" // a batch has no single last speaker
 	st.sameStreak = 1

@@ -146,6 +146,8 @@ type relayState struct {
 
 fan-out 期间注册表持有多份 cancel（`runAdd`/`runRelease`），Stop 一次取消全部；composer placeholder 提示 `@name` 语法。
 
+**回声防护（honored 集合）**：成员回复必然引用请求里的 @（"先回应 @B 的建议"），把回声当新交接会让同一成员每轮被重新派发——一个轮数兜底的循环，协调者全程没有发言权。`relayState.honored` 记录本回合已被**成员 mention** 派发过的成员：成员 mention 每回合对每人只生效一次，之后回落协调者；用户亲自 @ 不受限（说两遍就是两遍）。
+
 ## 5.7 成员直通交接（explicit handoff，单人）
 
 成员回复末尾 `@成员名` 即直接交棒：`routeRelay` 的 default 分支先查 `explicitHandoff`，命中（且非自指）就直接派发——省一次路由调用；同名连讲/轮数等护栏先于直通交接评估，是中央权威的底线。面板协议教成员在"明确知道谁接棒"时使用，否则留给协调者。trace 里记 `handed off directly by X (@Y)`。

@@ -1088,13 +1088,13 @@ func TestExtractMentionsOrderAndDedup(t *testing.T) {
 // — the second arrives before the first's hold expires — while a serial
 // dispatch arrives only after the first finished. No gate, no way for a
 // late request (the wrap-up turn) to wedge the server.
-func fanoutFixture(t *testing.T, memberTail string, routes ...string) (*app, *Thread, *httptest.Server, *map[string]time.Time) {
+func fanoutFixture(t *testing.T, memberTail string, routes ...string) (*app, *Thread, *httptest.Server, *map[string]time.Time, *[]string) {
 	t.Helper()
 	a := newTestApp(t)
 	a.backend = "builtin"
 	a.mode = 2
 	arrivals := map[string]time.Time{}
-	routerSrv, _ := routerFixture(t, nil, routes...)
+	routerSrv, routerBodies := routerFixture(t, nil, routes...)
 	memberSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		data, _ := io.ReadAll(r.Body)
 		body := string(data)
@@ -1131,7 +1131,7 @@ func fanoutFixture(t *testing.T, memberTail string, routes ...string) (*app, *Th
 	now := time.Now()
 	th := &Thread{ID: "t1", ProjectID: "default", AgentID: "ag-team", Created: now, Updated: now}
 	a.threads = append(a.threads, th)
-	return a, th, memberSrv, &arrivals
+	return a, th, memberSrv, &arrivals, routerBodies
 }
 
 var arrivalMu sync.Mutex
@@ -1156,7 +1156,7 @@ func waitSettled(t *testing.T, a *app, th *Thread) {
 // them in parallel — B's request arrives while C's is still being held —
 // and the relay routes only after both land.
 func TestComposerMentionFansOut(t *testing.T) {
-	a, th, srv, arrivals := fanoutFixture(t, "",
+	a, th, srv, arrivals, _ := fanoutFixture(t, "",
 		`{"next":"","reason":"both answered"}`)
 	defer srv.Close()
 	a.startTurn(th, "@B @C evaluate this")
@@ -1187,9 +1187,13 @@ func TestComposerMentionFansOut(t *testing.T) {
 }
 
 // TestMemberHandoffFansOut: a member naming two peers hands the floor
-// to both at once, no coordinator call in between.
+// to both at once, no coordinator call in between — and the echo does
+// not bite: B and C's own replies quote the same "@B @C", and honoring
+// that would re-dispatch them on every landing, a round-bounded loop
+// where the coordinator never thinks. Each member runs exactly once;
+// after the batch the coordinator is asked and ends the relay.
 func TestMemberHandoffFansOut(t *testing.T) {
-	a, th, srv, _ := fanoutFixture(t, "@B @C 你们的看法呢",
+	a, th, srv, _, routerBodies := fanoutFixture(t, "@B @C 你们的看法呢",
 		`{"next":"A","reason":"start at the top"}`,
 		`{"next":"","reason":"all done"}`)
 	defer srv.Close()
@@ -1204,6 +1208,43 @@ func TestMemberHandoffFansOut(t *testing.T) {
 	}
 	if !agents["ag-b"] || !agents["ag-c"] {
 		t.Fatalf("the handoff never reached B and C: %v", agents)
+	}
+	// user + A + B + C + wrap-up — no echo re-dispatch of B or C.
+	if len(th.Messages) != 5 {
+		t.Fatalf("messages = %d, want the echo to fire each member once plus the wrap-up", len(th.Messages))
+	}
+	// router calls: first speaker + the end. The B/C handoff itself was
+	// direct, and the echo never re-triggered it.
+	if len(*routerBodies) != 2 {
+		t.Fatalf("router calls = %d, want first-speaker and end only", len(*routerBodies))
+	}
+}
+
+// TestMentionEchoFallsBackToTheCoordinator: a member quoting "@B" after
+// B has already been handed the floor does not re-dispatch B — the
+// coordinator decides instead, which is what keeps the relay from
+// ping-ponging on its own quotes.
+func TestMentionEchoFallsBackToTheCoordinator(t *testing.T) {
+	a, th, srv, _, routerBodies := routerRelayFixture(t, nil,
+		[]string{"alpha (thanks @B)", "beta"},
+		`{"next":"B","reason":"needs review"}`,
+		`{"next":"B","reason":"again"}`,
+		`{"next":"","reason":"all done"}`)
+	defer srv.Close()
+	a.startTurn(th, "go")
+	waitSettled(t, a, th)
+
+	// user + B(first, routed) + B-echo?? — no: the mention in B's
+	// landing reply is honored once, so the second routing decision is
+	// the coordinator's, and it picks B again as a NORMAL route (not a
+	// mention). The count must stay at user + two B replies + wrap-up.
+	if len(th.Messages) != 4 {
+		t.Fatalf("messages = %d, want user + B + coordinator-routed B + wrap-up", len(th.Messages))
+	}
+	// router calls: first speaker + after-B + done. The reply's "@B"
+	// echo never took the direct-handoff path.
+	if len(*routerBodies) != 3 {
+		t.Fatalf("router calls = %d, want the echo to go through the coordinator", len(*routerBodies))
 	}
 }
 
