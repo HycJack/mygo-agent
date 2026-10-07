@@ -120,6 +120,11 @@ type Agent struct {
 	// wrap-up when a routed relay ends; empty means the thread's own
 	// agent. A name, like panel.
 	PanelSummarizer string `json:"panel_summarizer,omitempty"`
+	// PanelBlurb is the duty line the routing roster reads when deciding
+	// who speaks next — the coordinator's choice is made from it, one
+	// line per member. Empty falls back to the head of system_prompt,
+	// keeping routing and persona in one string.
+	PanelBlurb string `json:"panel_blurb,omitempty"`
 	// RouterProvider and RouterModel pick the coordinator model of a
 	// router relay — a cheap local model is the point. Either empty
 	// follows the app's selection.

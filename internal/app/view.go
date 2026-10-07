@@ -204,7 +204,9 @@ func (h headerActions) Trace() {
 
 // threadMeta is the header's "who answers" line: the bound agent when
 // the task has one worth naming, then the resolved backend, model and
-// mode — the same resolution a turn will use (spec/agents.md).
+// mode — the same resolution a turn will use (spec/agents.md). A
+// running relay reports its burn: rounds and, when a budget is set,
+// the tokens spent against it (spec/relay-router.md).
 func (a *app) threadMeta(th *Thread) string {
 	meta := ""
 	if ag := a.agentFor(th); ag != nil {
@@ -213,9 +215,17 @@ func (a *app) threadMeta(th *Thread) string {
 			meta = strings.TrimSpace(ag.Emoji+" "+ag.Name) + " · "
 		}
 		mode := uipkg.ModeLabel(min(max(ov.mode, 0), 2))
-		return meta + fmt.Sprintf("%s · %s · %s", backendLabels(ov.backend), ov.model, mode)
+		meta += fmt.Sprintf("%s · %s · %s", backendLabels(ov.backend), ov.model, mode)
+	} else {
+		meta += fmt.Sprintf("%s · %s · %s", a.backendLabel(), a.model, uipkg.ModeLabel(a.mode))
 	}
-	return meta + fmt.Sprintf("%s · %s · %s", a.backendLabel(), a.model, uipkg.ModeLabel(a.mode))
+	if st := a.groupQueue[th.ID]; st != nil && a.isRunning(th.ID) {
+		meta += fmt.Sprintf(" · relay %d", st.rounds)
+		if ag := a.agentFor(th); ag != nil && ag.PanelMaxTokens > 0 {
+			meta += fmt.Sprintf(" · %dk/%dk tokens", st.tokens/1000, ag.PanelMaxTokens/1000)
+		}
+	}
+	return meta
 }
 
 // backendLabels names a backend key for display.

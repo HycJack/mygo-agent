@@ -331,6 +331,22 @@ func (a *app) finish(th *Thread, at int, errText string) {
 			return
 		}
 		if router {
+			if st := a.groupQueue[th.ID]; st != nil {
+				if errText != "" && st.retries < 1 {
+					// One replay of a member turn that failed on the
+					// wire: a provider hiccup should not write the
+					// member off (spec/relay-router.md).
+					st.retries++
+					if ag := a.agentByID(th.Messages[at].AgentID); ag != nil {
+						a.dispatchRouterMember(th, ag,
+							fmt.Sprintf("retrying — the previous turn failed: %.200s", errText), "")
+						return
+					}
+				}
+				if errText == "" {
+					st.retries = 0
+				}
+			}
 			a.routeRelay(th, at)
 			return
 		}

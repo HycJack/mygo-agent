@@ -71,12 +71,14 @@ type relayState struct {
 	start      time.Time // when the relay began (timeout guard)
 	pending    []string  // user interjections awaiting the next handoff
 	spoken     []string  // member names in dispatch order (the rotation state the coordinator reads)
+	retries    int       // member turns replayed after a wire failure
 }
 
-// relayRoute is the coordinator's decision.
+// relayRoute is the coordinator's decision, with what it cost.
 type relayRoute struct {
 	Next   string `json:"next"`
 	Reason string `json:"reason"`
+	Tokens int64  `json:"-"`
 }
 
 // relayMember is one roster entry the coordinator sees.
@@ -119,10 +121,8 @@ type panelSnapshot struct {
 	judgeModel   string
 }
 
-// promptHead is a member's duty description for the coordinator: the
-// first line of their system prompt, bounded. This is what the
-// coordinator's choice is made from, so an agent that wants to be
-// picked for the right jobs describes itself there.
+// promptHead is a member's duty description from their system prompt:
+// the first line, bounded.
 func promptHead(s string) string {
 	s = strings.TrimSpace(s)
 	if s == "" {
@@ -138,11 +138,22 @@ func promptHead(s string) string {
 	return string(r)
 }
 
+// memberDesc is what the routing roster reads for one member: their
+// panel_blurb when they wrote one — routing and persona stay decoupled,
+// so retuning the coordinator's criteria never touches the member's
+// behavior — else the head of the system prompt.
+func memberDesc(m *Agent) string {
+	if s := strings.TrimSpace(m.PanelBlurb); s != "" {
+		return truncRunes(s, 200)
+	}
+	return promptHead(m.SystemPrompt)
+}
+
 // panelSnapshot captures the relay as it stands at finish time.
 func (a *app) panelSnapshot(th *Thread, ag *Agent, at int) panelSnapshot {
 	snap := panelSnapshot{threadID: th.ID, at: at}
 	for _, m := range a.panelFor(ag) {
-		snap.roster = append(snap.roster, relayMember{Name: m.Name, Desc: promptHead(m.SystemPrompt)})
+		snap.roster = append(snap.roster, relayMember{Name: m.Name, Desc: memberDesc(m)})
 	}
 	// The tail through the settled reply: what the coordinator sees is
 	// what the transcript shows (the digest is the panelDigest the CLI
@@ -329,12 +340,15 @@ func (a *app) routeFirstSpeaker(th *Thread, base string) {
 // configured order takes the first turn: a relay that dies before
 // anyone spoke is worse than a default pick.
 func (a *app) askFirstSpeaker(snap panelSnapshot, base string) {
+	start := time.Now()
 	route, err := routeDecision(context.Background(), snap)
+	ms := time.Since(start).Milliseconds()
 	a.update(func() {
 		th := a.byID(snap.threadID)
 		if th == nil || !a.isRunning(snap.threadID) {
 			return // stopped or deleted mid-route: nothing to start
 		}
+		a.traceRoute(th, ms, route, err)
 		if a.groupQueue[snap.threadID] == nil {
 			return
 		}
@@ -352,17 +366,34 @@ func (a *app) askFirstSpeaker(snap panelSnapshot, base string) {
 	})
 }
 
+// traceRoute records one coordinator decision in the thread's trace:
+// who it picked (or why the call failed), how long it thought, what it
+// cost. Derived data — a failed append never fails the relay.
+func (a *app) traceRoute(th *Thread, ms int64, route relayRoute, err error) {
+	te := traceEvent{At: time.Now(), Kind: "route", Ms: ms, Tokens: route.Tokens, Summary: "next=" + route.Next}
+	if err != nil {
+		te.Failed = true
+		te.Summary = "error: " + err.Error()
+	} else if route.Reason != "" {
+		te.Summary += "; " + route.Reason
+	}
+	a.appendTrace(th, te)
+}
+
 // askRouter applies the coordinator's decision against live state. It
 // runs after the off-thread call, back inside update: the thread may
 // have been stopped or deleted meanwhile, and that outcome wins — the
 // decision is for a relay that no longer exists.
 func (a *app) askRouter(snap panelSnapshot) {
+	start := time.Now()
 	route, err := routeDecision(context.Background(), snap)
+	ms := time.Since(start).Milliseconds()
 	a.update(func() {
 		th := a.byID(snap.threadID)
 		if th == nil || !a.isRunning(snap.threadID) {
 			return // stopped or deleted mid-route: nothing to continue
 		}
+		a.traceRoute(th, ms, route, err)
 		if err != nil {
 			a.wrapUpRelay(th, "coordinator unavailable: "+err.Error())
 			return
@@ -543,7 +574,7 @@ func routeDecisionChat(ctx context.Context, snap panelSnapshot) (relayRoute, err
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
 		callCtx, cancel := context.WithTimeout(ctx, routerCallTimeout)
-		content, err := routerChat(callCtx, snap, msgs)
+		content, tokens, err := routerChat(callCtx, snap, msgs)
 		cancel()
 		if err != nil {
 			lastErr = err
@@ -554,6 +585,7 @@ func routeDecisionChat(ctx context.Context, snap panelSnapshot) (relayRoute, err
 			lastErr = err
 			continue
 		}
+		route.Tokens = tokens
 		if routeNameKnown(route.Next, snap.roster) {
 			return route, nil
 		}
@@ -619,18 +651,23 @@ func routeDecisionSystemone(ctx context.Context, snap panelSnapshot, brief strin
 			Confidence    float64            `json:"confidence"`
 			Noul          float64            `json:"noul"`
 		} `json:"answers"`
+		Usage struct {
+			InputTokens  int64 `json:"input_tokens"`
+			OutputTokens int64 `json:"output_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
 		return relayRoute{}, fmt.Errorf("decision reply was not systemone: %w", err)
 	}
+	tokens := out.Usage.InputTokens + out.Usage.OutputTokens
 	done := out.Answers["done"]
 	if done.Noul >= doneProbability {
-		return relayRoute{Reason: fmt.Sprintf("coordinator says done (p=%.2f)", done.Noul)}, nil
+		return relayRoute{Reason: fmt.Sprintf("coordinator says done (p=%.2f)", done.Noul), Tokens: tokens}, nil
 	}
 	if len(snap.roster) == 1 {
 		// No choice was asked: the sole member continues.
 		return relayRoute{Next: snap.roster[0].Name,
-			Reason: fmt.Sprintf("p(done)=%.2f", done.Noul)}, nil
+			Reason: fmt.Sprintf("p(done)=%.2f", done.Noul), Tokens: tokens}, nil
 	}
 	pick := out.Answers["next"]
 	if pick.Choice == "" {
@@ -641,7 +678,7 @@ func routeDecisionSystemone(ctx context.Context, snap panelSnapshot, brief strin
 	}
 	p := pick.Probabilities[pick.Choice]
 	return relayRoute{Next: pick.Choice,
-		Reason: fmt.Sprintf("p=%.2f, confidence %.2f", p, pick.Confidence)}, nil
+		Reason: fmt.Sprintf("p=%.2f, confidence %.2f", p, pick.Confidence), Tokens: tokens}, nil
 }
 
 // decisionState is the judge's view. The members ride as structured
@@ -687,7 +724,7 @@ func routerBrief(ctx context.Context, snap panelSnapshot) (string, error) {
 		{"role": "system", "content": advisorSystemPrompt(snap)},
 		{"role": "user", "content": "Write the brief now. Answer with the JSON object only."},
 	}
-	content, err := routerChat(ctx, snap, msgs)
+	content, _, err := routerChat(ctx, snap, msgs)
 	if err != nil {
 		return "", err
 	}
@@ -846,8 +883,9 @@ func routerPost(ctx context.Context, baseURL, apiKey, path string, body []byte) 
 }
 
 // routerChat is one non-streaming chat completion against the
-// OpenAI-compatible endpoint (Ollama's is one).
-func routerChat(ctx context.Context, snap panelSnapshot, msgs []map[string]string) (string, error) {
+// OpenAI-compatible endpoint (Ollama's is one), with the usage the
+// reply reports.
+func routerChat(ctx context.Context, snap panelSnapshot, msgs []map[string]string) (string, int64, error) {
 	body, err := json.Marshal(map[string]any{
 		"model":           snap.model,
 		"messages":        msgs,
@@ -855,11 +893,11 @@ func routerChat(ctx context.Context, snap panelSnapshot, msgs []map[string]strin
 		"response_format": map[string]string{"type": "json_object"},
 	})
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	data, err := routerPost(ctx, snap.baseURL, snap.apiKey, "/chat/completions", body)
 	if err != nil {
-		return "", err
+		return "", 0, err
 	}
 	var out struct {
 		Choices []struct {
@@ -867,14 +905,17 @@ func routerChat(ctx context.Context, snap panelSnapshot, msgs []map[string]strin
 				Content string `json:"content"`
 			} `json:"message"`
 		} `json:"choices"`
+		Usage struct {
+			TotalTokens int64 `json:"total_tokens"`
+		} `json:"usage"`
 	}
 	if err := json.Unmarshal(data, &out); err != nil {
-		return "", fmt.Errorf("router reply was not chat completions: %w", err)
+		return "", 0, fmt.Errorf("router reply was not chat completions: %w", err)
 	}
 	if len(out.Choices) == 0 {
-		return "", fmt.Errorf("router reply had no choices")
+		return "", 0, fmt.Errorf("router reply had no choices")
 	}
-	return out.Choices[0].Message.Content, nil
+	return out.Choices[0].Message.Content, out.Usage.TotalTokens, nil
 }
 
 // parseRouteReply reads the coordinator's answer: strict JSON first,

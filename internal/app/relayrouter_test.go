@@ -73,7 +73,7 @@ func routerFixture(t *testing.T, release <-chan struct{}, replies ...string) (*h
 		}
 		content := replies[i]
 		w.Header().Set("Content-Type", "application/json")
-		fmt.Fprint(w, `{"choices":[{"message":{"content":`+quoteJSON(content)+`}}]}`)
+		fmt.Fprint(w, `{"choices":[{"message":{"content":`+quoteJSON(content)+`}}],"usage":{"total_tokens":123}}`)
 	}))
 	mu.Lock()
 	defer mu.Unlock()
@@ -896,5 +896,100 @@ func TestRouterRelayStopDuringRouting(t *testing.T) {
 	}
 	if len(th.Messages) != 1 {
 		t.Fatalf("messages = %d, want the stop to drop the routing decision", len(th.Messages))
+	}
+}
+
+// TestMemberDescPrefersBlurb: the routing roster reads panel_blurb
+// when the member wrote one — retuning the coordinator's criteria
+// never touches the member's persona.
+func TestMemberDescPrefersBlurb(t *testing.T) {
+	ag := &Agent{Name: "A", SystemPrompt: "PERSONA-LINE\nrest", PanelBlurb: "ROUTING-LINE"}
+	if got := memberDesc(ag); got != "ROUTING-LINE" {
+		t.Fatalf("desc = %q, want the blurb", got)
+	}
+	if got := memberDesc(&Agent{Name: "B", SystemPrompt: "PERSONA-LINE\nrest"}); got != "PERSONA-LINE" {
+		t.Fatalf("desc = %q, want the prompt head", got)
+	}
+}
+
+// TestRouteDecisionCountsTokens pins the usage ride-along: the trace's
+// route line carries what the coordinator call cost.
+func TestRouteDecisionCountsTokens(t *testing.T) {
+	srv, _ := routerFixture(t, nil, `{"next":"B","reason":"go"}`)
+	defer srv.Close()
+	route, err := routeDecision(t.Context(), testSnapshot(srv.URL))
+	if err != nil || route.Next != "B" {
+		t.Fatalf("route = %+v, err = %v", route, err)
+	}
+	if route.Tokens != 123 {
+		t.Fatalf("tokens = %d, want the reply's usage", route.Tokens)
+	}
+}
+
+// TestRelayMemberRetry: a member turn that dies on the wire is
+// replayed once — a provider hiccup must not write the member off —
+// and the retry is visible as a note.
+func TestRelayMemberRetry(t *testing.T) {
+	a := newTestApp(t)
+	a.backend = "builtin"
+	a.mode = 2
+	var calls int
+	memberSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		calls++
+		if calls <= 3 {
+			// The whole first turn fails: doWithRetry burns its three
+			// attempts on these, so the failure reaches finish.
+			http.Error(w, "provider hiccup", http.StatusInternalServerError)
+			return
+		}
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.output_text.delta\n"+
+			`data: {"type":"response.output_text.delta","delta":"recovered"}`+"\n\n"+
+			"event: response.completed\n"+
+			`data: {"type":"response.completed","response":{"output":[]}}`+"\n\n")
+	}))
+	routerSrv, _ := routerFixture(t, nil,
+		`{"next":"A","reason":"start at the top"}`,
+		`{"next":"","reason":"all done"}`)
+	a.providers = []Provider{
+		{ID: "p1", Name: "Test", BaseURL: memberSrv.URL, APIKey: "k",
+			Models: []string{"test-model"}, Wire: harness.WireResponses},
+		{ID: "prt", Name: "Router", BaseURL: routerSrv.URL, Models: []string{"qwen3:8b"}},
+	}
+	a.providerID, a.model = "p1", "test-model"
+	a.agents = []Agent{
+		{ID: "default", Name: "Default"},
+		{ID: "ag-a", Name: "A", SystemPrompt: "MEMBER-A-HEAD"},
+		{ID: "ag-team", Name: "Team", Panel: []string{"A"}, PanelRoute: "router",
+			RouterProvider: "prt", RouterModel: "qwen3:8b"},
+	}
+	now := time.Now()
+	th := &Thread{ID: "t1", ProjectID: "default", AgentID: "ag-team", Created: now, Updated: now}
+	a.threads = append(a.threads, th)
+	a.startTurn(th, "go")
+
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		settled := false
+		a.update(func() {
+			settled = !a.isRunning("t1") && a.groupQueue["t1"] == nil
+		})
+		if settled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the relay never settled")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// user + failed A + recovered A + wrap-up.
+	if len(th.Messages) != 4 {
+		t.Fatalf("messages = %d, want the failed turn, its replay and the wrap-up", len(th.Messages))
+	}
+	if th.Messages[2].AgentID != "ag-a" || !strings.Contains(th.Messages[2].Text, "recovered") {
+		t.Fatalf("the replayed turn: %+v", th.Messages[2])
+	}
+	if note := noteText(th.Messages[2]); !strings.Contains(note, "retrying") {
+		t.Fatalf("the retry note is missing: %q", note)
 	}
 }
