@@ -592,11 +592,23 @@ func TestRelayGuards(t *testing.T) {
 
 			a.routeRelay(th, 0)
 
-			a.update(func() {
-				if a.isRunning("t1") || a.groupQueue["t1"] != nil {
+			// The guard also triggers the wrap-up turn; the synthesizer
+			// (the bound agent, no provider here) fails fast and the
+			// turn ends. Settle before asserting.
+			deadline := time.Now().Add(10 * time.Second)
+			for {
+				settled := false
+				a.update(func() {
+					settled = !a.isRunning("t1") && a.groupQueue["t1"] == nil
+				})
+				if settled {
+					break
+				}
+				if time.Now().After(deadline) {
 					t.Fatal("the guard did not end the relay")
 				}
-			})
+				time.Sleep(20 * time.Millisecond)
+			}
 			if note := noteText(th.Messages[0]); !strings.Contains(note, tc.value) {
 				t.Fatalf("note = %q, want it to carry %q", note, tc.value)
 			}
@@ -643,9 +655,6 @@ func TestRouterRelayFollowsCoordinator(t *testing.T) {
 	a.startTurn(th, "plan the thing")
 	waitTurn(t, a, th, 1) // the coordinator picks the first speaker too
 
-	if len(th.Messages) != 2 {
-		t.Fatalf("messages = %d, want user + the routed first speaker", len(th.Messages))
-	}
 	if th.Messages[1].AgentID != "ag-b" {
 		t.Fatalf("first speaker = %q, want the coordinator's pick B", th.Messages[1].AgentID)
 	}
@@ -667,9 +676,9 @@ func TestRouterRelayFollowsCoordinator(t *testing.T) {
 	if !strings.Contains((*bodies)[0], "do not end your reply by handing the question back to the user") {
 		t.Fatal("the panel protocol never reached the member")
 	}
-	// The coordinator ended the relay — and said so on the transcript:
-	// no third reply, the reason lands as a note, nothing running. The
-	// end decision is a second router call, so settle before asserting.
+	// The coordinator ended the relay — and said so on the transcript —
+	// then the wrap-up turn synthesizes the conclusion. The end decision
+	// is a second router call, so settle before asserting.
 	deadline := time.Now().Add(20 * time.Second)
 	for {
 		settled := false
@@ -687,11 +696,54 @@ func TestRouterRelayFollowsCoordinator(t *testing.T) {
 	if note := noteText(th.Messages[1]); !strings.Contains(note, "all done") {
 		t.Fatalf("the coordinator's end reason never surfaced: %q", note)
 	}
+	// The wrap-up: the thread's own agent (no panel_summarizer set)
+	// writes the conclusion the user asked for.
+	if len(th.Messages) != 3 {
+		t.Fatalf("messages = %d, want user + member + wrap-up", len(th.Messages))
+	}
+	if th.Messages[2].AgentID != "ag-team" {
+		t.Fatalf("the wrap-up author = %q, want the bound agent", th.Messages[2].AgentID)
+	}
+	if note := noteText(th.Messages[2]); !strings.Contains(note, "final wrap-up") {
+		t.Fatalf("the wrap-up note is missing: %q", note)
+	}
 	for deadline := time.Now().Add(500 * time.Millisecond); time.Now().Before(deadline); {
-		if len(th.Messages) > 2 {
-			t.Fatal("the relay continued past the coordinator's end")
+		if len(th.Messages) > 3 {
+			t.Fatal("the relay continued past the wrap-up")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestRelayWrapUpDesignee pins panel_summarizer: the designated member
+// writes the conclusion instead of the bound agent.
+func TestRelayWrapUpDesignee(t *testing.T) {
+	a, th, srv, _, _ := routerRelayFixture(t, nil,
+		[]string{"alpha", "beta"},
+		`{"next":"A","reason":"start at requirements"}`,
+		`{"next":"","reason":"all done"}`)
+	defer srv.Close()
+	a.update(func() { a.agentByName("Team").PanelSummarizer = "A" })
+	a.startTurn(th, "go")
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		settled := false
+		a.update(func() {
+			settled = !a.isRunning("t1") && a.groupQueue["t1"] == nil
+		})
+		if settled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the relay never settled")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if th.Messages[2].AgentID != "ag-a" {
+		t.Fatalf("the wrap-up author = %q, want the designated member A", th.Messages[2].AgentID)
+	}
+	if note := noteText(th.Messages[2]); !strings.Contains(note, "final wrap-up") {
+		t.Fatalf("the wrap-up note is missing: %q", note)
 	}
 }
 
@@ -740,11 +792,14 @@ func TestRouterRelayRoundLimit(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if len(th.Messages) != 3 {
-		t.Fatalf("messages = %d, want the round limit to stop at two replies", len(th.Messages))
+	if len(th.Messages) != 4 {
+		t.Fatalf("messages = %d, want the round limit to stop at two replies plus the wrap-up", len(th.Messages))
 	}
 	if note := noteText(th.Messages[2]); !strings.Contains(note, "round limit") {
 		t.Fatalf("the round-limit note is missing: %q", note)
+	}
+	if th.Messages[3].AgentID != "ag-team" {
+		t.Fatalf("the wrap-up author = %q, want the bound agent", th.Messages[3].AgentID)
 	}
 }
 
@@ -770,11 +825,14 @@ func TestRouterRelayStallGuard(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if len(th.Messages) != 4 {
-		t.Fatalf("messages = %d, want the stall guard to stop at three replies", len(th.Messages))
+	if len(th.Messages) != 5 {
+		t.Fatalf("messages = %d, want the stall guard to stop at three replies plus the wrap-up", len(th.Messages))
 	}
 	if note := noteText(th.Messages[3]); !strings.Contains(note, "stalled") {
 		t.Fatalf("the stall note is missing: %q", note)
+	}
+	if th.Messages[4].AgentID != "ag-team" {
+		t.Fatalf("the wrap-up author = %q, want the bound agent", th.Messages[4].AgentID)
 	}
 }
 
@@ -795,11 +853,14 @@ func TestRouterRelayUnknownMemberDegrades(t *testing.T) {
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
-	if len(th.Messages) != 2 {
-		t.Fatalf("messages = %d, want the relay to end after the unknown name", len(th.Messages))
+	if len(th.Messages) != 3 {
+		t.Fatalf("messages = %d, want the relay to end after the unknown name plus the wrap-up", len(th.Messages))
 	}
 	if note := noteText(th.Messages[1]); !strings.Contains(note, "Zed") {
 		t.Fatalf("the degrade note is missing: %q", note)
+	}
+	if th.Messages[2].AgentID != "ag-team" {
+		t.Fatalf("the wrap-up author = %q, want the bound agent", th.Messages[2].AgentID)
 	}
 }
 

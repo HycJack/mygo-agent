@@ -222,14 +222,14 @@ func (a *app) routeRelay(th *Thread, at int) {
 	}
 	switch {
 	case st.rounds >= maxRounds:
-		a.endRelay(th, fmt.Sprintf("relay reached the round limit (%d)", maxRounds))
+		a.wrapUpRelay(th, fmt.Sprintf("relay reached the round limit (%d)", maxRounds))
 	case ag.PanelMaxTokens > 0 && st.tokens >= int64(ag.PanelMaxTokens):
-		a.endRelay(th, fmt.Sprintf("relay reached the token budget (%d of %d)",
+		a.wrapUpRelay(th, fmt.Sprintf("relay reached the token budget (%d of %d)",
 			st.tokens, ag.PanelMaxTokens))
 	case ag.PanelTimeout > 0 && st.start.Add(time.Duration(ag.PanelTimeout)*time.Second).Before(time.Now()):
-		a.endRelay(th, fmt.Sprintf("relay timed out after %ds", ag.PanelTimeout))
+		a.wrapUpRelay(th, fmt.Sprintf("relay timed out after %ds", ag.PanelTimeout))
 	case st.sameStreak >= stall:
-		a.endRelay(th, fmt.Sprintf("relay stalled on %q for %d rounds", st.last, st.sameStreak))
+		a.wrapUpRelay(th, fmt.Sprintf("relay stalled on %q for %d rounds", st.last, st.sameStreak))
 	default:
 		snap := a.panelSnapshot(th, ag, at)
 		go a.askRouter(snap)
@@ -248,6 +248,51 @@ func (a *app) endRelay(th *Thread, reason string) {
 	if a.wsOpen {
 		a.refreshGit() // the agent may have changed files
 	}
+}
+
+// wrapUpRelay ends the relay and gives the user a conclusion: the
+// synthesizer — a designated member (panel_summarizer), else the
+// thread's own agent — writes the final answer over the whole
+// discussion. Without it a relay ends on the last specialist's reply,
+// and the user is left to assemble the conclusion themselves. An
+// aborted relay wraps up too: partial work still deserves a summary of
+// what was settled and what was not. When the wrap-up turn itself
+// finishes, finish finds no relay state and the turn simply ends.
+func (a *app) wrapUpRelay(th *Thread, reason string) {
+	rounds := 0
+	if st := a.groupQueue[th.ID]; st != nil {
+		rounds = st.rounds
+	}
+	a.endRelay(th, reason)
+	if rounds == 0 {
+		return // nobody spoke; there is nothing to synthesize
+	}
+	synth := a.agentFor(th)
+	if ag := a.agentFor(th); ag != nil && ag.PanelSummarizer != "" {
+		if m := a.memberByName(ag, ag.PanelSummarizer); m != nil {
+			synth = m
+		}
+	}
+	if synth == nil {
+		return
+	}
+	now := time.Now()
+	msg := Message{ID: uid(), Role: "assistant", Running: true, At: now, AgentID: synth.ID}
+	msg.Blocks = append(msg.Blocks, Block{Type: blockNote, Text: "→ " + synth.Name + ": final wrap-up"})
+	th.Messages = append(th.Messages, msg)
+	at := len(th.Messages) - 1
+	a.saveThread(th)
+	endNote := reason
+	if endNote == "" {
+		endNote = "the coordinator judged the discussion complete"
+	}
+	prompt := fmt.Sprintf(`The panel of agents has finished its discussion. Write the final conclusion for the user, in the user's language: the decision or recommendation, the key rationale, and any open questions or next steps. Be concise — do not restate every reply. (The coordinator ended the relay: %s.)`, endNote)
+	if a.resolveAgent(synth).backend != "builtin" {
+		// The CLI synthesizer's session is private: digest, as always.
+		prompt = fmt.Sprintf("You are %s. The panel conversation so far:\n\n%s\n\n%s",
+			synth.Name, a.panelDigest(th, at, 8<<10), prompt)
+	}
+	a.dispatchParticipant(th, prompt, at, synth)
 }
 
 // noteLast appends a note block to the thread's last settled message.
@@ -319,19 +364,20 @@ func (a *app) askRouter(snap panelSnapshot) {
 			return // stopped or deleted mid-route: nothing to continue
 		}
 		if err != nil {
-			a.endRelay(th, "coordinator unavailable: "+err.Error())
+			a.wrapUpRelay(th, "coordinator unavailable: "+err.Error())
 			return
 		}
 		if route.Next == "" {
 			// The coordinator says the work is done — the reason (chat
 			// wire: its own words; decision wire: the scored p(done)) is
-			// why the relay stopped, so it lands as a note.
-			a.endRelay(th, route.Reason)
+			// why the relay stopped, so it lands as a note — and the
+			// synthesizer writes the conclusion.
+			a.wrapUpRelay(th, route.Reason)
 			return
 		}
 		next := a.memberByName(a.agentFor(th), route.Next)
 		if next == nil {
-			a.endRelay(th, fmt.Sprintf("coordinator named %q, who is not on the panel", route.Next))
+			a.wrapUpRelay(th, fmt.Sprintf("coordinator named %q, who is not on the panel", route.Next))
 			return
 		}
 		a.dispatchRouterMember(th, next, route.Reason, "")

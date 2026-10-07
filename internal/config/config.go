@@ -116,6 +116,10 @@ type Agent struct {
 	// zero disables it. A hung member is already bounded by the
 	// per-request timeouts; this bounds the relay as a whole.
 	PanelTimeout int `json:"panel_timeout,omitzero"`
+	// PanelSummarizer names the panel member who writes the final
+	// wrap-up when a routed relay ends; empty means the thread's own
+	// agent. A name, like panel.
+	PanelSummarizer string `json:"panel_summarizer,omitempty"`
 	// RouterProvider and RouterModel pick the coordinator model of a
 	// router relay — a cheap local model is the point. Either empty
 	// follows the app's selection.
