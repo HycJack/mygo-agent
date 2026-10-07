@@ -44,14 +44,30 @@
 }
 ```
 
-Ollama 作为普通 Provider 注册（设置页或手编 config.json，无需新概念）：
+Ollama 作为普通 Provider 注册（设置页或手编 config.json，无需新概念）。chat 线路由（任意 OpenAI 兼容模型）与 decision 线路由（tev1 类）的配置示例：
 
 ```jsonc
+// chat 线:协调者自拟 JSON
 { "id": "prov-ollama", "name": "Ollama", "base_url": "http://localhost:11434/v1",
   "wire": "chat", "models": ["qwen3:8b"] }
+// agent: {"panel_route": "router", "router_provider": "prov-ollama", "router_model": "qwen3:8b"}
+
+// decision 线:Jev 决策 API,答案受约束、带概率(同一个 provider 即可)
+// agent: {"panel_route": "router", "router_provider": "prov-ollama",
+//         "router_model": "tev1", "router_wire": "decision"}
 ```
 
 成员职责描述：路由名册直接取各成员 `SystemPrompt` 的首行/头部（约 160 字符），**不新增描述字段**；路由质量不够时再考虑加 `panel_blurb`（P3 备选）。
+
+## 3.5 决策线（decision wire，tev1 类模型）
+
+`panel_route: "router"` 的协调者默认走 chat completions + JSON 提示词；Agent 另有 `router_wire: "decision"`，切换到 Jev 决策 API（Ollama ≥ 0.35 的 `/v1/systemone`，本地 `ollama.com/library/tev1` 一族）：
+
+- **请求**：`POST {base}/v1/systemone`（base 即 Provider 的 base_url，如 `http://localhost:11434/v1`）。`state` 为结构化对象 `{"members":[{"name","duties"}…],"conversation":<摘要>}`；`questions` 两题——`done`（noul：用户请求是否已完全解决）与 `next`（choice：criteria 即成员名 → 职责）。
+- **答案约束**：choice 的选项就是成员名，回答不可能跑到名册之外（chat 线的纠正重试在 decision 线不存在）；`noul` 的值即概率，`p(done) ≥ 0.5` 结束接力。单一成员的 panel 不出 choice 题（API 要求 2–26 个选项），done 为否则唯一成员继续发言；成员多于 26 个是降级。
+- **预算**：tev1 类的可用上下文约 2k token，decision 线的摘要上限压到 2500 字节（chat 线 6 KiB）；成员职责用 `promptHead` 160 字符。
+- **理由呈现**：概率与置信度进 note 与交接提示词——`"p=0.83, confidence 0.56"`。
+- **调参经验**（真机冒烟，2026-10）：对单薄摘要 tev1 倾向判 done（p≈0.53）；若实际使用中接力过早结束，优先加厚摘要、必要时再考虑把 `doneProbability` 做成配置。
 
 ## 4. 路由器实现（新文件 `internal/app/relayrouter.go`）
 

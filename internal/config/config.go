@@ -110,6 +110,13 @@ type Agent struct {
 	// follows the app's selection.
 	RouterProvider string `json:"router_provider,omitempty"`
 	RouterModel    string `json:"router_model,omitempty"`
+	// RouterWire selects the coordinator's request shape: "" or "chat"
+	// is chat completions with a JSON-reply prompt; "decision" is the
+	// Jev decision API (Ollama's /v1/systemone, the tev1 class of
+	// models) — a choice question over the panel plus a noul question
+	// for ending, so the answers come back constrained and scored
+	// instead of freeform (spec/relay-router.md).
+	RouterWire string `json:"router_wire,omitempty"`
 	// Skills narrows the discovered skills.
 	Skills AgentSkills `json:"skills,omitempty"`
 }

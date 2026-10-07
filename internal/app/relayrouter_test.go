@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"strings"
 	"sync"
 	"testing"
@@ -95,6 +96,138 @@ func testSnapshot(baseURL string) panelSnapshot {
 		model:    "qwen3:8b",
 		baseURL:  baseURL,
 	}
+}
+
+func decisionSnapshot(baseURL string) panelSnapshot {
+	snap := testSnapshot(baseURL)
+	snap.wire = "decision"
+	snap.model = "tev1"
+	return snap
+}
+
+// decisionFixture serves canned systemone answers (raw JSON, no chat
+// wrapper — the decision wire's response has no choices) and records
+// every request body.
+func decisionFixture(t *testing.T, answers map[string]any) (*httptest.Server, *[]string) {
+	t.Helper()
+	var mu sync.Mutex
+	var bodies []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		mu.Lock()
+		bodies = append(bodies, string(data))
+		mu.Unlock()
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, mustJSON(map[string]any{"answers": answers}))
+	}))
+	mu.Lock()
+	defer mu.Unlock()
+	return srv, &bodies
+}
+
+// mustJSON marshals or panics — fixtures only ever hold literal maps.
+func mustJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+func TestRouteDecisionSystemone(t *testing.T) {
+	choiceB := map[string]any{"type": "choice", "choice": "B",
+		"probabilities": map[string]float64{"A": 0.4, "B": 0.6}, "confidence": 0.7}
+	t.Run("picks a member", func(t *testing.T) {
+		srv, bodies := decisionFixture(t, map[string]any{
+			"next": choiceB,
+			"done": map[string]any{"type": "noul", "noul": 0.2},
+		})
+		defer srv.Close()
+		route, err := routeDecision(t.Context(), decisionSnapshot(srv.URL))
+		if err != nil || route.Next != "B" {
+			t.Fatalf("route = %+v, err = %v", route, err)
+		}
+		if !strings.Contains(route.Reason, "0.60") || !strings.Contains(route.Reason, "0.70") {
+			t.Fatalf("the scores never made the reason: %q", route.Reason)
+		}
+		var req struct {
+			Questions map[string]json.RawMessage `json:"questions"`
+			State     map[string]json.RawMessage `json:"state"`
+		}
+		if err := json.Unmarshal([]byte((*bodies)[0]), &req); err != nil {
+			t.Fatal(err)
+		}
+		var next struct {
+			Criteria map[string]string `json:"criteria"`
+		}
+		if err := json.Unmarshal(req.Questions["next"], &next); err != nil {
+			t.Fatal(err)
+		}
+		if next.Criteria["A"] != "architect" || len(next.Criteria) != 2 {
+			t.Fatalf("the choice criteria are not the roster: %v", next.Criteria)
+		}
+		if _, ok := req.Questions["done"]; !ok {
+			t.Fatal("the done question is missing")
+		}
+		var full struct {
+			State struct {
+				Members      []map[string]any `json:"members"`
+				Conversation string           `json:"conversation"`
+			} `json:"state"`
+		}
+		if err := json.Unmarshal([]byte((*bodies)[0]), &full); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(full.State.Conversation, "A: hello") || len(full.State.Members) != 2 {
+			t.Fatalf("the state lacks the transcript or the roster: %s", (*bodies)[0])
+		}
+	})
+	t.Run("done ends the relay", func(t *testing.T) {
+		srv, _ := decisionFixture(t, map[string]any{
+			"next": choiceB,
+			"done": map[string]any{"type": "noul", "noul": 0.9},
+		})
+		defer srv.Close()
+		route, err := routeDecision(t.Context(), decisionSnapshot(srv.URL))
+		if err != nil || route.Next != "" || !strings.Contains(route.Reason, "done") {
+			t.Fatalf("route = %+v, err = %v", route, err)
+		}
+	})
+	t.Run("a panel of one asks no choice", func(t *testing.T) {
+		srv, bodies := decisionFixture(t, map[string]any{
+			"done": map[string]any{"type": "noul", "noul": 0.1},
+		})
+		defer srv.Close()
+		snap := decisionSnapshot(srv.URL)
+		snap.roster = snap.roster[:1]
+		route, err := routeDecision(t.Context(), snap)
+		if err != nil || route.Next != "A" {
+			t.Fatalf("route = %+v, err = %v", route, err)
+		}
+		if strings.Contains((*bodies)[0], `"next"`) {
+			t.Fatalf("a choice was asked for a one-member panel: %s", (*bodies)[0])
+		}
+	})
+	t.Run("malformed answers degrade", func(t *testing.T) {
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			fmt.Fprint(w, `{"answers": {}}`)
+		}))
+		defer srv.Close()
+		if _, err := routeDecision(t.Context(), decisionSnapshot(srv.URL)); err == nil {
+			t.Fatal("a choice-less answer was accepted")
+		}
+	})
+	t.Run("off-roster choice degrades", func(t *testing.T) {
+		srv, _ := decisionFixture(t, map[string]any{
+			"next": map[string]any{"type": "choice", "choice": "Ghost",
+				"probabilities": map[string]float64{"Ghost": 1.0}, "confidence": 0.9},
+			"done": map[string]any{"type": "noul", "noul": 0.0},
+		})
+		defer srv.Close()
+		if _, err := routeDecision(t.Context(), decisionSnapshot(srv.URL)); err == nil {
+			t.Fatal("an off-roster choice was accepted")
+		}
+	})
 }
 
 // TestRouteDecisionCoversTheWire covers the client end to end against
@@ -203,6 +336,28 @@ func noteText(m Message) string {
 	return b.String()
 }
 
+// TestLiveDecisionRouter runs the decision wire against a real local
+// coordinator (Ollama serving tev1). Skipped unless MYGO_LIVE_ROUTER is
+// set — the suite must not depend on a daemon — and it documents the
+// one smoke check the fake servers cannot: that the wire contract
+// holds against the model itself.
+func TestLiveDecisionRouter(t *testing.T) {
+	if os.Getenv("MYGO_LIVE_ROUTER") == "" {
+		t.Skip("set MYGO_LIVE_ROUTER=1 with ollama serving tev1 to run")
+	}
+	snap := decisionSnapshot("http://localhost:11434/v1")
+	route, err := routeDecision(t.Context(), snap)
+	if err != nil {
+		t.Fatalf("live decision failed: %v", err)
+	}
+	t.Logf("route: next=%q reason=%q", route.Next, route.Reason)
+	if !routeNameKnown(route.Next, snap.roster) {
+		t.Fatalf("live coordinator named %q, off the roster", route.Next)
+	}
+}
+
+// TestRouterRelayFollowsCoordinator runs the relay end to end against
+// the fake members and the fake coordinator.
 func TestRouterRelayFollowsCoordinator(t *testing.T) {
 	a, th, srv, bodies := routerRelayFixture(t, nil,
 		[]string{"alpha", "beta"},

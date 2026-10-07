@@ -2,11 +2,11 @@ package app
 
 // The router relay (spec/relay-router.md): after every member's reply,
 // a cheap coordinator model decides which panel member speaks next —
-// or that the relay is done. The client is a plain non-streaming
-// chat-completions call against the provider the agent picked (a local
-// Ollama being the point); the decision comes back as strict JSON with
-// tolerant parsing, and every failure degrades to "relay ends" rather
-// than leaving the user stuck in a running thread.
+// or that the relay is done. Two wires: a plain non-streaming
+// chat-completions call with a JSON-reply prompt, and the decision API
+// (Ollama's /v1/systemone, the tev1 class), whose choice/noul answers
+// come back constrained and scored. Every failure degrades to "relay
+// ends" rather than leaving the user stuck in a running thread.
 
 import (
 	"bytes"
@@ -28,6 +28,24 @@ const defaultPanelMaxRounds = 8
 // member: two agents complimenting each other in a loop is the classic
 // coordinator failure (Magentic-One's stall detection, minimal form).
 const maxSameStreak = 3
+
+// routerChatDigestLimit bounds the transcript tail a chat coordinator
+// sees; routerDecisionDigestLimit the much shorter tail a decision
+// coordinator sees — the tev1 class works in roughly a 2k-token window,
+// so roster and conversation have to be terse to fit.
+const (
+	routerChatDigestLimit     = 6 << 10
+	routerDecisionDigestLimit = 2500
+)
+
+// maxDecisionOptions is the decision API's choice-question ceiling: a
+// panel larger than that cannot be routed by the decision wire.
+const maxDecisionOptions = 26
+
+// doneProbability is where a decision router's noul answer counts as
+// "the work is done": the answer IS the probability, so the honest
+// midpoint is the threshold.
+const doneProbability = 0.5
 
 // relayState is one group turn's relay: the sequence queue (untouched
 // by router mode), and the router's guard counters.
@@ -63,6 +81,7 @@ type panelSnapshot struct {
 	baseURL string
 	apiKey  string
 	model   string
+	wire    string // "" (chat completions) or "decision" (/v1/systemone)
 }
 
 // promptHead is a member's duty description for the coordinator: the
@@ -92,8 +111,14 @@ func (a *app) panelSnapshot(th *Thread, ag *Agent, at int) panelSnapshot {
 	}
 	// The tail through the settled reply: what the coordinator sees is
 	// what the transcript shows (the digest is the panelDigest the CLI
-	// members already read, bounded harder — the roster rides along).
-	snap.digest = a.panelDigest(th, at, 6<<10)
+	// members already read, bounded by the wire's budget — the roster
+	// rides along).
+	snap.wire = ag.RouterWire
+	limit := routerChatDigestLimit
+	if snap.wire == "decision" {
+		limit = routerDecisionDigestLimit
+	}
+	snap.digest = a.panelDigest(th, at, limit)
 	provID, model := a.providerID, a.model
 	if ag.RouterProvider != "" {
 		provID = ag.RouterProvider
@@ -237,11 +262,11 @@ func (a *app) dispatchRouterMember(th *Thread, next *Agent, reason string) {
 	a.dispatchParticipant(th, prompt, at, next)
 }
 
-// routeDecision asks the coordinator which member speaks next.
-// Non-streaming, temperature 0, JSON out. A transient failure retries
-// once; a reply naming someone off the roster gets one corrective
-// round-trip — small models hallucinate names, and one nudge usually
-// fixes it. Anything else is an error and the relay degrades.
+// routeDecision asks the coordinator which member speaks next. Two
+// wires share the question (spec/relay-router.md): chat completions
+// with a JSON-reply prompt, and the decision API (/v1/systemone, the
+// tev1 class), whose answers come back constrained and scored instead
+// of freeform. Both degrade to an error the relay ends on.
 func routeDecision(ctx context.Context, snap panelSnapshot) (relayRoute, error) {
 	if snap.baseURL == "" {
 		return relayRoute{}, fmt.Errorf("router provider has no endpoint")
@@ -249,6 +274,17 @@ func routeDecision(ctx context.Context, snap panelSnapshot) (relayRoute, error) 
 	if len(snap.roster) == 0 {
 		return relayRoute{}, fmt.Errorf("the panel is empty")
 	}
+	if snap.wire == "decision" {
+		return routeDecisionSystemone(ctx, snap)
+	}
+	return routeDecisionChat(ctx, snap)
+}
+
+// routeDecisionChat is the chat wire: temperature 0, JSON out. A
+// transient failure retries once; a reply naming someone off the roster
+// gets one corrective round-trip — small models hallucinate names, and
+// one nudge usually fixes it.
+func routeDecisionChat(ctx context.Context, snap panelSnapshot) (relayRoute, error) {
 	msgs := []map[string]string{
 		{"role": "system", "content": routerSystemPrompt(snap)},
 		{"role": "user", "content": "Which member speaks next? Answer with the JSON object only."},
@@ -276,6 +312,94 @@ func routeDecision(ctx context.Context, snap panelSnapshot) (relayRoute, error) 
 			map[string]string{"role": "user", "content": `"` + route.Next + `" is not on the roster. Answer again with exactly one roster name, or "" if the relay should end.`})
 	}
 	return relayRoute{}, lastErr
+}
+
+// routeDecisionSystemone is the decision wire: the Jev systemone API
+// (Ollama's /v1/systemone, the tev1 class). The panel is a choice
+// question — options ARE the member names, so nothing off-roster can
+// come back — and ending the relay is its own noul question, scored in
+// the same call. A panel of one needs no choice question: the sole
+// member speaks unless the relay is done. The API allows 2–26 choice
+// options, so a larger panel is a degrade.
+func routeDecisionSystemone(ctx context.Context, snap panelSnapshot) (relayRoute, error) {
+	if len(snap.roster) > maxDecisionOptions {
+		return relayRoute{}, fmt.Errorf("panel of %d exceeds the decision router's %d options",
+			len(snap.roster), maxDecisionOptions)
+	}
+	questions := map[string]any{
+		"done": map[string]any{
+			"type":         "noul",
+			"instructions": "Has the user's request been fully addressed, so another member reply would add nothing?",
+		},
+	}
+	if len(snap.roster) >= 2 {
+		criteria := map[string]string{}
+		for _, m := range snap.roster {
+			criteria[m.Name] = m.Desc
+		}
+		questions["next"] = map[string]any{
+			"type":         "choice",
+			"instructions": "Which member should speak next, given what the conversation still needs?",
+			"criteria":     criteria,
+		}
+	}
+	body, err := json.Marshal(map[string]any{
+		"model":     snap.model,
+		"state":     decisionState(snap),
+		"questions": questions,
+	})
+	if err != nil {
+		return relayRoute{}, err
+	}
+	data, err := routerPost(ctx, snap, "/systemone", body)
+	if err != nil {
+		return relayRoute{}, err
+	}
+	var out struct {
+		Answers map[string]struct {
+			Choice        string             `json:"choice"`
+			Probabilities map[string]float64 `json:"probabilities"`
+			Confidence    float64            `json:"confidence"`
+			Noul          float64            `json:"noul"`
+		} `json:"answers"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return relayRoute{}, fmt.Errorf("decision reply was not systemone: %w", err)
+	}
+	done := out.Answers["done"]
+	if done.Noul >= doneProbability {
+		return relayRoute{Reason: fmt.Sprintf("coordinator says done (p=%.2f)", done.Noul)}, nil
+	}
+	if len(snap.roster) == 1 {
+		// No choice was asked: the sole member continues.
+		return relayRoute{Next: snap.roster[0].Name,
+			Reason: fmt.Sprintf("p(done)=%.2f", done.Noul)}, nil
+	}
+	pick := out.Answers["next"]
+	if pick.Choice == "" {
+		return relayRoute{}, fmt.Errorf("decision reply had no choice")
+	}
+	if !routeNameKnown(pick.Choice, snap.roster) {
+		return relayRoute{}, fmt.Errorf("decision named %q, who is not on the roster", pick.Choice)
+	}
+	p := pick.Probabilities[pick.Choice]
+	return relayRoute{Next: pick.Choice,
+		Reason: fmt.Sprintf("p=%.2f, confidence %.2f", p, pick.Confidence)}, nil
+}
+
+// decisionState is the decision router's view: members with duties and
+// the bounded transcript tail, structured so the model reads roles
+// rather than guessing them out of prose.
+func decisionState(snap panelSnapshot) map[string]any {
+	members := make([]map[string]any, len(snap.roster))
+	for i, m := range snap.roster {
+		desc := any(m.Desc)
+		if m.Desc == "" || m.Desc == "(no description)" {
+			desc = nil
+		}
+		members[i] = map[string]any{"name": m.Name, "duties": desc}
+	}
+	return map[string]any{"members": members, "conversation": snap.digest}
 }
 
 // routeNameKnown reports whether next is a roster name or the empty
@@ -310,20 +434,12 @@ do not match what the conversation needs next.`)
 	return b.String()
 }
 
-// routerChat is one non-streaming chat completion against the
-// OpenAI-compatible endpoint (Ollama's is one). Bounded retry of the
-// transient failures only, as the built-in loop does.
-func routerChat(ctx context.Context, snap panelSnapshot, msgs []map[string]string) (string, error) {
-	body, err := json.Marshal(map[string]any{
-		"model":           snap.model,
-		"messages":        msgs,
-		"temperature":     0,
-		"response_format": map[string]string{"type": "json_object"},
-	})
-	if err != nil {
-		return "", err
-	}
-	url := strings.TrimRight(snap.baseURL, "/") + "/chat/completions"
+// routerPost is the HTTP half both router wires share: one bounded
+// POST against the coordinator's OpenAI-compatible endpoint, with the
+// transient-failure retry the built-in loop keeps. path is relative to
+// the provider's base URL ("​/chat/completions", "/systemone").
+func routerPost(ctx context.Context, snap panelSnapshot, path string, body []byte) ([]byte, error) {
+	url := strings.TrimRight(snap.baseURL, "/") + path
 	client := &http.Client{Timeout: 30 * time.Second}
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
@@ -331,12 +447,12 @@ func routerChat(ctx context.Context, snap panelSnapshot, msgs []map[string]strin
 			select {
 			case <-time.After(500 * time.Millisecond):
 			case <-ctx.Done():
-				return "", ctx.Err()
+				return nil, ctx.Err()
 			}
 		}
 		req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
 		if err != nil {
-			return "", err
+			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
 		if snap.apiKey != "" {
@@ -352,7 +468,7 @@ func routerChat(ctx context.Context, snap panelSnapshot, msgs []map[string]strin
 		if resp.StatusCode != http.StatusOK {
 			lastErr = fmt.Errorf("router provider returned %s: %s", resp.Status, strings.TrimSpace(string(data)))
 			if resp.StatusCode != http.StatusTooManyRequests && resp.StatusCode < 500 {
-				return "", lastErr // a 4xx is the request's own fault
+				return nil, lastErr // a 4xx is the request's own fault
 			}
 			continue
 		}
@@ -360,22 +476,41 @@ func routerChat(ctx context.Context, snap panelSnapshot, msgs []map[string]strin
 			lastErr = readErr
 			continue
 		}
-		var out struct {
-			Choices []struct {
-				Message struct {
-					Content string `json:"content"`
-				} `json:"message"`
-			} `json:"choices"`
-		}
-		if err := json.Unmarshal(data, &out); err != nil {
-			return "", fmt.Errorf("router reply was not chat completions: %w", err)
-		}
-		if len(out.Choices) == 0 {
-			return "", fmt.Errorf("router reply had no choices")
-		}
-		return out.Choices[0].Message.Content, nil
+		return data, nil
 	}
-	return "", lastErr
+	return nil, lastErr
+}
+
+// routerChat is one non-streaming chat completion against the
+// OpenAI-compatible endpoint (Ollama's is one).
+func routerChat(ctx context.Context, snap panelSnapshot, msgs []map[string]string) (string, error) {
+	body, err := json.Marshal(map[string]any{
+		"model":           snap.model,
+		"messages":        msgs,
+		"temperature":     0,
+		"response_format": map[string]string{"type": "json_object"},
+	})
+	if err != nil {
+		return "", err
+	}
+	data, err := routerPost(ctx, snap, "/chat/completions", body)
+	if err != nil {
+		return "", err
+	}
+	var out struct {
+		Choices []struct {
+			Message struct {
+				Content string `json:"content"`
+			} `json:"message"`
+		} `json:"choices"`
+	}
+	if err := json.Unmarshal(data, &out); err != nil {
+		return "", fmt.Errorf("router reply was not chat completions: %w", err)
+	}
+	if len(out.Choices) == 0 {
+		return "", fmt.Errorf("router reply had no choices")
+	}
+	return out.Choices[0].Message.Content, nil
 }
 
 // parseRouteReply reads the coordinator's answer: strict JSON first,
