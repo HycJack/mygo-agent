@@ -80,13 +80,13 @@ func TestMentionPopupCompletes(t *testing.T) {
 // nopActions satisfies the composer's callback interface.
 type nopActions struct{}
 
-func (nopActions) Send()                          {}
-func (nopActions) Stop()                          {}
-func (nopActions) SetDraft(string)                {}
-func (nopActions) SetMode(int)                    {}
-func (nopActions) SetEffort(int)                  {}
-func (nopActions) PickModel(string, string)       {}
-func (nopActions) OpenSettings(string)            {}
-func (nopActions) SetAgent(string)                {}
-func (nopActions) NewGroup()                      {}
-func (nopActions) SaveConfig()                    {}
+func (nopActions) Send()                    {}
+func (nopActions) Stop()                    {}
+func (nopActions) SetDraft(string)          {}
+func (nopActions) SetMode(int)              {}
+func (nopActions) SetEffort(int)            {}
+func (nopActions) PickModel(string, string) {}
+func (nopActions) OpenSettings(string)      {}
+func (nopActions) SetAgent(string)          {}
+func (nopActions) NewGroup()                {}
+func (nopActions) SaveConfig()              {}
