@@ -144,7 +144,7 @@ func TestScreenshots(t *testing.T) {
 	// the transcript's width, never run one line through the messages
 	// below it (the overlap regression).
 	oth := &Thread{ID: "t-ov", ProjectID: "default", Title: "Expanded thinking", Created: now, Updated: now}
-	long := strings.Repeat("The extraction stopped mid-line because the heredoc body ended before the closing brace was reached, so the parser saw an unterminated block. ", 6)
+	long := strings.Repeat("抽取在中间一行停了下来，因为 heredoc 正文在闭合花括号出现前就结束了，解析器因此看到一个未闭合的代码块，需要回退到上一个完整快照重新拼接。", 6)
 	oth.Messages = []Message{
 		{ID: uid(), Role: "user", Text: "go", At: now},
 		{ID: uid(), Role: "assistant", AgentID: "ag-m1", At: now,
@@ -153,6 +153,26 @@ func TestScreenshots(t *testing.T) {
 				{Type: blockText, Text: "这是后续的结论文字——思考内容若溢出，这一行会和它重叠。"},
 			}},
 	}
+	// The relay's real shape: many reasoning fragments folded into one
+	// kind-group, expanded, with the first member's thought open inside
+	// it — the group column is one width constraint deeper.
+	gth2 := &Thread{ID: "t-ov2", ProjectID: "default", Title: "Group thinking", Created: now, Updated: now}
+	gth2.Messages = []Message{
+		{ID: uid(), Role: "user", Text: "go", At: now},
+		{ID: uid(), Role: "assistant", AgentID: "ag-m1", At: now,
+			Blocks: []Block{
+				{Type: blockNote, Text: "→ 开发: 先验证再实现"},
+				{Type: blockReasoning, Open: true, Text: long},
+				{Type: blockReasoning, Text: strings.Repeat("第二段思考，检查原子性与重试上限的相互作用。", 12)},
+				{Type: blockCommand, Text: "$ go test ./... -race", Output: "ok", Exit: 0, Ms: 1200},
+				{Type: blockText, Text: "结论：CAS 循环可行，测试先行。"},
+			}},
+	}
+	a.threads = append(a.threads, gth2)
+	a.current = gth2.ID
+	tt.Frame()
+	writeShot(t, tt, dir, "02d-reasoning-group")
+	a.current = oth.ID
 	a.threads = append(a.threads, oth)
 	a.current = oth.ID
 	tt.Frame()
