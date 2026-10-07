@@ -94,12 +94,14 @@ func (a *app) regenerate(th *Thread) {
 	}
 	if len(panel) > 0 {
 		// The relay re-runs whole: this dispatch is member one, the rest
-		// queue for finish to hand over to.
+		// queue for finish to hand over to. Router mode re-runs the same
+		// way — member one first, the coordinator takes over from there
+		// (spec/relay-router.md).
 		ids := make([]string, 0, len(panel)-1)
 		for _, m := range panel[1:] {
 			ids = append(ids, m.ID)
 		}
-		a.groupQueue[th.ID] = ids
+		a.groupQueue[th.ID] = &relayState{queue: ids, rounds: 1}
 		a.dispatchParticipant(th, promptForSend, at, panel[0])
 		return
 	}
@@ -161,7 +163,7 @@ func (a *app) startTurn(th *Thread, prompt string) {
 		for _, m := range panel[1:] {
 			ids = append(ids, m.ID)
 		}
-		a.groupQueue[th.ID] = ids
+		a.groupQueue[th.ID] = &relayState{queue: ids, rounds: 1}
 	}
 	th.Messages = append(th.Messages, Message{ID: uid(), Role: "assistant", Running: true, At: now,
 		AgentID: first.ID})
@@ -176,9 +178,13 @@ func (a *app) startTurn(th *Thread, prompt string) {
 // nextPanelMember pops the group turn's next member: nil ends the
 // relay — queue empty, or the run was stopped (stopThread clears both).
 func (a *app) nextPanelMember(th *Thread) *Agent {
-	for len(a.groupQueue[th.ID]) > 0 && a.isRunning(th.ID) {
-		queue := a.groupQueue[th.ID]
-		a.groupQueue[th.ID] = queue[1:]
+	st := a.groupQueue[th.ID]
+	if st == nil {
+		return nil
+	}
+	for len(st.queue) > 0 && a.isRunning(th.ID) {
+		queue := st.queue
+		st.queue = queue[1:]
 		// A member deleted mid-relay is skipped, not fatal.
 		if ag := a.agentByID(queue[0]); ag != nil {
 			return ag
@@ -187,15 +193,32 @@ func (a *app) nextPanelMember(th *Thread) *Agent {
 	return nil
 }
 
+// relayRouteMode reports how this thread's relay picks the next speaker:
+// "router" when the bound agent opted in (spec/relay-router.md), else
+// "sequence" — the configured order, one reply per member. A thread
+// without a panel never reaches the relay at all.
+func (a *app) relayRouteMode(th *Thread) string {
+	ag := a.agentFor(th)
+	if ag != nil && ag.PanelRoute == "router" && len(ag.Panel) > 0 {
+		return "router"
+	}
+	return "sequence"
+}
+
 // finish settles the running reply. On a group thread the relay
-// continues: the next panel member is dispatched as its own turn on the
-// shared conversation, and the run registry carries the whole chain.
+// continues: a sequence relay hands over to the next panel member, a
+// router relay asks the coordinator which member speaks next (or that
+// the relay is done) — and the run registry carries the whole chain.
 func (a *app) finish(th *Thread, at int, errText string) {
 	a.update(func() {
 		// The registry entry is only cleared when the chain ends: a
 		// stopped run loses its entry (stopThread), which is what ends
 		// the relay here.
-		next := a.nextPanelMember(th)
+		router := a.relayRouteMode(th) == "router"
+		var next *Agent
+		if !router {
+			next = a.nextPanelMember(th)
+		}
 		if cur := a.byID(th.ID); cur != nil && at < len(cur.Messages) {
 			m := &th.Messages[at]
 			m.Running = false
@@ -209,7 +232,7 @@ func (a *app) finish(th *Thread, at int, errText string) {
 			a.saveThread(th)
 			a.traceTurn(th, at, errText)
 		}
-		if next == nil || a.byID(th.ID) == nil {
+		if (next == nil && !router) || a.byID(th.ID) == nil {
 			a.runEnd(th.ID)
 			delete(a.groupQueue, th.ID)
 			if a.wsOpen {
@@ -217,7 +240,12 @@ func (a *app) finish(th *Thread, at int, errText string) {
 			}
 			return
 		}
-		// The relay continues: a fresh placeholder for the next member.
+		if router {
+			a.routeRelay(th, at)
+			return
+		}
+		// The sequence relay continues: a fresh placeholder for the next
+		// member.
 		now := time.Now()
 		th.Messages = append(th.Messages, Message{ID: uid(), Role: "assistant", Running: true, At: now,
 			AgentID: next.ID})

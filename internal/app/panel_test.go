@@ -93,7 +93,7 @@ func TestPanelRelayRunsMembersInOrder(t *testing.T) {
 	}
 	// The relay is over: the registry and queue are empty.
 	a.update(func() {
-		if a.isRunning("t1") || len(a.groupQueue["t1"]) != 0 {
+		if a.isRunning("t1") || a.groupQueue["t1"] != nil {
 			t.Fatal("the relay left state behind")
 		}
 	})
@@ -152,7 +152,7 @@ func TestPanelStopMidChain(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	a.update(func() {
-		if len(a.groupQueue["t1"]) != 0 {
+		if a.groupQueue["t1"] != nil {
 			t.Fatal("the queue survived the stop")
 		}
 	})
@@ -185,7 +185,7 @@ func TestPanelSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("subtitle = %q", sub)
 	}
 	// A member deleted after being queued is skipped, not fatal.
-	a.groupQueue["t1"] = []string{"ag-a", "ghost", "ag-b"}
+	a.groupQueue["t1"] = &relayState{queue: []string{"ag-a", "ghost", "ag-b"}}
 	a.runStart("t1", func() {}) // the relay pops only while the run lives
 	if got := a.nextPanelMember(&Thread{ID: "t1"}); got == nil || got.ID != "ag-a" {
 		t.Fatalf("first pop = %+v", got)

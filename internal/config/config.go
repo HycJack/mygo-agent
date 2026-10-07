@@ -95,6 +95,21 @@ type Agent struct {
 	// replies in the shared conversation. Names, not ids — the same
 	// convention mcp_servers uses. Empty means a solo agent.
 	Panel []string `json:"panel,omitempty"`
+	// PanelRoute selects how the relay picks the next speaker
+	// (spec/relay-router.md): "" or "sequence" keeps the configured order
+	// and each member speaks once (the pre-router behavior); "router"
+	// asks a coordinator model after every reply which member speaks
+	// next — or that the relay is done.
+	PanelRoute string `json:"panel_route,omitempty"`
+	// PanelMaxRounds caps how many member replies one user turn may
+	// dispatch in router mode; zero defaults to 8. Sequence mode ignores
+	// it — a sequence relay is exactly one reply per member.
+	PanelMaxRounds int `json:"panel_max_rounds,omitzero"`
+	// RouterProvider and RouterModel pick the coordinator model of a
+	// router relay — a cheap local model is the point. Either empty
+	// follows the app's selection.
+	RouterProvider string `json:"router_provider,omitempty"`
+	RouterModel    string `json:"router_model,omitempty"`
 	// Skills narrows the discovered skills.
 	Skills AgentSkills `json:"skills,omitempty"`
 }

@@ -1,0 +1,126 @@
+# 方案：群聊接力路由（Panel Router）
+
+状态：**P1、P2 已落地**（sequence 模式零行为变化；router 模式 + 三层护栏 + note 呈现 + 测试在 `internal/app/relayrouter.go` / `relayrouter_test.go`）；P3（@mention、设置 UI、路由器选首位发言者、`panel_blurb`）未启动。设置界面暂不暴露新字段，手编 config.json 即可；`syncAgent` 只回写 VM 已有字段，编辑其他设置不会抹掉新配置。目标：解决"群聊接力必须人工发一条消息才能推进、无法决定谁下一个发言、何时结束"的问题——引入 host 侧的路由决策步骤（supervisor 模式），由本地 Ollama 小模型担任协调者。仍不引入消息总线/常驻守护（spec/agents.md 的红线不变）：接力骨架（`finish()` → `dispatchParticipant`）保留，只把"固定 FIFO 队列"换成"每轮结束后的路由决策"。
+
+## 1. 问题（代码事实）
+
+- 触发面只有人工：`send/resend/regenerate` 是 `startTurn` 仅有的调用方（`internal/app/agent.go:14/31/43`）；agent 回复只写进共享转录，没有路径把"成员发言完成"转成新决策。
+- 接力一轮即终：`nextPanelMember` FIFO pop（`agent.go:178`），队列空即 `runEnd`（`agent.go:212`）；每个成员只说一次，顺序 = `Agent.Panel` 配置顺序。
+- 固定话术交接：下一位只收到 `panelNudge`（`agent.go:112`），上下文里没有"该谁发言、为什么"的信息。
+
+对照主流设计（AutoGen SelectorGroupChat / LangGraph supervisor / CrewAI hierarchical）：共同点是**每轮结束后由 host 做一次路由决策（选下一个发言者或宣布结束），并配终止护栏**。本方案取 supervisor 模式，路由决策用独立的小模型调用。
+
+## 2. 设计总览
+
+```
+用户消息 ──▶ startTurn ──▶ 派发成员① ──▶ finish
+                                          │
+                              ┌───────────┴───────────┐
+                              │ sequence(现状)         │ router(新增)
+                              │ FIFO pop 下一位        │ 路由调用(Ollama, 异步):
+                              │ 队列空→runEnd          │ {"next":"<name>"|"","reason":…}
+                              └───────────┬───────────┘
+                                          ▼
+                              next==nil → runEnd
+                              否则追加 placeholder → dispatchParticipant ──▶ finish(循环)
+```
+
+- **路由器是一个独立的、便宜的一次性 chat 调用**，不走任何成员的 harness：输入 = 成员名册（名字 + 职责描述）+ 转录尾部摘要，输出 = 严格 JSON。Ollama 的 OpenAI 兼容端点（`http://localhost:11434/v1`）直接复用现有 `Provider` 配置，不需要新的客户端抽象层。
+- **"什么时候结束"由路由器回答**：输出 `{"next":""}` 即结束接力；`panel_max_rounds` 和同成员连讲上限是硬护栏，路由器失去约束时兜底。
+- **"哪个 agent 干活"由路由器回答**：从成员名册里挑，依据是各成员职责描述与当前对话所需。
+
+## 3. 配置面（config v2 增量字段）
+
+`Agent`（`internal/config/config.go:68`）新增，全部遵循"空值继承 app 默认"的现有惯例：
+
+```jsonc
+{
+  "name": "主持 agent",
+  "panel": ["架构师", "评审员"],          // 现有字段不变
+  "panel_route": "router",               // "" | "sequence"(默认,现行为) | "router"
+  "panel_max_rounds": 8,                 // router 模式下的接力派发次数上限;0 → 默认 8。sequence 模式忽略
+  "router_provider": "prov-ollama",      // 空 → app 默认 provider
+  "router_model": "qwen3:8b"             // 空 → app 默认 model
+}
+```
+
+Ollama 作为普通 Provider 注册（设置页或手编 config.json，无需新概念）：
+
+```jsonc
+{ "id": "prov-ollama", "name": "Ollama", "base_url": "http://localhost:11434/v1",
+  "wire": "chat", "models": ["qwen3:8b"] }
+```
+
+成员职责描述：路由名册直接取各成员 `SystemPrompt` 的首行/头部（约 160 字符），**不新增描述字段**；路由质量不够时再考虑加 `panel_blurb`（P3 备选）。
+
+## 4. 路由器实现（新文件 `internal/app/relayrouter.go`）
+
+- **请求**：非流式 `POST {base}/chat/completions`，`stream:false`、`temperature:0`、`response_format:{"type":"json_object"}`（Ollama 支持；不支持时靠解析兜底）。带 `Authorization: Bearer <key>`（Ollama 可留空 key）。超时 30s，2 次尝试（429/5xx 与传输错误重试）。
+- **System prompt**（草案）：
+
+```
+You are the coordinator of a panel of AI agents. Roster:
+- 架构师: <SystemPrompt 头部>
+- 评审员: <SystemPrompt 头部>
+
+Conversation so far:
+<panelDigest 尾部 6KB>
+
+Decide which member should speak next. Respond ONLY with JSON:
+{"next": "<member name>", "reason": "<one short sentence>"}
+Use {"next": "", "reason": "..."} when the user's request has been fully
+addressed and another reply would add nothing. You may pick the same
+member again if they should continue. Never pick a member whose
+specialty does not match what the conversation needs next.
+```
+
+- **解析**（宽容序）：`json.Unmarshal` 到 `{"next","reason"}` → 失败则截取文本中第一个 `{...}` 再试 → 仍失败视为路由失败（见 §6 降级）。`next` 按成员**名字**匹配（与 `Panel` 用名字的惯例一致），匹配不到也视为失败。
+- **快照纪律**（同 `builtinHarness` 的既有规则）：名册、摘要、endpoint 全部在主线程快照后交给 goroutine；goroutine 回来必须重新走 `a.update` 并复验 `a.byID(th.ID) != nil && a.isRunning(th.ID)` 才派发——路由期间用户 Stop 或删线程则结果直接丢弃。
+
+## 5. finish() 改造（`internal/app/agent.go:193`）
+
+接力状态从 `groupQueue map[string][]string` 换成：
+
+```go
+type relayState struct {
+    queue      []string // sequence 模式:剩余成员(FIFO 不变)
+    rounds     int      // 本回合已派发的成员次数(router 模式计数)
+    last       string   // 上一个发言成员名
+    sameStreak int      // 同名连续发言次数(停滞护栏)
+}
+```
+
+`finish` 消息落定后分流：
+
+- **sequence**：现有路径原样保留（同步 pop → dispatch 或 runEnd），零行为变化，现有测试不动。
+- **router**：
+  1. `rounds+1 > maxRounds` 或 `sameStreak >= 3` → 追加一条 note block（"接力达到轮数上限/检测到停滞，结束"）→ `runEnd`；
+  2. 否则主线程快照名册+摘要，`go a.routePanelTurn(snap)`；**运行注册表条目此时不释放**（不复用 `runEnd`），路由期间该线程保持"运行中"（composer 不能并发发送，Stop 仍有效——`stopThread` 清 `runs` 条目，路由结果复验时自然丢弃）；
+  3. `routePanelTurn` 拿到决策后回 `a.update`：`next==""` 或复验失败/降级结束 → `runEnd` + 清队列 + `refreshGit`（对齐现有 `finish` 尾部）；否则按名字解析成员（中途被删则再路由一次，再失败 runEnd），追加 placeholder（AgentID = 该成员），把 `reason` 作为该消息第一条 note block 折叠展示，prompt 用 `"(Panel coordinator handed the floor to you: <reason>)"` 替换 `panelNudge`（builtin 成员不加，保持转录干净——理由已在其共享转录的 note block 里可见，CLI 成员拼在 digest prompt 里）。
+  4. 每次派发前 `rounds++`，更新 `last`/`sameStreak`。
+
+`startTurn`/`regenerate` 在 router 模式下仍以 `panel[0]` 起步（首发言者固定，后续全由路由器接管）；"路由器也选首位发言者"列为 P3 备选。
+
+## 6. 护栏（三层，缺一不可）
+
+1. **硬轮数**：`panel_max_rounds`（router 默认 8）——防路由死循环烧钱，AutoGen `MaxMessageTermination` 的对应物。
+2. **停滞检测**：同成员连续 3 次 → 强制结束（Magentic-One 停滞检测的最小版本，防两个 agent 互相恭维空转）。
+3. **降级**：路由调用失败（超时/非 JSON/名字不匹配，重试后仍失败）→ 追加 note"路由不可用，接力结束"→ `runEnd`。**绝不因路由器挂掉把用户卡在运行态**。
+
+## 7. UI
+
+- 路由决策以 `blockNote` 呈现在每个成员消息卡上："→ 评审员：方案风险需要独立审查"（复用现有 note 折叠渲染，`internal/app/types.go:23`）。
+- 设置面：panel_route / panel_max_rounds / router provider+model 的编辑项（agents 设置 ViewModel+Actions 已就位，加字段）；落地前允许手编 config.json。
+- @mention（P3，可选）：composer 消息里的 `@名字` 命中 panel 成员 → 该成员第一个发言，其余交路由器。只做快捷路径，不做新机制。
+
+## 8. 测试计划
+
+- `relayrouter_test.go`：httptest 假 OpenAI 兼容服务（`builtin/llm_test.go` 有先例）。覆盖：正常 JSON；```json 围栏包裹；前后夹杂文本；非法 JSON → 降级；超时与 5xx 重试后降级；`response_format` 被服务端忽略仍可解析。
+- app 层（参照现有 agents/harness 测试的 fake provider 模式）：router 模式下按 mock 路由器指示两成员交替发言多轮；`panel_max_rounds` 截断并落 note；同成员连讲 3 次截断；路由返回 `""` → runEnd；路由期间 `stopThread` → 不派发、注册表清空；成员中途被删 → 重路由一次后结束。
+- 回归：sequence 模式现有测试不改一行通过。
+
+## 9. 分阶段
+
+- **P1**：config 字段 + `relayState` 改形 + sequence 行为零变化（重构不引入新行为）。
+- **P2**：relayrouter.go（客户端+解析）+ finish() router 分流 + 护栏 + note 呈现。完成后核心问题解决。
+- **P3**（可选）：@mention、设置 UI 字段、路由器选首位发言者、`panel_blurb` 成员描述字段。

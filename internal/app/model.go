@@ -71,11 +71,12 @@ type app struct {
 	termOpen   bool
 	termHeight float32
 
-	// groupQueue holds a group turn's remaining panel members, keyed by
-	// thread id (spec/agents.md): finish pops the next one and dispatches
+	// groupQueue holds a group turn's relay state, keyed by thread id
+	// (spec/agents.md, spec/relay-router.md): finish pops the next
+	// member (sequence) or asks the coordinator (router) and dispatches
 	// it, so a panel runs as one registered run on the main thread.
 	// Cleared by stopThread — a stopped relay does not continue.
-	groupQueue map[string][]string
+	groupQueue map[string]*relayState
 
 	// runs maps thread id to its in-flight turn (spec/agents.md P2):
 	// two tasks run at once, and every stop belongs to one thread. The
@@ -197,7 +198,7 @@ func newApp() *app {
 		runs:          map[string]*runState{},
 		fetchedModels: map[string][]string{},
 		fetchErrs:     map[string]string{},
-		groupQueue:    map[string][]string{},
+		groupQueue:    map[string]*relayState{},
 		groupDraftOn:  map[string]bool{},
 		sections:      map[string]bool{},
 		dirs:          map[string]bool{},
