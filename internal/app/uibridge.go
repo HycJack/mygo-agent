@@ -33,6 +33,13 @@ func (a *app) homeViewModel() *uipkg.ViewModel {
 	}
 	vm := a.vm
 	vm.Running = a.currentRunning()
+	vm.CanInterject = false
+	if vm.Running {
+		if th := a.currentThread(); th != nil && a.groupQueue[th.ID] != nil &&
+			a.relayRouteMode(th) == "router" {
+			vm.CanInterject = true
+		}
+	}
 	vm.FocusComposer = a.focusComposer
 	vm.Mode = a.mode
 	vm.Effort = a.effort

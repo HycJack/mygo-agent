@@ -128,11 +128,26 @@ type relayState struct {
 
 `startTurn`/`regenerate` 在 router 模式下仍以 `panel[0]` 起步（首发言者固定，后续全由路由器接管）；"路由器也选首位发言者"列为 P3 备选。
 
-## 6. 护栏（三层，缺一不可）
+## 6. 护栏（终止条件可配置，spec/relay-router.md）
 
-1. **硬轮数**：`panel_max_rounds`（router 默认 8）——防路由死循环烧钱，AutoGen `MaxMessageTermination` 的对应物。
-2. **停滞检测**：同成员连续 3 次 → 强制结束（Magentic-One 停滞检测的最小版本，防两个 agent 互相恭维空转）。
-3. **降级**：路由调用失败（超时/非 JSON/名字不匹配，重试后仍失败）→ 追加 note"路由不可用，接力结束"→ `runEnd`。**绝不因路由器挂掉把用户卡在运行态**。
+路由接力的终止条件在 agent 上逐项可配（零值 = 各自默认或关闭），每次派发前依次评估，触发即落 note 结束接力：
+
+| 配置 | 零值默认 | 语义 |
+|---|---|---|
+| `panel_max_rounds` | 8 | 单回合成员派发次数上限（AutoGen `MaxMessageTermination` 的对应物） |
+| `panel_max_tokens` | 关 | 接力全程的成员 token 预算（finish 落定时从各消息的 turn 累计值汇入 `relayState.tokens`） |
+| `panel_timeout` | 关 | 接力整体墙钟秒数上限（悬挂的成员回合另有 per-request 超时兜底） |
+| `panel_stall_rounds` | 3 | 同成员连续发言上限（Magentic-One 停滞检测的最小版本，防互相恭维空转） |
+
+外加一条不可配置的底线：**降级**——路由调用失败（超时/非 JSON/名字不匹配，重试后仍失败）→ 追加 note"路由不可用，接力结束"→ `runEnd`。**绝不因路由器挂掉把用户卡在运行态**。
+
+## 6.5 中途插话（interjection）
+
+运行中的 routed 接力不再挡用户发言：composer 的发送键在有草稿时变为"插话"（Enter 同样生效）。
+
+- `send()` 在运行态改走 `interject()`：用户消息**立即入转录**（UI 即时可见），并排入 `relayState.pending`；下一个成员被派发时，交接提示词拼上 `The user added while the panel was talking: …`——话头连同协调者的理由一起交给接棒者。正在发言的成员看不到插话（其上下文已快照），与 Slack 群聊的直觉一致。
+- sequence 接力与 solo 回合不可插话（draft 保留，行为同旧版）：sequence 的队列是死的，插话语义不成立。
+- 协调者的裁决自然会看到插话（转录/简报已包含），无需特殊处理。
 
 ## 7. UI
 

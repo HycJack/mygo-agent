@@ -10,7 +10,10 @@ import (
 
 // send takes the draft, appends it to the thread, and starts the
 // harness. Other threads' turns do not block a send — only this
-// thread's own running turn does (spec/agents.md P2).
+// thread's own running turn does (spec/agents.md P2) — and a running
+// routed relay takes the message as an interjection instead: it joins
+// the transcript now and the next member's handoff (spec/
+// relay-router.md).
 func (a *app) send() {
 	prompt := strings.TrimSpace(a.draft)
 	if prompt == "" {
@@ -18,13 +21,32 @@ func (a *app) send() {
 	}
 	th := a.currentThread()
 	if th != nil && a.isRunning(th.ID) {
-		return // this thread's turn is still in flight; the draft stays
+		a.interject(th, prompt)
+		return // this thread's turn is still in flight; the draft goes in as an interjection or stays
 	}
 	a.setDraft("")
 	if th == nil {
 		th = a.createThread()
 	}
 	a.startTurn(th, prompt)
+}
+
+// interject delivers the user's message into a running routed relay:
+// it lands in the transcript immediately and rides the next member's
+// handoff prompt. A solo turn or a sequence relay is not interruptible
+// — the draft stays — and without a relay there is nothing to hand it
+// to.
+func (a *app) interject(th *Thread, prompt string) {
+	st := a.groupQueue[th.ID]
+	if st == nil || a.relayRouteMode(th) != "router" {
+		return
+	}
+	st.pending = append(st.pending, prompt)
+	now := time.Now()
+	th.Messages = append(th.Messages, Message{ID: uid(), Role: "user", Text: prompt, At: now})
+	th.Updated = now
+	a.setDraft("")
+	a.saveThread(th)
 }
 
 // resend re-runs a prompt the user already sent, as a fresh turn.
@@ -101,7 +123,7 @@ func (a *app) regenerate(th *Thread) {
 		for _, m := range panel[1:] {
 			ids = append(ids, m.ID)
 		}
-		a.groupQueue[th.ID] = &relayState{queue: ids, rounds: 1}
+		a.groupQueue[th.ID] = &relayState{queue: ids, rounds: 1, start: now}
 		a.dispatchParticipant(th, promptForSend, at, panel[0])
 		return
 	}
@@ -163,7 +185,7 @@ func (a *app) startTurn(th *Thread, prompt string) {
 		for _, m := range panel[1:] {
 			ids = append(ids, m.ID)
 		}
-		a.groupQueue[th.ID] = &relayState{queue: ids, rounds: 1}
+		a.groupQueue[th.ID] = &relayState{queue: ids, rounds: 1, start: now}
 	}
 	th.Messages = append(th.Messages, Message{ID: uid(), Role: "assistant", Running: true, At: now,
 		AgentID: first.ID})
@@ -227,6 +249,11 @@ func (a *app) finish(th *Thread, at int, errText string) {
 			}
 			if m.Text == "" && errText == "" && len(m.Blocks) == 0 {
 				m.Text = "(no response)"
+			}
+			// The relay's token budget counts what its members spend
+			// (spec/relay-router.md); traceTurn clears the accumulators.
+			if st := a.groupQueue[th.ID]; st != nil {
+				st.tokens += m.turnTokens
 			}
 			th.Updated = time.Now()
 			a.saveThread(th)

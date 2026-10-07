@@ -48,12 +48,16 @@ const maxDecisionOptions = 26
 const doneProbability = 0.5
 
 // relayState is one group turn's relay: the sequence queue (untouched
-// by router mode), and the router's guard counters.
+// by router mode), the router's guard counters, and the user's
+// mid-relay messages waiting for the next handoff.
 type relayState struct {
-	queue      []string // sequence mode: remaining member ids, FIFO
-	rounds     int      // member dispatches made this user turn
-	last       string   // the last member's name (router stall guard)
-	sameStreak int      // consecutive dispatches of that member
+	queue      []string  // sequence mode: remaining member ids, FIFO
+	rounds     int       // member dispatches made this user turn
+	last       string    // the last member's name (router stall guard)
+	sameStreak int       // consecutive dispatches of that member
+	tokens     int64     // tokens the relay's members have spent so far
+	start      time.Time // when the relay began (timeout guard)
+	pending    []string  // user interjections awaiting the next handoff
 }
 
 // relayRoute is the coordinator's decision.
@@ -174,10 +178,13 @@ func (a *app) panelSnapshot(th *Thread, ag *Agent, at int) panelSnapshot {
 }
 
 // routeRelay continues a router relay, called from finish on the main
-// thread. Guards run first — they are the hard stop the coordinator
-// cannot talk its way past — then the decision is asked off-thread.
-// The run registry entry stays while routing: the thread keeps its
-// running state (no concurrent send), and a stop clears the entry,
+// thread. The guards run first — they are the hard stops the
+// coordinator cannot talk its way past, each one configurable on the
+// agent (panel_max_rounds / panel_stall_rounds / panel_max_tokens /
+// panel_timeout, zero = its default or off) — then the decision is
+// asked off-thread. The run registry entry stays while routing: the
+// thread keeps its running state (no concurrent send; the user's
+// mid-relay messages interject instead), and a stop clears the entry,
 // which is what drops the decision on revalidation.
 func (a *app) routeRelay(th *Thread, at int) {
 	st := a.groupQueue[th.ID]
@@ -190,10 +197,19 @@ func (a *app) routeRelay(th *Thread, at int) {
 	if maxRounds <= 0 {
 		maxRounds = defaultPanelMaxRounds
 	}
+	stall := ag.PanelStallRounds
+	if stall <= 0 {
+		stall = maxSameStreak
+	}
 	switch {
 	case st.rounds >= maxRounds:
 		a.endRelay(th, fmt.Sprintf("relay reached the round limit (%d)", maxRounds))
-	case st.sameStreak >= maxSameStreak:
+	case ag.PanelMaxTokens > 0 && st.tokens >= int64(ag.PanelMaxTokens):
+		a.endRelay(th, fmt.Sprintf("relay reached the token budget (%d of %d)",
+			st.tokens, ag.PanelMaxTokens))
+	case ag.PanelTimeout > 0 && st.start.Add(time.Duration(ag.PanelTimeout)*time.Second).Before(time.Now()):
+		a.endRelay(th, fmt.Sprintf("relay timed out after %ds", ag.PanelTimeout))
+	case st.sameStreak >= stall:
 		a.endRelay(th, fmt.Sprintf("relay stalled on %q for %d rounds", st.last, st.sameStreak))
 	default:
 		snap := a.panelSnapshot(th, ag, at)
@@ -297,6 +313,14 @@ func (a *app) dispatchRouterMember(th *Thread, next *Agent, reason string) {
 	at := len(th.Messages) - 1
 	a.saveThread(th)
 	prompt := fmt.Sprintf("(Panel coordinator handed the floor to you: %s)", reason)
+	// The user may have spoken while the panel was talking: the floor
+	// comes with what they added (the messages already sit in the
+	// transcript; the CLI digest picks them up from there).
+	if len(st.pending) > 0 {
+		prompt += "\n\nThe user added while the panel was talking:\n" +
+			strings.Join(st.pending, "\n---\n")
+		st.pending = nil
+	}
 	if a.resolveAgent(next).backend != "builtin" {
 		// The CLI member's session is private: digest, as in sequence.
 		prompt = fmt.Sprintf("You are %s in a panel of agents. The conversation so far:\n\n%s\n\n%s",

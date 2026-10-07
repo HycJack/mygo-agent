@@ -22,6 +22,7 @@ type ViewModel struct {
 	// Composer state.
 	Draft         string
 	Running       bool
+	CanInterject  bool // a routed relay is running: a non-empty draft sends as an interjection
 	FocusComposer bool // consumed once: the view clears it after focusing
 	Mode          int  // 0 read-only, 1 agent, 2 full
 	Effort        int  // 0 low, 1 medium, 2 high
@@ -143,6 +144,21 @@ func composerRow(c *ui.Context, vm *ViewModel, acts Actions) {
 		modelButton(c, vm, acts)
 		send := ui.ButtonBase(c).Label("Send").Tooltip("Send (Enter)").Size(30, 30).Radius(999).Center()
 		if vm.Running {
+			// A routed relay takes the user's words mid-flight: a
+			// non-empty draft sends as an interjection, an empty one
+			// keeps the stop button (spec/relay-router.md).
+			if vm.CanInterject && strings.TrimSpace(vm.Draft) != "" {
+				send.Label("Interject").Tooltip("Send into the relay (Enter)")
+				send.Background(t.Accent)
+				if send.Hovered() {
+					send.Background(t.AccentHover)
+				}
+				if send.Clicked() {
+					acts.Send()
+				}
+				send.Children(func() { ui.Icon(c, IconArrowUp).FontSize(17).TextColor(t.AccentText) })
+				return
+			}
 			send.Label("Stop").Tooltip("Stop")
 			send.Background(t.Text)
 			if send.Clicked() {

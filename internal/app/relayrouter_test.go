@@ -459,6 +459,124 @@ func TestRouteDecisionHybrid(t *testing.T) {
 	})
 }
 
+// TestRelayInterjection delivers the user's mid-relay message to the
+// next member: it lands in the transcript while the coordinator thinks
+// and rides the next handoff prompt.
+func TestRelayInterjection(t *testing.T) {
+	release := make(chan struct{})
+	a, th, srv, bodies := routerRelayFixture(t, release,
+		[]string{"alpha", "beta"},
+		`{"next":"B","reason":"after the user's note"}`)
+	defer srv.Close()
+	a.current = "t1"
+	a.startTurn(th, "plan the thing")
+	waitTurn(t, a, th, 1) // A settled; the coordinator is thinking
+
+	a.draft = "focus on the security angle"
+	a.send()
+	a.update(func() {
+		if a.draft != "" {
+			t.Fatal("the interjection left the draft behind")
+		}
+	})
+	if len(th.Messages) != 3 || th.Messages[2].Role != "user" || th.Messages[2].Text != "focus on the security angle" {
+		t.Fatalf("the interjection never joined the transcript: %+v", th.Messages)
+	}
+	close(release) // the coordinator answers; B is dispatched with the user's words
+	waitTurn(t, a, th, 3)
+	if !strings.Contains((*bodies)[1], "focus on the security angle") {
+		t.Fatal("B never saw the user's interjection")
+	}
+	if !strings.Contains((*bodies)[1], "The user added while the panel was talking") {
+		t.Fatal("B was not told the words came mid-relay")
+	}
+}
+
+// TestRelayNotInterjectable pins the negative: a sequence relay and a
+// solo turn keep the old behavior — a send during a running turn is
+// dropped and the draft stays.
+func TestRelayNotInterjectable(t *testing.T) {
+	a := newTestApp(t)
+	a.agents = []Agent{
+		{ID: "default", Name: "Default"},
+		{ID: "ag-a", Name: "A"},
+		{ID: "ag-team", Name: "Team", Panel: []string{"A"}}, // sequence
+	}
+	th := &Thread{ID: "t1", ProjectID: "default", AgentID: "ag-team"}
+	a.threads = append(a.threads, th)
+	a.runStart("t1", func() {})
+	a.groupQueue["t1"] = &relayState{queue: []string{}, rounds: 1, start: time.Now()}
+	a.interject(th, "hello?")
+	if len(th.Messages) != 0 {
+		t.Fatal("a sequence relay took an interjection")
+	}
+	// A solo turn has no relay state at all.
+	th2 := &Thread{ID: "t2", ProjectID: "default"}
+	a.threads = append(a.threads, th2)
+	a.interject(th2, "hello?")
+	if len(th2.Messages) != 0 {
+		t.Fatal("a solo turn took an interjection")
+	}
+}
+
+// TestRelayGuards walks the configurable stops: each guard ends the
+// relay with a note saying which one fired (spec/relay-router.md).
+func TestRelayGuards(t *testing.T) {
+	cases := []struct {
+		name  string
+		ag    Agent
+		st    relayState
+		value string // the note fragment the fired guard must carry
+	}{
+		{"round limit", Agent{PanelMaxRounds: 2},
+			relayState{rounds: 2, start: time.Now()}, "round limit (2)"},
+		{"token budget", Agent{PanelMaxTokens: 100},
+			relayState{rounds: 1, tokens: 150, start: time.Now()}, "token budget (150 of 100)"},
+		{"timeout", Agent{PanelTimeout: 10},
+			relayState{rounds: 1, start: time.Now().Add(-time.Minute)}, "timed out after 10s"},
+		{"stall default", Agent{},
+			relayState{rounds: 1, last: "A", sameStreak: 3, start: time.Now()}, `stalled on "A" for 3`},
+		{"stall custom", Agent{PanelStallRounds: 2},
+			relayState{rounds: 1, last: "B", sameStreak: 2, start: time.Now()}, `stalled on "B" for 2`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a := newTestApp(t)
+			a.agents = []Agent{
+				{ID: "default", Name: "Default"},
+				{ID: "ag-a", Name: "A"},
+				{ID: "ag-team", Name: "Team", Panel: []string{"A"}, PanelRoute: "router"},
+			}
+			for i := range a.agents {
+				if a.agents[i].ID == "ag-team" {
+					a.agents[i].PanelMaxRounds = tc.ag.PanelMaxRounds
+					a.agents[i].PanelStallRounds = tc.ag.PanelStallRounds
+					a.agents[i].PanelMaxTokens = tc.ag.PanelMaxTokens
+					a.agents[i].PanelTimeout = tc.ag.PanelTimeout
+				}
+			}
+			now := time.Now()
+			th := &Thread{ID: "t1", ProjectID: "default", AgentID: "ag-team", Created: now, Updated: now,
+				Messages: []Message{{ID: "m0", Role: "assistant", AgentID: "ag-a", Text: "settled", At: now}}}
+			a.threads = append(a.threads, th)
+			a.runStart("t1", func() {})
+			st := tc.st
+			a.groupQueue["t1"] = &st
+
+			a.routeRelay(th, 0)
+
+			a.update(func() {
+				if a.isRunning("t1") || a.groupQueue["t1"] != nil {
+					t.Fatal("the guard did not end the relay")
+				}
+			})
+			if note := noteText(th.Messages[0]); !strings.Contains(note, tc.value) {
+				t.Fatalf("note = %q, want it to carry %q", note, tc.value)
+			}
+		})
+	}
+}
+
 // TestRouterRelayFollowsCoordinator runs the relay end to end against
 // the fake members and the fake coordinator.
 func TestRouterRelayFollowsCoordinator(t *testing.T) {
@@ -504,7 +622,7 @@ func TestRouterRelayFollowsCoordinator(t *testing.T) {
 	if note := noteText(th.Messages[2]); !strings.Contains(note, "all done") {
 		t.Fatalf("the coordinator's end reason never surfaced: %q", note)
 	}
-	for time.Now().Before(deadline) {
+	for deadline := time.Now().Add(500 * time.Millisecond); time.Now().Before(deadline); {
 		if len(th.Messages) > 3 {
 			t.Fatal("the relay continued past the coordinator's end")
 		}

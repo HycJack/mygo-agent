@@ -105,6 +105,17 @@ type Agent struct {
 	// dispatch in router mode; zero defaults to 8. Sequence mode ignores
 	// it — a sequence relay is exactly one reply per member.
 	PanelMaxRounds int `json:"panel_max_rounds,omitzero"`
+	// PanelStallRounds caps consecutive replies from the same member
+	// before the relay is force-ended (two agents complimenting each
+	// other in a loop); zero defaults to 3.
+	PanelStallRounds int `json:"panel_stall_rounds,omitzero"`
+	// PanelMaxTokens is the routed relay's total token budget across all
+	// its members within one user turn; zero disables the budget.
+	PanelMaxTokens int `json:"panel_max_tokens,omitzero"`
+	// PanelTimeout bounds the whole routed relay in wall-clock seconds;
+	// zero disables it. A hung member is already bounded by the
+	// per-request timeouts; this bounds the relay as a whole.
+	PanelTimeout int `json:"panel_timeout,omitzero"`
 	// RouterProvider and RouterModel pick the coordinator model of a
 	// router relay — a cheap local model is the point. Either empty
 	// follows the app's selection.
