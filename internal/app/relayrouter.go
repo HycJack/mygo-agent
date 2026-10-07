@@ -204,7 +204,10 @@ func (a *app) askRouter(snap panelSnapshot) {
 			return
 		}
 		if route.Next == "" {
-			a.endRelay(th, "") // the coordinator says the work is done
+			// The coordinator says the work is done — the reason (chat
+			// wire: its own words; decision wire: the scored p(done)) is
+			// why the relay stopped, so it lands as a note.
+			a.endRelay(th, route.Reason)
 			return
 		}
 		next := a.memberByName(a.agentFor(th), route.Next)

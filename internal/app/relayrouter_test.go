@@ -381,18 +381,46 @@ func TestRouterRelayFollowsCoordinator(t *testing.T) {
 	if !strings.Contains((*bodies)[1], "handed the floor") {
 		t.Fatal("B never learned why the floor came to it")
 	}
-	// The coordinator ended the relay: no third reply, nothing running.
+	// The coordinator ended the relay — and said so on the transcript:
+	// no third reply, the reason lands as a note, nothing running.
 	a.update(func() {
 		if a.isRunning("t1") || a.groupQueue["t1"] != nil {
 			t.Fatal("the relay left state behind")
 		}
 	})
+	if note := noteText(th.Messages[2]); !strings.Contains(note, "all done") {
+		t.Fatalf("the coordinator's end reason never surfaced: %q", note)
+	}
 	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		if len(th.Messages) > 3 {
 			t.Fatal("the relay continued past the coordinator's end")
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestGroupDialogStartsRouted pins the group dialog's default: a group
+// created there routes (spec/relay-router.md) — a bare panel would run
+// one sequence pass and stop, which is exactly the stall the router
+// exists to fix.
+func TestGroupDialogStartsRouted(t *testing.T) {
+	a := newTestApp(t)
+	a.agents = []Agent{
+		{ID: "ag-a", Name: "A"},
+		{ID: "ag-b", Name: "B"},
+	}
+	a.groupDraftName = "设计组"
+	a.groupDraftOn["ag-a"] = true
+	a.groupDraftOn["ag-b"] = true
+	a.startGroupChat()
+
+	group := a.agentByName("设计组")
+	if group == nil || len(group.Panel) != 2 {
+		t.Fatalf("the group profile was not created: %+v", group)
+	}
+	if group.PanelRoute != "router" {
+		t.Fatalf("the group defaults to %q, want router", group.PanelRoute)
 	}
 }
 

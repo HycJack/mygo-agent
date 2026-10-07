@@ -470,7 +470,11 @@ func (a *app) startGroupChat() {
 	if name == "" {
 		name = "Group"
 	}
-	ag := Agent{ID: "ag-" + uid(), Name: name, Panel: members}
+	// A group chat is the dynamic kind of relay — the dialog exists so
+	// the members can take turns on their own — so it routes (spec/
+	// relay-router.md). The coordinator inherits the app's provider and
+	// model; a hand-configured profile can pick a cheaper one.
+	ag := Agent{ID: "ag-" + uid(), Name: name, Panel: members, PanelRoute: "router"}
 	a.agents = append(a.agents, ag)
 	a.activeAgent = ag.ID
 	a.groupDrafting = false
