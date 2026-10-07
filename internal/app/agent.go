@@ -286,7 +286,7 @@ func (a *app) finish(th *Thread, at int, errText string) {
 			prompt = fmt.Sprintf("You are %s in a panel of agents. The conversation so far:\n\n%s\n\n%s",
 				next.Name, a.panelDigest(th, at, 8<<10), panelNudge)
 		}
-		a.dispatchParticipant(th, prompt, at, next)
+		a.dispatchParticipant(th, prompt, at, panelMemberAgent(next))
 	})
 }
 

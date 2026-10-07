@@ -326,7 +326,25 @@ func (a *app) dispatchRouterMember(th *Thread, next *Agent, reason string) {
 		prompt = fmt.Sprintf("You are %s in a panel of agents. The conversation so far:\n\n%s\n\n%s",
 			next.Name, a.panelDigest(th, at, 8<<10), prompt)
 	}
-	a.dispatchParticipant(th, prompt, at, next)
+	a.dispatchParticipant(th, prompt, at, panelMemberAgent(next))
+}
+
+// panelProtocol is appended to every panel member's system prompt at
+// dispatch: the members' own prompts are written as if talking to a
+// user, and left alone they end replies by handing choices back to the
+// user — which stalls the panel the router exists to drive. The panel
+// decides; the user is asked only when a real business trade-off needs
+// them.
+const panelProtocol = "\n\n[Panel protocol] You are a member of a multi-agent panel, with a routing coordinator deciding who speaks next. When you hit a choice: give a clear recommendation (option, rationale, cost) and let the panel carry it forward — do not end your reply by handing the question back to the user. Reserve the user only for a genuine business trade-off they must own, and state your recommendation even then."
+
+// panelMemberAgent returns the member's profile with the panel
+// protocol appended. A copy: the profile itself is untouched, so the
+// routing roster (promptHead) and the settings dialog keep reading the
+// clean prompt.
+func panelMemberAgent(ag *Agent) *Agent {
+	c := *ag
+	c.SystemPrompt = strings.TrimSpace(ag.SystemPrompt) + panelProtocol
+	return &c
 }
 
 // routeDecision asks the coordinator which member speaks next. Three
@@ -428,8 +446,9 @@ func routeDecisionSystemone(ctx context.Context, snap panelSnapshot, brief strin
 	}
 	questions := map[string]any{
 		"done": map[string]any{
-			"type":         "noul",
-			"instructions": "Has the user's request been fully addressed, so another member reply would add nothing?",
+			"type": "noul",
+			"instructions": "Has the user's request been fully addressed, so another member reply would add nothing? " +
+				"A member ending with a question or a set of open options does NOT mean done: if any panel member can decide or answer it, the relay continues.",
 		},
 	}
 	if len(snap.roster) >= 2 {
@@ -550,7 +569,9 @@ Write a brief for the routing decision, 2-3 sentences, in the user's
 language: what stage the work is at, what the conversation has
 established, and what the panel should do next — or, if the user's
 request has been fully addressed and another reply would add nothing,
-say so plainly. Respond ONLY with a JSON object:
+say so plainly. If a member ended with a question or open options, the
+brief should name them and say which member can decide or answer.
+Respond ONLY with a JSON object:
 {"brief": "<your brief>"}`)
 	return b.String()
 }
@@ -603,7 +624,9 @@ Decide which member should speak next. Respond ONLY with a JSON object:
 Use {"next": "", "reason": "..."} when the user's request has been fully
 addressed and another reply would add nothing. You may pick the same
 member again if they should continue. Never pick a member whose duties
-do not match what the conversation needs next.`)
+do not match what the conversation needs next. A member ending with a
+question or open options is not done: route it to whoever is best
+placed to decide or answer, unless only the user can.`)
 	return b.String()
 }
 

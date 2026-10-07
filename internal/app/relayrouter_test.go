@@ -260,6 +260,10 @@ func TestRouteDecisionCoversTheWire(t *testing.T) {
 			!strings.Contains((*bodies)[0], "A: hello") {
 			t.Fatalf("the brief lacks the roster or the transcript: %s", (*bodies)[0])
 		}
+		// Open choices left by a member are routable work, not an end.
+		if !strings.Contains((*bodies)[0], "open options") {
+			t.Fatal("the advisor was never told to flag pending choices")
+		}
 	})
 	t.Run("unknown name is corrected once", func(t *testing.T) {
 		srv, bodies := routerFixture(t, nil, `{"next":"Ghost"}`, `{"next":"B"}`)
@@ -601,6 +605,11 @@ func TestRouterRelayFollowsCoordinator(t *testing.T) {
 	}
 	if !strings.Contains((*bodies)[1], "handed the floor") {
 		t.Fatal("B never learned why the floor came to it")
+	}
+	// Members speak under the panel protocol: they decide and recommend
+	// instead of handing choices back to the user.
+	if !strings.Contains((*bodies)[1], "do not end your reply by handing the question back to the user") {
+		t.Fatal("the panel protocol never reached the member")
 	}
 	// The coordinator ended the relay — and said so on the transcript:
 	// no third reply, the reason lands as a note, nothing running. The
