@@ -83,6 +83,49 @@ func streamChat(ctx context.Context, cfg StreamConfig, onText func(delta string)
 	return streamChatCompletions(ctx, cfg, onText)
 }
 
+// streamChatRetry wraps streamChat with one safe replay. doWithRetry
+// never replays a body — once a response streams, nothing is retried —
+// so a provider that drops the SSE stream mid-flight ("unexpected
+// EOF") fails the whole turn. If the stream died before ANY delta
+// reached the transcript the call is replayable: the projector has
+// nothing to duplicate. Once text is out, the turn fails as before —
+// a partial reply cannot be re-sent without duplicating it.
+func streamChatRetry(ctx context.Context, cfg StreamConfig, onText func(string)) (assistantResult, error) {
+	emitted := false
+	wrapped := func(delta string) {
+		emitted = true
+		onText(delta)
+	}
+	var res assistantResult
+	var err error
+	for attempt := 0; attempt < 2; attempt++ {
+		if attempt > 0 {
+			select {
+			case <-time.After(500 * time.Millisecond):
+			case <-ctx.Done():
+				return res, ctx.Err()
+			}
+		}
+		res, err = streamChat(ctx, cfg, wrapped)
+		if err == nil {
+			return res, nil
+		}
+		if emitted || ctx.Err() != nil || !replayableStreamErr(err) {
+			return res, err
+		}
+	}
+	return res, err
+}
+
+// replayableStreamErr reports whether the error means the stream died
+// on the wire before delivering anything durable — a dropped
+// connection, not a rejected request.
+func replayableStreamErr(err error) bool {
+	return errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) ||
+		strings.Contains(err.Error(), "unexpected EOF") ||
+		strings.Contains(err.Error(), "connection reset")
+}
+
 // streamChatCompletions calls POST {base}/chat/completions with
 // stream:true and feeds deltas to onText. It returns the assembled
 // assistant message.

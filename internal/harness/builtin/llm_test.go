@@ -77,3 +77,57 @@ func TestStreamChatDoesNotRetryClientErrors(t *testing.T) {
 		t.Fatalf("a 400 was sent %d times", n)
 	}
 }
+
+// TestStreamChatRetryReplaysCleanDrop: a provider that drops the SSE
+// stream before any delta was delivered is replayed whole — the "for
+// one replay only" rule that mirrors doWithRetry's no-replay rule.
+func TestStreamChatRetryReplaysCleanDrop(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/event-stream")
+		if attempts.Add(1) == 1 {
+			io.WriteString(w, ": keepalive\n\n")
+			w.(http.Flusher).Flush()
+			panic(http.ErrAbortHandler) // the wire dies before any delta
+		}
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"recovered\"}}]}\n\ndata: [DONE]\n\n")
+	}))
+	defer srv.Close()
+	var got strings.Builder
+	res, err := streamChatRetry(t.Context(), StreamConfig{
+		BaseURL: srv.URL, Model: "m",
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+	}, func(delta string) { got.WriteString(delta) })
+	if err != nil {
+		t.Fatalf("a clean mid-stream drop must be replayed: %v", err)
+	}
+	if res.Content != "recovered" || got.String() != "recovered" || attempts.Load() != 2 {
+		t.Fatalf("content %q streamed %q after %d attempts", res.Content, got.String(), attempts.Load())
+	}
+}
+
+// TestStreamChatRetryNeverDuplicates: once a delta reached the
+// transcript the turn is no longer replayable — a retry would
+// duplicate the text, so the drop fails the turn as before.
+func TestStreamChatRetryNeverDuplicates(t *testing.T) {
+	var attempts atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		attempts.Add(1)
+		w.Header().Set("Content-Type", "text/event-stream")
+		io.WriteString(w, "data: {\"choices\":[{\"delta\":{\"content\":\"par\"}}]}\n\n")
+		w.(http.Flusher).Flush()
+		panic(http.ErrAbortHandler)
+	}))
+	defer srv.Close()
+	var got strings.Builder
+	_, err := streamChatRetry(t.Context(), StreamConfig{
+		BaseURL: srv.URL, Model: "m",
+		Messages: []ChatMessage{{Role: "user", Content: "hi"}},
+	}, func(delta string) { got.WriteString(delta) })
+	if err == nil {
+		t.Fatal("a drop after emission must fail the turn")
+	}
+	if got.String() != "par" || attempts.Load() != 1 {
+		t.Fatalf("streamed %q after %d attempts — the turn was replayed", got.String(), attempts.Load())
+	}
+}

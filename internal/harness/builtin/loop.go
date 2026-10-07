@@ -106,7 +106,7 @@ func Run(ctx context.Context, cfg LoopConfig, history []ChatMessage) ([]ChatMess
 			ReasoningEffort: cfg.ReasoningEffort,
 			ContextWindow:   cfg.ContextWindow,
 		}
-		res, err := streamChat(ctx, scfg, func(delta string) {
+		res, err := streamChatRetry(ctx, scfg, func(delta string) {
 			emit(Event{Kind: EventText, TextDelta: delta})
 		})
 		if err != nil {
@@ -433,7 +433,9 @@ func autoCompact(ctx context.Context, cfg LoopConfig, msgs []ChatMessage, lastPr
 			{Role: "user", Content: text},
 		},
 	}
-	res, err := streamChat(ctx, scfg, func(string) {})
+	// The deltas are discarded, so the call is replayable however far
+	// the stream got before the provider dropped it.
+	res, err := streamChatRetry(ctx, scfg, func(string) {})
 	if err != nil || strings.TrimSpace(res.Content) == "" {
 		return nil, 0, 0, false
 	}
