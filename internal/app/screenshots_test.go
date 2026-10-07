@@ -87,6 +87,28 @@ func TestScreenshots(t *testing.T) {
 	tt.Frame()
 	writeShot(t, tt, dir, "02-thread")
 
+	// 2b. Group relay thread: 成员头像（纯色+首字母）与归属标签。
+	a.agents = append(a.agents,
+		Agent{ID: "ag-m1", Name: "Planner", Emoji: "🧭"},
+		Agent{ID: "ag-m2", Name: "Coder", Emoji: "⚒"},
+		Agent{ID: "ag-team", Name: "Team", Panel: []string{"Planner", "Coder"}},
+	)
+	now := time.Now()
+	gth := &Thread{ID: "t-group", ProjectID: "default", AgentID: "ag-team",
+		Title: "Group relay: plan and build", Created: now, Updated: now}
+	gth.Messages = []Message{
+		{ID: uid(), Role: "user", Text: "Plan the retry fix, then implement it.", At: now.Add(-2 * time.Minute)},
+		{ID: uid(), Role: "assistant", AgentID: "ag-m1", At: now.Add(-1 * time.Minute),
+			Text: "Plan: first reproduce the flake, then make the counter atomic."},
+		{ID: uid(), Role: "assistant", AgentID: "ag-m2", At: now,
+			Text: "Implemented: the counter is atomic now, tests pass."},
+	}
+	a.threads = append(a.threads, gth)
+	a.current = gth.ID
+	tt.Frame()
+	writeShot(t, tt, dir, "02b-thread-group")
+	a.current = th.ID
+
 	// 3. Thread with the workspace panel open.
 	a.wsOpen = true
 	a.refreshGit()
@@ -131,12 +153,12 @@ func TestScreenshots(t *testing.T) {
 	// 7. Viewer: the thread trace (synthesized — the seeded task never
 	// actually ran).
 	a.current = th.ID
-	now := time.Now()
-	a.appendTrace(th, traceEvent{At: now.Add(-90 * time.Second), Kind: "tool_start",
+	traceAt := time.Now()
+	a.appendTrace(th, traceEvent{At: traceAt.Add(-90 * time.Second), Kind: "tool_start",
 		Tool: "bash", Summary: "$ go test ./internal/outbox/"})
-	a.appendTrace(th, traceEvent{At: now.Add(-88 * time.Second), Kind: "tool_end",
+	a.appendTrace(th, traceEvent{At: traceAt.Add(-88 * time.Second), Kind: "tool_end",
 		Tool: "bash", Ms: 1890, Summary: "FAIL: TestOutboxRetry", Failed: true})
-	a.appendTrace(th, traceEvent{At: now.Add(-60 * time.Second), Kind: "turn",
+	a.appendTrace(th, traceEvent{At: traceAt.Add(-60 * time.Second), Kind: "turn",
 		Ms: 31200, Tokens: 4120, Summary: "3 tool calls · 4120 tokens"})
 	a.openTrace(th)
 	tt.Frame()
