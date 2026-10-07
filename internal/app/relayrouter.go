@@ -78,10 +78,24 @@ type panelSnapshot struct {
 	digest   string
 	at       int // the settled message a routing-end note lands on
 
+	// request is the user's ask this turn serves, and last the member
+	// who spoke before this decision: the "has the request been
+	// addressed" question is unanswerable without knowing the request,
+	// and a tail-bounded digest can lose it.
+	request string
+	last    string
+
+	// The chat side: the chat coordinator, or the hybrid advisor.
 	baseURL string
 	apiKey  string
 	model   string
-	wire    string // "" (chat completions) or "decision" (/v1/systemone)
+	wire    string // "" (chat completions), "decision" or "hybrid" (/v1/systemone)
+
+	// The judge side: the decision model of the decision and hybrid
+	// wires (Ollama's /v1/systemone).
+	judgeBaseURL string
+	judgeAPIKey  string
+	judgeModel   string
 }
 
 // promptHead is a member's duty description for the coordinator: the
@@ -119,6 +133,19 @@ func (a *app) panelSnapshot(th *Thread, ag *Agent, at int) panelSnapshot {
 		limit = routerDecisionDigestLimit
 	}
 	snap.digest = a.panelDigest(th, at, limit)
+	// The turn's own ask, and who spoke last: both go into the decision
+	// state (spec/relay-router.md).
+	for i := at; i >= 0 && i < len(th.Messages); i-- {
+		if th.Messages[i].Role == "user" {
+			snap.request = truncRunes(th.Messages[i].Text, 1000)
+			break
+		}
+	}
+	if st := a.groupQueue[th.ID]; st != nil {
+		snap.last = st.last
+	}
+	// Chat side: the chat coordinator, or the hybrid advisor — the
+	// router fields over the app's.
 	provID, model := a.providerID, a.model
 	if ag.RouterProvider != "" {
 		provID = ag.RouterProvider
@@ -129,6 +156,19 @@ func (a *app) panelSnapshot(th *Thread, ag *Agent, at int) panelSnapshot {
 	snap.model = model
 	if p := a.providerByID(provID); p != nil {
 		snap.baseURL, snap.apiKey = p.BaseURL, p.APIKey
+	}
+	// Judge side: the decision model — explicit judge fields win, then
+	// the router fields themselves (a pure-decision config points the
+	// router fields at the decision model), then the app's.
+	if ag.RouterJudgeProvider != "" {
+		provID = ag.RouterJudgeProvider
+	}
+	if ag.RouterJudgeModel != "" {
+		model = ag.RouterJudgeModel
+	}
+	snap.judgeModel = model
+	if p := a.providerByID(provID); p != nil {
+		snap.judgeBaseURL, snap.judgeAPIKey = p.BaseURL, p.APIKey
 	}
 	return snap
 }
@@ -265,11 +305,12 @@ func (a *app) dispatchRouterMember(th *Thread, next *Agent, reason string) {
 	a.dispatchParticipant(th, prompt, at, next)
 }
 
-// routeDecision asks the coordinator which member speaks next. Two
+// routeDecision asks the coordinator which member speaks next. Three
 // wires share the question (spec/relay-router.md): chat completions
-// with a JSON-reply prompt, and the decision API (/v1/systemone, the
-// tev1 class), whose answers come back constrained and scored instead
-// of freeform. Both degrade to an error the relay ends on.
+// with a JSON-reply prompt; the decision API (/v1/systemone, the tev1
+// class), whose answers come back constrained and scored; and hybrid —
+// a big chat model writes a situation brief, the decision model makes
+// the final call on it. All degrade to an error the relay ends on.
 func routeDecision(ctx context.Context, snap panelSnapshot) (relayRoute, error) {
 	if snap.baseURL == "" {
 		return relayRoute{}, fmt.Errorf("router provider has no endpoint")
@@ -277,10 +318,37 @@ func routeDecision(ctx context.Context, snap panelSnapshot) (relayRoute, error) 
 	if len(snap.roster) == 0 {
 		return relayRoute{}, fmt.Errorf("the panel is empty")
 	}
-	if snap.wire == "decision" {
-		return routeDecisionSystemone(ctx, snap)
+	switch snap.wire {
+	case "decision":
+		return routeDecisionSystemone(ctx, snap, "")
+	case "hybrid":
+		return routeDecisionHybrid(ctx, snap)
+	default:
+		return routeDecisionChat(ctx, snap)
 	}
-	return routeDecisionChat(ctx, snap)
+}
+
+// routeDecisionHybrid is the two-level coordinator: the advisor (the
+// big chat model) comprehends — stage, what is established, what is
+// needed next — and the judge (the decision model) makes the final,
+// scored call on the brief. The advisor is a booster, not a dependency:
+// if it fails, the judge still decides on the digest state rather than
+// the relay dying for its sake.
+func routeDecisionHybrid(ctx context.Context, snap panelSnapshot) (relayRoute, error) {
+	brief, err := routerBrief(ctx, snap)
+	if err != nil {
+		return routeDecisionSystemone(ctx, snap, "")
+	}
+	route, err := routeDecisionSystemone(ctx, snap, brief)
+	if err != nil {
+		return relayRoute{}, err
+	}
+	if route.Next != "" {
+		// The handoff carries the advisor's comprehension plus the
+		// judge's scores: the member gets both, the note shows the head.
+		route.Reason = truncRunes(brief, 600) + " | " + route.Reason
+	}
+	return route, nil
 }
 
 // routeDecisionChat is the chat wire: temperature 0, JSON out. A
@@ -317,17 +385,22 @@ func routeDecisionChat(ctx context.Context, snap panelSnapshot) (relayRoute, err
 	return relayRoute{}, lastErr
 }
 
-// routeDecisionSystemone is the decision wire: the Jev systemone API
-// (Ollama's /v1/systemone, the tev1 class). The panel is a choice
-// question — options ARE the member names, so nothing off-roster can
-// come back — and ending the relay is its own noul question, scored in
-// the same call. A panel of one needs no choice question: the sole
-// member speaks unless the relay is done. The API allows 2–26 choice
-// options, so a larger panel is a degrade.
-func routeDecisionSystemone(ctx context.Context, snap panelSnapshot) (relayRoute, error) {
+// routeDecisionSystemone is the judge: the Jev systemone API (Ollama's
+// /v1/systemone, the tev1 class). The panel is a choice question —
+// options ARE the member names, so nothing off-roster can come back —
+// and ending the relay is its own noul question, scored in the same
+// call. A panel of one needs no choice question: the sole member
+// speaks unless the relay is done. The API allows 2–26 choice options,
+// so a larger panel is a degrade. A non-empty brief is the hybrid
+// advisor's comprehension: it replaces the raw digest as what the
+// judge reads.
+func routeDecisionSystemone(ctx context.Context, snap panelSnapshot, brief string) (relayRoute, error) {
 	if len(snap.roster) > maxDecisionOptions {
 		return relayRoute{}, fmt.Errorf("panel of %d exceeds the decision router's %d options",
 			len(snap.roster), maxDecisionOptions)
+	}
+	if snap.judgeBaseURL == "" {
+		return relayRoute{}, fmt.Errorf("router judge has no endpoint")
 	}
 	questions := map[string]any{
 		"done": map[string]any{
@@ -347,14 +420,14 @@ func routeDecisionSystemone(ctx context.Context, snap panelSnapshot) (relayRoute
 		}
 	}
 	body, err := json.Marshal(map[string]any{
-		"model":     snap.model,
-		"state":     decisionState(snap),
+		"model":     snap.judgeModel,
+		"state":     decisionState(snap, brief),
 		"questions": questions,
 	})
 	if err != nil {
 		return relayRoute{}, err
 	}
-	data, err := routerPost(ctx, snap, "/systemone", body)
+	data, err := routerPost(ctx, snap.judgeBaseURL, snap.judgeAPIKey, "/systemone", body)
 	if err != nil {
 		return relayRoute{}, err
 	}
@@ -390,10 +463,13 @@ func routeDecisionSystemone(ctx context.Context, snap panelSnapshot) (relayRoute
 		Reason: fmt.Sprintf("p=%.2f, confidence %.2f", p, pick.Confidence)}, nil
 }
 
-// decisionState is the decision router's view: members with duties and
-// the bounded transcript tail, structured so the model reads roles
-// rather than guessing them out of prose.
-func decisionState(snap panelSnapshot) map[string]any {
+// decisionState is the judge's view. The members ride as structured
+// criteria; the situation is either the hybrid advisor's brief (who has
+// already read the full digest) or the raw bounded digest, and the
+// turn's own request and the last speaker ride along either way — the
+// "has the request been addressed" question is unanswerable without
+// the request.
+func decisionState(snap panelSnapshot, brief string) map[string]any {
 	members := make([]map[string]any, len(snap.roster))
 	for i, m := range snap.roster {
 		desc := any(m.Desc)
@@ -402,7 +478,77 @@ func decisionState(snap panelSnapshot) map[string]any {
 		}
 		members[i] = map[string]any{"name": m.Name, "duties": desc}
 	}
-	return map[string]any{"members": members, "conversation": snap.digest}
+	state := map[string]any{"members": members}
+	if snap.request != "" {
+		state["request"] = snap.request
+	}
+	if snap.last != "" {
+		state["last_speaker"] = snap.last
+	}
+	if brief != "" {
+		state["brief"] = brief
+	} else {
+		state["conversation"] = snap.digest
+	}
+	return state
+}
+
+// routerBrief asks the hybrid advisor — the big chat model — for the
+// situation brief the judge decides on: what stage the work is at,
+// what has been established, what the panel should do next (or why it
+// is finished). The advisor sees the full chat-sized digest the judge's
+// 2k-token window cannot.
+func routerBrief(ctx context.Context, snap panelSnapshot) (string, error) {
+	msgs := []map[string]string{
+		{"role": "system", "content": advisorSystemPrompt(snap)},
+		{"role": "user", "content": "Write the brief now. Answer with the JSON object only."},
+	}
+	content, err := routerChat(ctx, snap, msgs)
+	if err != nil {
+		return "", err
+	}
+	return parseBrief(content)
+}
+
+// advisorSystemPrompt briefs the advisor: roster, the user's ask, the
+// transcript tail.
+func advisorSystemPrompt(snap panelSnapshot) string {
+	var b strings.Builder
+	b.WriteString("You advise the coordinator of a panel of AI agents. Roster:\n")
+	for _, m := range snap.roster {
+		fmt.Fprintf(&b, "- %s: %s\n", m.Name, m.Desc)
+	}
+	if snap.request != "" {
+		b.WriteString("\nThe user's request:\n" + snap.request)
+	}
+	b.WriteString("\nConversation so far:\n" + snap.digest + `
+Write a brief for the routing decision, 2-3 sentences, in the user's
+language: what stage the work is at, what the conversation has
+established, and what the panel should do next — or, if the user's
+request has been fully addressed and another reply would add nothing,
+say so plainly. Respond ONLY with a JSON object:
+{"brief": "<your brief>"}`)
+	return b.String()
+}
+
+// parseBrief reads the advisor's answer: strict JSON first, then the
+// first {...} span — same tolerance the chat wire gets.
+func parseBrief(s string) (string, error) {
+	var r struct {
+		Brief string `json:"brief"`
+	}
+	s = strings.TrimSpace(s)
+	if err := json.Unmarshal([]byte(s), &r); err == nil && r.Brief != "" {
+		return r.Brief, nil
+	}
+	if i := strings.IndexByte(s, '{'); i >= 0 {
+		if j := strings.LastIndexByte(s, '}'); j > i {
+			if err := json.Unmarshal([]byte(s[i:j+1]), &r); err == nil && r.Brief != "" {
+				return r.Brief, nil
+			}
+		}
+	}
+	return "", fmt.Errorf("advisor reply had no brief: %.80s", s)
 }
 
 // routeNameKnown reports whether next is a roster name or the empty
@@ -437,12 +583,12 @@ do not match what the conversation needs next.`)
 	return b.String()
 }
 
-// routerPost is the HTTP half both router wires share: one bounded
-// POST against the coordinator's OpenAI-compatible endpoint, with the
-// transient-failure retry the built-in loop keeps. path is relative to
-// the provider's base URL ("​/chat/completions", "/systemone").
-func routerPost(ctx context.Context, snap panelSnapshot, path string, body []byte) ([]byte, error) {
-	url := strings.TrimRight(snap.baseURL, "/") + path
+// routerPost is the HTTP half every router wire shares: one bounded
+// POST against an OpenAI-compatible endpoint, with the transient-
+// failure retry the built-in loop keeps. path is relative to the base
+// URL ("/chat/completions", "/systemone").
+func routerPost(ctx context.Context, baseURL, apiKey, path string, body []byte) ([]byte, error) {
+	url := strings.TrimRight(baseURL, "/") + path
 	client := &http.Client{Timeout: 30 * time.Second}
 	var lastErr error
 	for attempt := 0; attempt < 2; attempt++ {
@@ -458,8 +604,8 @@ func routerPost(ctx context.Context, snap panelSnapshot, path string, body []byt
 			return nil, err
 		}
 		req.Header.Set("Content-Type", "application/json")
-		if snap.apiKey != "" {
-			req.Header.Set("Authorization", "Bearer "+snap.apiKey)
+		if apiKey != "" {
+			req.Header.Set("Authorization", "Bearer "+apiKey)
 		}
 		resp, err := client.Do(req)
 		if err != nil {
@@ -496,7 +642,7 @@ func routerChat(ctx context.Context, snap panelSnapshot, msgs []map[string]strin
 	if err != nil {
 		return "", err
 	}
-	data, err := routerPost(ctx, snap, "/chat/completions", body)
+	data, err := routerPost(ctx, snap.baseURL, snap.apiKey, "/chat/completions", body)
 	if err != nil {
 		return "", err
 	}

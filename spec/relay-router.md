@@ -55,19 +55,30 @@ Ollama 作为普通 Provider 注册（设置页或手编 config.json，无需新
 // decision 线:Jev 决策 API,答案受约束、带概率(同一个 provider 即可)
 // agent: {"panel_route": "router", "router_provider": "prov-ollama",
 //         "router_model": "tev1", "router_wire": "decision"}
+
+// hybrid 线(推荐):大模型写态势简报 + 决策模型做最终裁决
+// agent: {"panel_route": "router",
+//         "router_provider": "<big-chat-provider>", "router_model": "<big-model>",
+//         "router_wire": "hybrid",
+//         "router_judge_provider": "prov-ollama", "router_judge_model": "tev1"}
 ```
 
 成员职责描述：路由名册直接取各成员 `SystemPrompt` 的首行/头部（约 160 字符），**不新增描述字段**；路由质量不够时再考虑加 `panel_blurb`（P3 备选）。
 
-## 3.5 决策线（decision wire，tev1 类模型）
+## 3.5 决策线（decision wire，tev1 类模型）与混合线（hybrid）
 
-`panel_route: "router"` 的协调者默认走 chat completions + JSON 提示词；Agent 另有 `router_wire: "decision"`，切换到 Jev 决策 API（Ollama ≥ 0.35 的 `/v1/systemone`，本地 `ollama.com/library/tev1` 一族）：
+`panel_route: "router"` 的协调者默认走 chat completions + JSON 提示词。Agent 另有两个新字段控制协调者形态：
 
-- **请求**：`POST {base}/v1/systemone`（base 即 Provider 的 base_url，如 `http://localhost:11434/v1`）。`state` 为结构化对象 `{"members":[{"name","duties"}…],"conversation":<摘要>}`；`questions` 两题——`done`（noul：用户请求是否已完全解决）与 `next`（choice：criteria 即成员名 → 职责）。
-- **答案约束**：choice 的选项就是成员名，回答不可能跑到名册之外（chat 线的纠正重试在 decision 线不存在）；`noul` 的值即概率，`p(done) ≥ 0.5` 结束接力。单一成员的 panel 不出 choice 题（API 要求 2–26 个选项），done 为否则唯一成员继续发言；成员多于 26 个是降级。
-- **预算**：tev1 类的可用上下文约 2k token，decision 线的摘要上限压到 2500 字节（chat 线 6 KiB）；成员职责用 `promptHead` 160 字符。
-- **理由呈现**：概率与置信度进 note 与交接提示词——`"p=0.83, confidence 0.56"`。
-- **调参经验**（真机冒烟，2026-10）：对单薄摘要 tev1 倾向判 done（p≈0.53）；若实际使用中接力过早结束，优先加厚摘要、必要时再考虑把 `doneProbability` 做成配置。
+- **`router_wire: "decision"`** — Jev 决策 API（Ollama ≥ 0.35 的 `/v1/systemone`，本地 `ollama.com/library/tev1` 一族）：
+- **`router_wire: "hybrid"`** — 两级协调：**大模型（advisor）理解，决策模型（judge）裁决**。advisor（`router_provider/router_model`，chat 线，看 6 KiB 全摘要）写 2-3 句态势简报（当前阶段、已确立的结论、下一步该做什么/为何可以结束）；judge（`router_judge_provider/router_judge_model`，空则回退 router 字段）拿简报出 choice/noul 两题做最终裁决。advisor 失败不终止接力——回退为 decision 线的摘要态。
+
+decision 线要点：
+
+- **请求**：`POST {base}/v1/systemone`（judge 侧 Provider 的 base_url，如 `http://localhost:11434/v1`）。state 为结构化对象：members（名字→职责）、**request（本回合的用户原始请求）**、last_speaker、以及 brief（hybrid）或 conversation（decision 的摘要尾部）。
+- **答案约束**：choice 的选项就是成员名，回答不可能跑到名册之外（chat 线的纠正重试在 decision 线不存在）；`noul` 的值即概率，`p(done) ≥ 0.5` 结束接力。单一成员的 panel 不出 choice 题（API 要求 2–26 个选项）；成员多于 26 个是降级。
+- **预算**：tev1 类的可用上下文约 2k token——decision 线摘要上限 2500 字节，hybrid 线 judge 读简报不读原始摘要；成员职责用 `promptHead` 160 字符。
+- **理由呈现**：judge 的概率与置信度进 note 与交接提示词；hybrid 再拼上 advisor 简报（note 截 200 字符，交接词完整）。
+- **调参经验**（真机冒烟，2026-10）：纯 decision 线对单薄摘要 tev1 倾向判 done（p≈0.53）——根因是尾部摘要可能丢掉用户原始请求，"请求是否已解决"无从判断。hybrid 线把 request + 简报喂给 judge，正是为此；若仍过早结束，优先加重 done 题指令，必要时把 `doneProbability` 做成配置。
 
 ## 4. 路由器实现（新文件 `internal/app/relayrouter.go`）
 

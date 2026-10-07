@@ -102,6 +102,21 @@ func decisionSnapshot(baseURL string) panelSnapshot {
 	snap := testSnapshot(baseURL)
 	snap.wire = "decision"
 	snap.model = "tev1"
+	snap.judgeBaseURL, snap.judgeAPIKey, snap.judgeModel = baseURL, "k", "tev1"
+	snap.request = "review my pr"
+	snap.last = "A"
+	return snap
+}
+
+// hybridSnapshot wires the two-level coordinator: the advisor (a big
+// chat model) on the chat endpoint, the judge (tev1) on the decision
+// endpoint.
+func hybridSnapshot(advisorURL, judgeURL string) panelSnapshot {
+	snap := testSnapshot(advisorURL)
+	snap.wire = "hybrid"
+	snap.judgeBaseURL, snap.judgeAPIKey, snap.judgeModel = judgeURL, "k", "tev1"
+	snap.request = "review my pr"
+	snap.last = "A"
 	return snap
 }
 
@@ -356,6 +371,94 @@ func TestLiveDecisionRouter(t *testing.T) {
 	}
 }
 
+// TestRouteDecisionHybrid covers the two-level coordinator: the
+// advisor's brief rides the judge's state, a dead advisor degrades to
+// the digest state, and the scores still make the decision.
+func TestRouteDecisionHybrid(t *testing.T) {
+	judge := func(t *testing.T, answers map[string]any) (*httptest.Server, *[]string) {
+		return decisionFixture(t, answers)
+	}
+	advisor := func(t *testing.T, content string) (*httptest.Server, *int) {
+		var calls int
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"choices":[{"message":{"content":`+quoteJSON(content)+`}}]}`)
+		}))
+		return srv, &calls
+	}
+	t.Run("brief rides the judge's state", func(t *testing.T) {
+		asrv, advisorCalls := advisor(t, `{"brief":"review is mid-flight; security checks remain"}`)
+		defer asrv.Close()
+		jsrv, bodies := judge(t, map[string]any{
+			"next": map[string]any{"type": "choice", "choice": "B",
+				"probabilities": map[string]float64{"A": 0.3, "B": 0.7}, "confidence": 0.8},
+			"done": map[string]any{"type": "noul", "noul": 0.1},
+		})
+		defer jsrv.Close()
+		route, err := routeDecision(t.Context(), hybridSnapshot(asrv.URL, jsrv.URL))
+		if err != nil || route.Next != "B" {
+			t.Fatalf("route = %+v, err = %v", route, err)
+		}
+		// The member's handoff gets the comprehension AND the scores.
+		if !strings.Contains(route.Reason, "security checks") || !strings.Contains(route.Reason, "0.70") {
+			t.Fatalf("reason lost the brief or the scores: %q", route.Reason)
+		}
+		if *advisorCalls != 1 {
+			t.Fatalf("advisor calls = %d, want 1", *advisorCalls)
+		}
+		var req struct {
+			State map[string]any `json:"state"`
+		}
+		if err := json.Unmarshal([]byte((*bodies)[0]), &req); err != nil {
+			t.Fatal(err)
+		}
+		if req.State["brief"] == nil || req.State["request"] != "review my pr" || req.State["last_speaker"] != "A" {
+			t.Fatalf("the judge's state lacks the brief, the request or the last speaker: %v", req.State)
+		}
+		if _, ok := req.State["conversation"]; ok {
+			t.Fatal("the hybrid judge read the raw digest instead of the brief")
+		}
+	})
+	t.Run("a dead advisor falls back to the digest", func(t *testing.T) {
+		asrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "down", http.StatusInternalServerError)
+		}))
+		defer asrv.Close()
+		jsrv, bodies := judge(t, map[string]any{
+			"next": map[string]any{"type": "choice", "choice": "A",
+				"probabilities": map[string]float64{"A": 0.9, "B": 0.1}, "confidence": 0.6},
+			"done": map[string]any{"type": "noul", "noul": 0.2},
+		})
+		defer jsrv.Close()
+		route, err := routeDecision(t.Context(), hybridSnapshot(asrv.URL, jsrv.URL))
+		if err != nil || route.Next != "A" {
+			t.Fatalf("route = %+v, err = %v", route, err)
+		}
+		var req struct {
+			State map[string]any `json:"state"`
+		}
+		if err := json.Unmarshal([]byte((*bodies)[0]), &req); err != nil {
+			t.Fatal(err)
+		}
+		if req.State["conversation"] == nil || req.State["brief"] != nil {
+			t.Fatalf("the fallback did not judge on the digest: %v", req.State)
+		}
+	})
+	t.Run("done still ends it", func(t *testing.T) {
+		asrv, _ := advisor(t, `{"brief":"everything addressed"}`)
+		defer asrv.Close()
+		jsrv, _ := judge(t, map[string]any{
+			"done": map[string]any{"type": "noul", "noul": 0.95},
+		})
+		defer jsrv.Close()
+		route, err := routeDecision(t.Context(), hybridSnapshot(asrv.URL, jsrv.URL))
+		if err != nil || route.Next != "" || !strings.Contains(route.Reason, "done") {
+			t.Fatalf("route = %+v, err = %v", route, err)
+		}
+	})
+}
+
 // TestRouterRelayFollowsCoordinator runs the relay end to end against
 // the fake members and the fake coordinator.
 func TestRouterRelayFollowsCoordinator(t *testing.T) {
@@ -382,16 +485,25 @@ func TestRouterRelayFollowsCoordinator(t *testing.T) {
 		t.Fatal("B never learned why the floor came to it")
 	}
 	// The coordinator ended the relay — and said so on the transcript:
-	// no third reply, the reason lands as a note, nothing running.
-	a.update(func() {
-		if a.isRunning("t1") || a.groupQueue["t1"] != nil {
-			t.Fatal("the relay left state behind")
+	// no third reply, the reason lands as a note, nothing running. The
+	// end decision is a second router call, so settle before asserting.
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		settled := false
+		a.update(func() {
+			settled = !a.isRunning("t1") && a.groupQueue["t1"] == nil
+		})
+		if settled {
+			break
 		}
-	})
+		if time.Now().After(deadline) {
+			t.Fatal("the relay never settled")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 	if note := noteText(th.Messages[2]); !strings.Contains(note, "all done") {
 		t.Fatalf("the coordinator's end reason never surfaced: %q", note)
 	}
-	deadline := time.Now().Add(500 * time.Millisecond)
 	for time.Now().Before(deadline) {
 		if len(th.Messages) > 3 {
 			t.Fatal("the relay continued past the coordinator's end")
