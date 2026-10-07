@@ -114,6 +114,10 @@ func TestScreenshots(t *testing.T) {
 	writeShot(t, tt, dir, "05b-settings-tools")
 	a.settingsTab = "skills"
 	tt.Frame()
+	if !tt.HasText("codexhost-delegation") {
+		t.Errorf("SKILLS-RENDER: skill card missing; empty-state=%v dialogSkills=%d texts=%v",
+			tt.HasText("No skills discovered"), len(a.dialogSkills), tt.Texts())
+	}
 	writeShot(t, tt, dir, "05c-settings-skills")
 	a.settingsOpen = false
 

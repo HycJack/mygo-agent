@@ -383,7 +383,7 @@ func settingsSkills(c *ui.Context, vm *SettingsVM) {
 				ui.Text(c, "Skills").FontSize(16).Bold()
 				ui.Text(c, "Discovered for the active project (.agents/skills up the tree, plus your user directories: ~/.agents/skills, ~/.aimanager/skills, ~/.codex-go/skills). The system prompt advertises names and descriptions; agents load the full skill on demand. An agent's form narrows these to an allow list.").FontSize(12).TextColor(t.TextMuted)
 				if len(vm.Skills) == 0 {
-					ui.Text(c, "No skills discovered yet. Put a SKILL.md directory under .agents/skills/ in the project, or in one of the user skill directories.").FontSize(12).TextColor(t.TextMuted)
+					ui.Text(c, "No skills discovered yet. Put a SKILL.md directory under .agents/skills/ in the project, or in ~/.agents/skills/, ~/.aimanager/skills/ or ~/.codex-go/skills/.").FontSize(12).TextColor(t.TextMuted)
 				}
 				for _, sk := range vm.Skills {
 					card := ui.Column(c).FillWidth().Padding(12, 14).Radius(8).
@@ -421,9 +421,9 @@ func settingsForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, p *Provid
 			}
 		}
 	})
-	formField(c, "Name", &p.Name, false)
-	formField(c, "Base URL", &p.BaseURL, false)
-	formField(c, "API key", &p.APIKey, true)
+	formField(c, "Name", &p.Name, false, "")
+	formField(c, "Base URL", &p.BaseURL, false, "")
+	formField(c, "API key", &p.APIKey, true, "")
 	// Which wire the endpoint speaks: the codex and OpenAI models use
 	// the Responses API, most other vendors chat completions.
 	pillRow(c, "API", func() string {
@@ -608,12 +608,16 @@ func modelChips(c *ui.Context, label string, current *string, models []string) {
 }
 
 // formField is one labeled input of the form; the host saves the
-// mirrored value after the frame.
-func formField(c *ui.Context, label string, value *string, password bool) {
+// mirrored value after the frame. placeholder shows through an empty
+// value so an unset field reads as intentional ("follow the default").
+func formField(c *ui.Context, label string, value *string, password bool, placeholder string) {
 	t := c.Theme()
 	ui.Column(c).Gap(4).Children(func() {
 		ui.Text(c, label).FontSize(11.5).FontWeight(600).TextColor(t.TextMuted)
 		in := ui.TextInput(c, value).FontSize(13)
+		if placeholder != "" && *value == "" {
+			in.Placeholder(placeholder)
+		}
 		if password {
 			in.Password()
 		}
@@ -716,8 +720,8 @@ func agentForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, ag *AgentEdi
 	ui.Row(c).Gap(8).AlignItems(ui.Center).Children(func() {
 		ui.Text(c, strings.TrimSpace(ag.Emoji+" "+ag.Name)).FontSize(16).Bold().SingleLine().Grow(1).MinWidth(0)
 	})
-	formField(c, "Name", &ag.Name, false)
-	formField(c, "Emoji", &ag.Emoji, false)
+	formField(c, "Name", &ag.Name, false, "")
+	formField(c, "Emoji", &ag.Emoji, false, "")
 
 	sectionLabel(c, "MODEL")
 	pillRow(c, "Backend", func() string { return ag.Backend }, []pillOpt{
@@ -749,7 +753,7 @@ func agentForm(c *ui.Context, vm *SettingsVM, acts SettingsActions, ag *AgentEdi
 	pillRowInt(c, "Mode", &ag.Mode, []pillOptInt{
 		{v: 0, label: "App default"}, {v: 1, label: "Read Only"}, {v: 2, label: "Agent"}, {v: 3, label: "Full Access"},
 	})
-	formField(c, "Max turns", &ag.MaxTurns, false)
+	formField(c, "Max turns", &ag.MaxTurns, false, "App default")
 
 	sectionLabel(c, "INSTRUCTIONS")
 	formArea(c, "System prompt (appended)", &ag.SystemPrompt,
