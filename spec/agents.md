@@ -191,9 +191,12 @@ projector 写 `<threadID>.events.jsonl`（tool/note/error/session/file_change；
 验收：父 Agent 委托子 Agent 完成子任务，子回答作为工具结果落卡、父继续收尾（`TestDelegateRunsTheSubAgent`）。
 （未做：claude 子 Agent 能力映射——其子 Agent 由自身配置定义，无法映射本应用的档案；M3 编排视图仍为提案；协作流水以工具结果呈现，非并排卡片。）
 
-**M2b 群聊接力（panel）✅ 已落地（2026-10）**
-Agent 档案新增 `panel`（成员**名字**列表，沿用 mcp_servers 的命名约定）：绑定该档案的线程变为**接力式群聊**——一条消息触发成员按顺序各回复一条，每个成员都通过**共享会话**看到此前全部发言（这是与 delegate 单跳私有子任务的本质区别）。机制：host 持 `groupQueue`，finish 链式派发下一位（整条接力是**一个**注册运行——Stop/Escape/删除中断整条链）；builtin 成员共享线程 ChatLog 且**每回合替换系统头**为自己档案的（顺带修复了切换 Agent 继承旧提示词的旧问题）；CLI 成员读不到共享转录，由 host 注入有界的对话摘要（诚实映射，已注明）；回复按 `Message.AgentID` 归属显示（emoji 头像 + 名字标签，仅群聊线程显示）；regenerate 重跑整条接力。
-（边界：成员按顺序串行，非同时发言；成员的 backend 固定按各自档案运行，无法在群聊中混用对方的工具选择之外的东西；panel 存名字，重命名成员会破坏引用——与 mcp_servers 同样代价。）
+**M2b 群聊接力（panel）✅ 已落地（2026-10）；router 接力 ✅ 已落地（2026-10，[relay-router.md](relay-router.md)）**
+Agent 档案新增 `panel`（成员**名字**列表，沿用 mcp_servers 的命名约定）：绑定该档案的线程变为**接力式群聊**，每个成员都通过**共享会话**看到此前全部发言（这是与 delegate 单跳私有子任务的本质区别）。回复按 `Message.AgentID` 归属显示（emoji 头像 + 名字标签，仅群聊线程显示）；regenerate 重跑整条接力；builtin 成员共享线程 ChatLog 且**每回合替换系统头**为自己档案的；CLI 成员读不到共享转录，由 host 注入有界的对话摘要（诚实映射，已注明）。
+
+两种路由模式（契约全文在 [relay-router.md](relay-router.md)，本文只留指针）：**sequence**（默认）——成员按 `panel` 顺序各回复一条，队列空即结束；**router**——host 在每轮结束后问一次协调者模型谁接棒/何时结束，支持 `@点名`（三人入口）与并行 fan-out、可配护栏、总结陈词、插话。整条接力是**一个**注册运行——Stop/Escape/删除中断整条链。
+
+（边界：panel 存名字，重命名成员会破坏引用——与 mcp_servers 同样代价；成员的 backend 固定按各自档案运行。）
 
 **P7（可选）桌面远程连接**
 桌面 Host 支持远程后端：连接常驻 agentd，会话与事件走 API+SSE，支撑团队共享 Agent 库（§6.4 远端形态）。

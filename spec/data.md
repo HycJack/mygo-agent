@@ -61,6 +61,13 @@ this app's snapshot model.
 - Mode 0600 — provider API keys live there.
 - `agents` are the configured agent profiles and `default_agent` names
   the one new tasks bind to when nothing else chose (spec/agents.md).
+  A profile's panel / routed-relay fields (`panel`, `panel_route`,
+  `panel_max_rounds`, `panel_max_tokens`, `panel_timeout`,
+  `panel_stall_rounds`, `panel_summarizer`, `panel_blurb`,
+  `router_provider`, `router_model`, `router_wire`,
+  `router_judge_provider`, `router_judge_model`) are schema'd in
+  [relay-router.md](relay-router.md) — empty follows the app or the
+  documented default.
 - **Version 1 files still load.** The host folds a config with no
   agents into a single **Default** agent — an empty profile inherits
   the app-level selection, so the fold is the identity and an old
