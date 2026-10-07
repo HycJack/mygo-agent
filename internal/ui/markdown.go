@@ -73,6 +73,13 @@ func (m *MdCache) forMsg(id, src string, complete bool) *mdState {
 		st.line(st.pending + "\n")
 		st.pending = ""
 	}
+	if complete {
+		// A complete message renders entirely through the parts path
+		// (the selectable spans form): whatever is still in the live
+		// tail — the message's last paragraph, usually — flushes into a
+		// part here. renderLive is for streaming frames only.
+		st.flush()
+	}
 	st.live = true
 	if len(m.states) > mdCacheMax {
 		m.evict()
@@ -124,7 +131,11 @@ func (st *mdState) line(line string) {
 		st.inCode = true
 		st.lang = strings.TrimPrefix(trimmed, "```")
 	case trimmed == "":
-		st.flush() // blank lines end a prose part
+		// A blank line stays inside the prose part (its own newline):
+		// splitting parts here would split the selectable text at every
+		// paragraph, and a drag could not cross paragraphs. Code fences
+		// still split above.
+		st.cur.text += line
 	default:
 		st.cur.text += line
 	}
@@ -230,17 +241,33 @@ func (md markdownRenderer) renderLines(c *ui.Context, text string, t *ui.Theme) 
 				})
 				continue
 			}
-			// One selectable element per PARAGRAPH, not per line:
-			// selection lives inside a single text element, and the
-			// per-line fragments made a drag stop at every line break —
-			// message content read as unselectable. Link-free
-			// paragraphs ride constructor spans (the selectable form);
-			// a paragraph with links keeps the element form so the
-			// links stay clickable.
+			// One selectable element per PROSE RUN, not per line or per
+			// paragraph: selection lives inside a single text element,
+			// and per-line/per-paragraph fragments made a drag stop at
+			// every break — message content read as unselectable. A
+			// prose run is every paragraph plus the blank lines between
+			// them, up to the next block kind (heading, list, quote,
+			// table, rule, code). Link-free runs ride constructor spans
+			// (the selectable form); a run with links keeps the element
+			// form so the links stay clickable.
 			para := []string{trimmed}
-			for li+1 < len(lines) && paragraphContinues(lines[li+1]) {
+			for li+1 < len(lines) {
+				next := lines[li+1]
+				if strings.TrimSpace(next) == "" {
+					// The blank line rides with the run when prose
+					// resumes after it; otherwise it ends the run.
+					if li+2 < len(lines) && paragraphContinues(lines[li+2]) {
+						para = append(para, "", strings.TrimSpace(lines[li+2]))
+						li += 2
+						continue
+					}
+					break
+				}
+				if !paragraphContinues(next) {
+					break
+				}
+				para = append(para, strings.TrimSpace(next))
 				li++
-				para = append(para, strings.TrimSpace(lines[li]))
 			}
 			if paragraphHasLink(para) {
 				ui.RichText(c).FontSize(14).LineHeight(1.6).Selectable().Children(func() {

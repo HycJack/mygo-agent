@@ -97,3 +97,45 @@ func TestMarkdownTableCellSelectsAndCopies(t *testing.T) {
 		t.Fatalf("a drag over the cell copied %q", got)
 	}
 }
+
+// TestMarkdownCrossParagraphSelects: consecutive paragraphs (and the
+// blank line between them) are one selectable element — a drag from the
+// first into the second copies both.
+func TestMarkdownCrossParagraphSelects(t *testing.T) {
+	const src = "first paragraph of the plan\n\nsecond paragraph of the plan"
+	cache := NewMdCache()
+	tt := ui.NewTester(func(c *ui.Context) {
+		Markdown(c, cache, "m1", src, true, CodexPalette())
+	}, 600, 200)
+	tt.Frame()
+	// Drag from the first paragraph's line into the second (blank line
+	// between them: one line-height apart plus one).
+	tt.Press(2, 10)
+	tt.Move(380, 54)
+	tt.Release(380, 54)
+	tt.Key(ui.Cmd, ui.KeyC)
+	got := tt.Clipboard()
+	if !strings.Contains(got, "first paragraph") || !strings.Contains(got, "second paragraph") {
+		t.Fatalf("a drag across the paragraphs copied %q; visible: %v", got, tt.Texts())
+	}
+}
+
+// TestMarkdownLastParagraphSelects: a complete message's LAST paragraph
+// flushes into the parts path too (forMsg's complete tail) — before
+// this rode the live tail's element form and could not be selected at
+// all. One line, one drag, one copy.
+func TestMarkdownLastParagraphSelects(t *testing.T) {
+	const src = "single line answer with no trailing newline"
+	cache := NewMdCache()
+	tt := ui.NewTester(func(c *ui.Context) {
+		Markdown(c, cache, "m1", src, true, CodexPalette())
+	}, 600, 120)
+	tt.Frame()
+	tt.Press(2, 10)
+	tt.Move(430, 10)
+	tt.Release(430, 10)
+	tt.Key(ui.Cmd, ui.KeyC)
+	if got := tt.Clipboard(); got != src {
+		t.Fatalf("a drag over the last paragraph copied %q; visible: %v", got, tt.Texts())
+	}
+}

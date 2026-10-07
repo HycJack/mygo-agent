@@ -15,16 +15,24 @@ func TestMdStateIncrementalFeed(t *testing.T) {
 
 	whole := &mdState{}
 	whole.feed("", src)
-	whole.line(whole.pending + "\n")
+	if whole.pending != "" {
+		whole.line(whole.pending + "\n") // forMsg's complete tail
+	}
+	whole.flush()
 
 	// Feed in two chunks split at a paragraph boundary, like a stream
 	// would arrive.
 	split := strings.Index(src, "\n\n") + 2
 	incr := &mdState{}
 	incr.feed("", src[:split])
-	incr.line(incr.pending + "\n")
+	if incr.pending != "" {
+		incr.line(incr.pending + "\n")
+	}
 	incr.feed(src[:split], src)
-	incr.line(incr.pending + "\n")
+	if incr.pending != "" {
+		incr.line(incr.pending + "\n")
+	}
+	incr.flush()
 
 	if len(whole.parts) == 0 {
 		t.Fatal("no parts parsed")
@@ -44,7 +52,10 @@ func TestMdStateIncrementalFeed(t *testing.T) {
 func TestMdStateFences(t *testing.T) {
 	st := &mdState{}
 	st.feed("", "```go\nx := 1\n```\nplain\n")
-	st.line(st.pending + "\n")
+	if st.pending != "" {
+		st.line(st.pending + "\n")
+	}
+	st.flush()
 	if len(st.parts) != 2 {
 		t.Fatalf("parts: %+v", st.parts)
 	}
