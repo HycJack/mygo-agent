@@ -93,7 +93,7 @@ func TestPanelRelayRunsMembersInOrder(t *testing.T) {
 	}
 	// The relay is over: the registry and queue are empty.
 	a.update(func() {
-		if a.isRunning("t1") || len(a.groupQueue["t1"]) != 0 {
+		if a.isRunning("t1") || a.groupQueue["t1"] != nil {
 			t.Fatal("the relay left state behind")
 		}
 	})
@@ -152,7 +152,7 @@ func TestPanelStopMidChain(t *testing.T) {
 		time.Sleep(20 * time.Millisecond)
 	}
 	a.update(func() {
-		if len(a.groupQueue["t1"]) != 0 {
+		if a.groupQueue["t1"] != nil {
 			t.Fatal("the queue survived the stop")
 		}
 	})
@@ -185,7 +185,7 @@ func TestPanelSettingsRoundTrip(t *testing.T) {
 		t.Fatalf("subtitle = %q", sub)
 	}
 	// A member deleted after being queued is skipped, not fatal.
-	a.groupQueue["t1"] = []string{"ag-a", "ghost", "ag-b"}
+	a.groupQueue["t1"] = &relayState{queue: []string{"ag-a", "ghost", "ag-b"}}
 	a.runStart("t1", func() {}) // the relay pops only while the run lives
 	if got := a.nextPanelMember(&Thread{ID: "t1"}); got == nil || got.ID != "ag-a" {
 		t.Fatalf("first pop = %+v", got)
@@ -223,6 +223,19 @@ func TestPanelDigestBoundsAndFormats(t *testing.T) {
 	}
 	if strings.Contains(got, "B:") {
 		t.Fatalf("the digest includes the member being briefed: %q", got)
+	}
+	// Work rides along: what a member ran, changed and failed is part
+	// of what the next reader needs.
+	th.Messages[1].Blocks = []Block{
+		{Type: blockCommand, Text: "go test ./..."},
+		{Type: blockDiff, File: "main.go", Add: 12, Del: 3},
+		{Type: blockError, Text: "config missing"},
+	}
+	got = a.panelDigest(th, 3, 8<<10)
+	for _, want := range []string{"ran: go test ./...", "edited: main.go (+12/-3)", "error: config missing"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("digest lacks the work trace %q: %q", want, got)
+		}
 	}
 	small := a.panelDigest(th, 3, 16)
 	if len(small) > 16+2+len("User: plan the thing") {

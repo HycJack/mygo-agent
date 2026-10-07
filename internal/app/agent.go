@@ -10,7 +10,10 @@ import (
 
 // send takes the draft, appends it to the thread, and starts the
 // harness. Other threads' turns do not block a send — only this
-// thread's own running turn does (spec/agents.md P2).
+// thread's own running turn does (spec/agents.md P2) — and a running
+// routed relay takes the message as an interjection instead: it joins
+// the transcript now and the next member's handoff (spec/
+// relay-router.md).
 func (a *app) send() {
 	prompt := strings.TrimSpace(a.draft)
 	if prompt == "" {
@@ -18,13 +21,32 @@ func (a *app) send() {
 	}
 	th := a.currentThread()
 	if th != nil && a.isRunning(th.ID) {
-		return // this thread's turn is still in flight; the draft stays
+		a.interject(th, prompt)
+		return // this thread's turn is still in flight; the draft goes in as an interjection or stays
 	}
 	a.setDraft("")
 	if th == nil {
 		th = a.createThread()
 	}
 	a.startTurn(th, prompt)
+}
+
+// interject delivers the user's message into a running routed relay:
+// it lands in the transcript immediately and rides the next member's
+// handoff prompt. A solo turn or a sequence relay is not interruptible
+// — the draft stays — and without a relay there is nothing to hand it
+// to.
+func (a *app) interject(th *Thread, prompt string) {
+	st := a.groupQueue[th.ID]
+	if st == nil || a.relayRouteMode(th) != "router" {
+		return
+	}
+	st.pending = append(st.pending, prompt)
+	now := time.Now()
+	th.Messages = append(th.Messages, Message{ID: uid(), Role: "user", Text: prompt, At: now})
+	th.Updated = now
+	a.setDraft("")
+	a.saveThread(th)
 }
 
 // resend re-runs a prompt the user already sent, as a fresh turn.
@@ -82,16 +104,23 @@ func (a *app) regenerate(th *Thread) {
 	}
 	th.invalidateDiffCount() // the messages were rewound
 	now := time.Now()
-	th.Messages = append(th.Messages, Message{ID: uid(), Role: "assistant", Running: true, At: now, LogAt: logAt,
-		AgentID: a.agentFor(th).ID})
-	a.saveThread(th)
-	at := len(th.Messages) - 1
 	// The built-in transcript already holds the user's turn — re-sending
 	// the prompt would append it twice. The CLI backends start from their
 	// own session and need the prompt again.
 	if a.backendFor(th) == "builtin" {
 		promptForSend = ""
 	}
+	if len(panel) > 0 && a.relayRouteMode(th) == "router" {
+		// A routed relay re-runs the way it started: the coordinator
+		// picks the first speaker (spec/relay-router.md). No placeholder
+		// yet — the routing decision names who it belongs to.
+		a.routeFirstSpeaker(th, promptForSend)
+		return
+	}
+	th.Messages = append(th.Messages, Message{ID: uid(), Role: "assistant", Running: true, At: now, LogAt: logAt,
+		AgentID: a.agentFor(th).ID})
+	a.saveThread(th)
+	at := len(th.Messages) - 1
 	if len(panel) > 0 {
 		// The relay re-runs whole: this dispatch is member one, the rest
 		// queue for finish to hand over to.
@@ -99,7 +128,7 @@ func (a *app) regenerate(th *Thread) {
 		for _, m := range panel[1:] {
 			ids = append(ids, m.ID)
 		}
-		a.groupQueue[th.ID] = ids
+		a.groupQueue[th.ID] = &relayState{queue: ids, rounds: 1, start: now, spoken: []string{panel[0].Name}}
 		a.dispatchParticipant(th, promptForSend, at, panel[0])
 		return
 	}
@@ -113,7 +142,10 @@ const panelNudge = "(Panel relay: it is your turn — add your contribution.)"
 
 // panelDigest renders the thread's conversation for a member whose
 // backend cannot read the shared transcript (the CLI sessions are
-// private): who said what, bounded to the most recent tail.
+// private): who said what, bounded to the most recent tail. A member's
+// work rides along — the commands they ran, the files they changed,
+// what failed — because "I verified the fix" without the runs behind
+// it is how a relay loses the plot (spec/relay-router.md).
 func (a *app) panelDigest(th *Thread, at int, limit int) string {
 	var b strings.Builder
 	for _, m := range th.Messages[:min(at, len(th.Messages))] {
@@ -125,10 +157,17 @@ func (a *app) panelDigest(th *Thread, at int, limit int) string {
 			}
 		}
 		text := strings.TrimSpace(m.Text)
-		if text == "" {
+		work := blockDigest(&m)
+		if text == "" && work == "" {
 			continue
 		}
-		fmt.Fprintf(&b, "%s: %s\n\n", who, text)
+		if text != "" {
+			fmt.Fprintf(&b, "%s: %s\n", who, text)
+		} else {
+			fmt.Fprintf(&b, "%s:", who)
+		}
+		b.WriteString(work)
+		fmt.Fprintf(&b, "\n\n")
 	}
 	out := b.String()
 	if len(out) > limit {
@@ -139,6 +178,42 @@ func (a *app) panelDigest(th *Thread, at int, limit int) string {
 		out = out[cut:]
 	}
 	return strings.TrimSpace(out)
+}
+
+// blockDigest summarizes one message's tool work, bounded: what ran,
+// what changed, what failed. The card outputs stay out — the transcript
+// holds them — this is the trace a relay reader needs.
+func blockDigest(m *Message) string {
+	var b strings.Builder
+	n := 0
+	for _, blk := range m.Blocks {
+		if n >= 8 {
+			fmt.Fprintf(&b, "  … %d more actions\n", len(m.Blocks)-n)
+			break
+		}
+		switch blk.Type {
+		case blockCommand:
+			if blk.Text == "" {
+				continue
+			}
+			fmt.Fprintf(&b, "  ran: %s", truncRunes(blk.Text, 120))
+			if blk.Exit > 0 {
+				fmt.Fprintf(&b, " (failed, exit %d)", blk.Exit)
+			}
+			b.WriteString("\n")
+			n++
+		case blockDiff:
+			if blk.File == "" {
+				continue
+			}
+			fmt.Fprintf(&b, "  edited: %s (+%d/-%d)\n", blk.File, blk.Add, blk.Del)
+			n++
+		case blockError:
+			fmt.Fprintf(&b, "  error: %s\n", truncRunes(blk.Text, 120))
+			n++
+		}
+	}
+	return b.String()
 }
 
 // startTurn appends the user's prompt and a placeholder reply, then
@@ -156,12 +231,24 @@ func (a *app) startTurn(th *Thread, prompt string) {
 	panel := a.panelFor(a.agentFor(th))
 	first := a.agentFor(th)
 	if len(panel) > 0 {
+		if a.relayRouteMode(th) == "router" {
+			// Who answers a fresh ask is the same routing question as
+			// who speaks next: the coordinator picks the first speaker
+			// off the context and the request (spec/relay-router.md) —
+			// a fixed panel[0] made every conversation open with the
+			// same agent.
+			if a.win != nil {
+				a.win.SetTitle("Codex — " + th.Title)
+			}
+			a.routeFirstSpeaker(th, prompt)
+			return
+		}
 		first = panel[0]
 		ids := make([]string, 0, len(panel)-1)
 		for _, m := range panel[1:] {
 			ids = append(ids, m.ID)
 		}
-		a.groupQueue[th.ID] = ids
+		a.groupQueue[th.ID] = &relayState{queue: ids, rounds: 1, start: now, spoken: []string{first.Name}}
 	}
 	th.Messages = append(th.Messages, Message{ID: uid(), Role: "assistant", Running: true, At: now,
 		AgentID: first.ID})
@@ -176,9 +263,13 @@ func (a *app) startTurn(th *Thread, prompt string) {
 // nextPanelMember pops the group turn's next member: nil ends the
 // relay — queue empty, or the run was stopped (stopThread clears both).
 func (a *app) nextPanelMember(th *Thread) *Agent {
-	for len(a.groupQueue[th.ID]) > 0 && a.isRunning(th.ID) {
-		queue := a.groupQueue[th.ID]
-		a.groupQueue[th.ID] = queue[1:]
+	st := a.groupQueue[th.ID]
+	if st == nil {
+		return nil
+	}
+	for len(st.queue) > 0 && a.isRunning(th.ID) {
+		queue := st.queue
+		st.queue = queue[1:]
 		// A member deleted mid-relay is skipped, not fatal.
 		if ag := a.agentByID(queue[0]); ag != nil {
 			return ag
@@ -187,15 +278,32 @@ func (a *app) nextPanelMember(th *Thread) *Agent {
 	return nil
 }
 
+// relayRouteMode reports how this thread's relay picks the next speaker:
+// "router" when the bound agent opted in (spec/relay-router.md), else
+// "sequence" — the configured order, one reply per member. A thread
+// without a panel never reaches the relay at all.
+func (a *app) relayRouteMode(th *Thread) string {
+	ag := a.agentFor(th)
+	if ag != nil && ag.PanelRoute == "router" && len(ag.Panel) > 0 {
+		return "router"
+	}
+	return "sequence"
+}
+
 // finish settles the running reply. On a group thread the relay
-// continues: the next panel member is dispatched as its own turn on the
-// shared conversation, and the run registry carries the whole chain.
+// continues: a sequence relay hands over to the next panel member, a
+// router relay asks the coordinator which member speaks next (or that
+// the relay is done) — and the run registry carries the whole chain.
 func (a *app) finish(th *Thread, at int, errText string) {
 	a.update(func() {
 		// The registry entry is only cleared when the chain ends: a
 		// stopped run loses its entry (stopThread), which is what ends
 		// the relay here.
-		next := a.nextPanelMember(th)
+		router := a.relayRouteMode(th) == "router"
+		var next *Agent
+		if !router {
+			next = a.nextPanelMember(th)
+		}
 		if cur := a.byID(th.ID); cur != nil && at < len(cur.Messages) {
 			m := &th.Messages[at]
 			m.Running = false
@@ -205,11 +313,16 @@ func (a *app) finish(th *Thread, at int, errText string) {
 			if m.Text == "" && errText == "" && len(m.Blocks) == 0 {
 				m.Text = "(no response)"
 			}
+			// The relay's token budget counts what its members spend
+			// (spec/relay-router.md); traceTurn clears the accumulators.
+			if st := a.groupQueue[th.ID]; st != nil {
+				st.tokens += m.turnTokens
+			}
 			th.Updated = time.Now()
 			a.saveThread(th)
 			a.traceTurn(th, at, errText)
 		}
-		if next == nil || a.byID(th.ID) == nil {
+		if (next == nil && !router) || a.byID(th.ID) == nil {
 			a.runEnd(th.ID)
 			delete(a.groupQueue, th.ID)
 			if a.wsOpen {
@@ -217,7 +330,12 @@ func (a *app) finish(th *Thread, at int, errText string) {
 			}
 			return
 		}
-		// The relay continues: a fresh placeholder for the next member.
+		if router {
+			a.routeRelay(th, at)
+			return
+		}
+		// The sequence relay continues: a fresh placeholder for the next
+		// member.
 		now := time.Now()
 		th.Messages = append(th.Messages, Message{ID: uid(), Role: "assistant", Running: true, At: now,
 			AgentID: next.ID})
@@ -231,7 +349,10 @@ func (a *app) finish(th *Thread, at int, errText string) {
 			prompt = fmt.Sprintf("You are %s in a panel of agents. The conversation so far:\n\n%s\n\n%s",
 				next.Name, a.panelDigest(th, at, 8<<10), panelNudge)
 		}
-		a.dispatchParticipant(th, prompt, at, next)
+		if a.protocolViaPrompt(next) {
+			prompt += panelProtocol
+		}
+		a.dispatchParticipant(th, prompt, at, panelMemberAgent(next))
 	})
 }
 

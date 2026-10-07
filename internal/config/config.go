@@ -95,6 +95,49 @@ type Agent struct {
 	// replies in the shared conversation. Names, not ids — the same
 	// convention mcp_servers uses. Empty means a solo agent.
 	Panel []string `json:"panel,omitempty"`
+	// PanelRoute selects how the relay picks the next speaker
+	// (spec/relay-router.md): "" or "sequence" keeps the configured order
+	// and each member speaks once (the pre-router behavior); "router"
+	// asks a coordinator model after every reply which member speaks
+	// next — or that the relay is done.
+	PanelRoute string `json:"panel_route,omitempty"`
+	// PanelMaxRounds caps how many member replies one user turn may
+	// dispatch in router mode; zero defaults to 8. Sequence mode ignores
+	// it — a sequence relay is exactly one reply per member.
+	PanelMaxRounds int `json:"panel_max_rounds,omitzero"`
+	// PanelStallRounds caps consecutive replies from the same member
+	// before the relay is force-ended (two agents complimenting each
+	// other in a loop); zero defaults to 3.
+	PanelStallRounds int `json:"panel_stall_rounds,omitzero"`
+	// PanelMaxTokens is the routed relay's total token budget across all
+	// its members within one user turn; zero disables the budget.
+	PanelMaxTokens int `json:"panel_max_tokens,omitzero"`
+	// PanelTimeout bounds the whole routed relay in wall-clock seconds;
+	// zero disables it. A hung member is already bounded by the
+	// per-request timeouts; this bounds the relay as a whole.
+	PanelTimeout int `json:"panel_timeout,omitzero"`
+	// RouterProvider and RouterModel pick the coordinator model of a
+	// router relay — a cheap local model is the point. Either empty
+	// follows the app's selection.
+	RouterProvider string `json:"router_provider,omitempty"`
+	RouterModel    string `json:"router_model,omitempty"`
+	// RouterWire selects the coordinator's request shape (spec/
+	// relay-router.md): "" or "chat" is one chat-completions model with
+	// a JSON-reply prompt; "decision" is the Jev decision API (Ollama's
+	// /v1/systemone, the tev1 class of models) — a choice question over
+	// the panel plus a noul question for ending, constrained and scored;
+	// "hybrid" is both: a big chat model (RouterProvider/RouterModel)
+	// reads the full transcript and writes a situation brief, then the
+	// decision model (RouterJudge*, falling back to Router*) makes the
+	// final call on it — comprehension from the big model, a calibrated
+	// constrained verdict from the decision model.
+	RouterWire string `json:"router_wire,omitempty"`
+	// RouterJudgeProvider and RouterJudgeModel pick the decision model
+	// of the decision and hybrid wires; both empty fall back to
+	// RouterProvider/RouterModel (a pure-decision config), then the
+	// app's selection.
+	RouterJudgeProvider string `json:"router_judge_provider,omitempty"`
+	RouterJudgeModel    string `json:"router_judge_model,omitempty"`
 	// Skills narrows the discovered skills.
 	Skills AgentSkills `json:"skills,omitempty"`
 }
