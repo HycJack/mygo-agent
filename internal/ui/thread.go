@@ -59,9 +59,11 @@ type MessageVM struct {
 	At             time.Time
 	Running        bool
 	// AgentLabel / AgentEmoji attribute a group relay's reply to its
-	// member (spec/agents.md); empty on solo threads.
+	// member (spec/agents.md); AgentName feeds the avatar's initial and
+	// color. Empty on solo threads.
 	AgentLabel string
 	AgentEmoji string
+	AgentName  string
 	// Items is the ordered sequence the transcript draws. Text stays on
 	// the message too: it is the aggregate the copy button, the rail
 	// preview and the built-in transcript seeding all read.
@@ -280,14 +282,21 @@ func messageRow(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, i int) 
 	showActions := root.Hovered()
 	fadeIn(c, root, m)
 	root.Children(func() {
-		avatar := ui.Box(c).Size(26, 26).Radius(7).Background(vm.Pal.Card).Border(1, vm.Pal.Border).Center()
-		avatar.Children(func() {
-			if m.AgentEmoji != "" {
-				ui.Text(c, m.AgentEmoji).FontSize(13)
-			} else {
+		// Agent 头像：纯色背景 + 名称首字母（大写），背景色按名称从色板
+		// 确定性分配 —— 同一 agent 恒定同色，群聊里一眼区分成员。
+		avatar := ui.Box(c).Size(26, 26).Radius(7).Center()
+		if m.AgentName != "" {
+			avatar.Background(avatarColor(m.AgentName))
+			avatar.Children(func() {
+				ui.Text(c, avatarInitial(m.AgentName)).FontSize(12).FontWeight(600).
+					TextColor(ui.RGBA(255, 255, 255, 0.92))
+			})
+		} else {
+			avatar.Background(vm.Pal.Card).Border(1, vm.Pal.Border)
+			avatar.Children(func() {
 				ui.Icon(c, IconSparkles).FontSize(14).TextColor(t.Text)
-			}
-		})
+			})
+		}
 		ui.Column(c).Grow(1).MinWidth(0).Gap(6).Children(func() {
 			// The turn in arrival order. Prose renders at the point it was
 			// said, so a tool call the agent ran mid-sentence stays between
@@ -696,4 +705,36 @@ func blockApproval(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, b *B
 			}
 		})
 	})
+}
+
+// avatarPalette 是 agent 头像的纯色背景色板：中等明度、彼此可分，
+// 在暗色界面上与白字对比充足。
+var avatarPalette = [8]ui.Color{
+	ui.RGBA(0xC0, 0x57, 0x4F, 1),
+	ui.RGBA(0xC7, 0x7D, 0x46, 1),
+	ui.RGBA(0x8F, 0x9D, 0x4E, 1),
+	ui.RGBA(0x4E, 0x9D, 0x6E, 1),
+	ui.RGBA(0x4E, 0x9D, 0x9D, 1),
+	ui.RGBA(0x4E, 0x6E, 0x9D, 1),
+	ui.RGBA(0x7D, 0x5A, 0x9E, 1),
+	ui.RGBA(0x9E, 0x5A, 0x7D, 1),
+}
+
+// avatarColor 按名称确定性选色：同一 agent 恒定同色。
+func avatarColor(name string) ui.Color {
+	var h uint32
+	for _, r := range name {
+		h = h*31 + uint32(r)
+	}
+	return avatarPalette[h%uint32(len(avatarPalette))]
+}
+
+// avatarInitial 取名称首字符（rune 安全）并大写；空名回退问号。
+func avatarInitial(name string) string {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return "?"
+	}
+	r := []rune(name)[0]
+	return strings.ToUpper(string(r))
 }

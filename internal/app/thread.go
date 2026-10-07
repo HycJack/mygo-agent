@@ -50,6 +50,7 @@ func (a *app) transcriptVM(th *Thread) *uipkg.TranscriptVM {
 			if ag := a.agentByID(m.AgentID); ag != nil {
 				mv.AgentLabel = strings.TrimSpace(ag.Emoji + " " + ag.Name)
 				mv.AgentEmoji = ag.Emoji
+				mv.AgentName = ag.Name
 			}
 		}
 		// The ordered sequence is the render input; the flattened cards
