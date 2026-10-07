@@ -19,10 +19,10 @@ type Colors struct {
 
 // RailItem is one entry of the message anchor rail.
 type RailItem struct {
-	ID      any    // stable identity across frames
-	Preview string // a few lines of the message, shown in the hover card
-	Active  bool   // the message the reader is on right now
-	MsgIndex int   // the message's row in the transcript list — what a jump glides to (the rail skips rows, so this is not the dash's own position)
+	ID       any    // stable identity across frames
+	Preview  string // a few lines of the message, shown in the hover card
+	Active   bool   // the message the reader is on right now
+	MsgIndex int    // the message's row in the transcript list — what a jump glides to (the rail skips rows, so this is not the dash's own position)
 }
 
 // The wave, in DIPs: the dash under the pointer is the longest, and the
