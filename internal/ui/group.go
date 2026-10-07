@@ -60,36 +60,16 @@ func GroupDialog(c *ui.Context, vm *GroupVM, acts GroupActions) {
 			ui.Column(c).Gap(6).Children(func() {
 				for i := range vm.Members {
 					m := &vm.Members[i]
-					// The WHOLE row is the click target: a bare Checkbox
-					// only answers clicks on its 16px box, and the name
-					// next to it swallowed the click into the backdrop.
-					row := ui.ButtonBase(c).FillWidth().Padding(8, 12).Radius(8).Gap(10).
-						AlignItems(ui.Center).Cursor(ui.CursorPointer)
+					// ui.Button (not a bare ButtonBase row): inside a
+					// Modal only the toolkit's own Button helper reliably
+					// receives clicks in this nested context.
+					label := m.Name
 					if m.Checked {
-						row.Background(vm.Pal.Card)
-					} else {
-						row.Background(t.Surface)
+						label = "✓ " + label
 					}
-					if row.Clicked() {
+					if ui.Button(c, label).Clicked() {
 						acts.ToggleMember(m.ID, !m.Checked)
 					}
-					row.Children(func() {
-						box := ui.Box(c).Size(16, 16).Radius(4).Center().Shrink(0)
-						if m.Checked {
-							box.Background(t.Accent)
-						} else {
-							box.Background(t.Background).Border(1, t.Border)
-						}
-						box.Children(func() {
-							if m.Checked {
-								ui.Icon(c, IconCheck).FontSize(11).TextColor(t.AccentText)
-							}
-						})
-						if m.Emoji != "" {
-							ui.Text(c, m.Emoji).FontSize(13)
-						}
-						ui.Text(c, m.Name).FontSize(12.5).Grow(1).MinWidth(0)
-					})
 				}
 			})
 			if vm.Err != "" {

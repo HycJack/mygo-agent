@@ -198,6 +198,7 @@ func newApp() *app {
 		fetchedModels: map[string][]string{},
 		fetchErrs:     map[string]string{},
 		groupQueue:    map[string][]string{},
+		groupDraftOn:  map[string]bool{},
 		sections:      map[string]bool{},
 		dirs:          map[string]bool{},
 		dirCache:      map[string][]fsNode{},

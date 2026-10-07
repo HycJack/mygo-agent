@@ -11,6 +11,8 @@ import (
 
 	"github.com/egoist/mygo/plugins/terminal"
 	"github.com/egoist/mygo/ui"
+
+	"slices"
 )
 
 // The window frame assembles the shared views from internal/ui around
@@ -344,6 +346,67 @@ func (a *app) exportMarkdown(c *ui.Context, th *Thread) {
 // groupDialogModal renders the new-group dialog over the current
 // surface and mirrors its bindings back (spec/agents.md).
 func (a *app) groupDialogModal(c *ui.Context) {
+	if os.Getenv("CLICK_PROBE") == "2" {
+		ag := a.agentByID(a.settingsSel)
+		t := c.Theme()
+		ui.Modal(c, &a.groupDrafting, func() {
+			ui.Column(c).Width(420).Gap(14).Children(func() {
+				enabled := !slices.Contains(ag.Tools.Disabled, "read_file")
+				row := ui.ButtonBase(c).FillWidth().Padding(8, 12).Radius(8).Gap(10).
+					AlignItems(ui.Center).Cursor(ui.CursorPointer)
+				if row.Clicked() {
+					println("PROBE-ROW-FLIP")
+				}
+				row.Children(func() {
+					box := ui.Box(c).Size(16, 16).Radius(4).Center().Shrink(0)
+					if enabled {
+						box.Background(t.Accent)
+					} else {
+						box.Background(t.Background).Border(1, t.Border)
+					}
+					ui.Text(c, "read_file").FontSize(12.5)
+				})
+				ui.Button(c, "plain-button")
+			})
+		})
+		return
+	}
+	if os.Getenv("CLICK_PROBE") != "" {
+		state := map[string]string{}
+		ui.Modal(c, &a.groupDrafting, func() {
+			ui.Column(c).Width(420).Gap(14).Children(func() {
+				if ui.Button(c, "BTN-A").Clicked() {
+					state["A"] = "hit"
+				}
+				pill := ui.ButtonBase(c).Padding(4, 10).Radius(999)
+				pillHit := false
+				if pill.Clicked() {
+					pillHit = true
+				}
+				pill.Children(func() { ui.Text(c, "BTN-B").FontSize(12.5) })
+				if pillHit {
+					state["B"] = "hit"
+				}
+				nested := ui.Column(c).Gap(6).Children(func() {
+					row := ui.ButtonBase(c).FillWidth().Padding(8, 12).Radius(8).Gap(10).
+						AlignItems(ui.Center).Cursor(ui.CursorPointer)
+					rowHit := false
+					if row.Clicked() {
+						rowHit = true
+					}
+					row.Children(func() { ui.Text(c, "BTN-C").FontSize(12.5) })
+					if rowHit {
+						state["C"] = "hit"
+					}
+				})
+				_ = nested
+			})
+		})
+		for k, v := range state {
+			println("CLICK-PROBE", k, v)
+		}
+		return
+	}
 	if !a.groupDrafting {
 		return
 	}
@@ -371,7 +434,9 @@ func (a *app) groupDialogModal(c *ui.Context) {
 type groupActions struct{ a *app }
 
 func (h groupActions) ToggleMember(id string, on bool) {
-	println("TOGGLE", id, on)
+	if h.a.groupDraftOn == nil {
+		h.a.groupDraftOn = map[string]bool{}
+	}
 	if on {
 		h.a.groupDraftOn[id] = true
 	} else {
@@ -381,10 +446,7 @@ func (h groupActions) ToggleMember(id string, on bool) {
 
 // Start creates the group profile and a thread bound to it: the chat
 // begins here, with the composer focused (spec/agents.md).
-func (h groupActions) Start() {
-	println("START clicked, members:", len(h.a.groupDraftOn))
-	h.a.startGroupChat()
-}
+func (h groupActions) Start() { h.a.startGroupChat() }
 
 func (h groupActions) Cancel() {
 	h.a.groupDrafting = false
@@ -422,5 +484,8 @@ func (a *app) startGroupChat() {
 func (a *app) openGroupDraft() {
 	a.groupDrafting = true
 	a.groupDraftName = "Group"
+	if a.groupDraftOn == nil {
+		a.groupDraftOn = map[string]bool{}
+	}
 	clear(a.groupDraftOn)
 }
