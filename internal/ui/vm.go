@@ -124,32 +124,40 @@ func Composer(c *ui.Context, vm *ViewModel, acts Actions) {
 				mentionPopup(c, vm)
 			}
 			composerRow(c, vm, acts)
+			// Enter sends while the composer has the focus — unless an
+			// input method is composing (Pinyin mid-word: its keys, Enter
+			// choosing a candidate, are the IME's, not shortcuts), or the
+			// mention popup is open and Enter completes the highlighted
+			// candidate instead (Tab does too; Esc closes without picking).
+			composing := ta.Composing()
+			popup := len(vm.Mentions) > 0
+			switch {
+			case composing:
+				// The IME owns the keyboard: no shortcuts fire.
+			case popup:
+				if box.Shortcut(0, ui.KeyEnter) || box.Shortcut(0, ui.KeyTab) {
+					completeMention(vm, vm.MentionSel)
+					return
+				}
+				if box.Shortcut(0, ui.KeyEscape) {
+					vm.Mentions = nil
+					return
+				}
+				if box.Shortcut(0, ui.KeyDown) {
+					vm.MentionSel = min(vm.MentionSel+1, len(vm.Mentions)-1)
+				}
+				if box.Shortcut(0, ui.KeyUp) {
+					vm.MentionSel = max(vm.MentionSel-1, 0)
+				}
+			default:
+				if box.Shortcut(0, ui.KeyEnter) {
+					acts.Send()
+				}
+				if c.Shortcut(ui.Cmd, ui.KeyEnter) {
+					acts.Send()
+				}
+			}
 		})
-		// Enter sends while the composer has the focus — unless the
-		// mention popup is open, where Enter completes the highlighted
-		// candidate instead (Tab does too; Esc closes without picking).
-		if len(vm.Mentions) > 0 {
-			if box.Shortcut(0, ui.KeyEnter) || box.Shortcut(0, ui.KeyTab) {
-				completeMention(vm, vm.MentionSel)
-				return
-			}
-			if box.Shortcut(0, ui.KeyEscape) {
-				vm.Mentions = nil
-				return
-			}
-			if box.Shortcut(0, ui.KeyDown) {
-				vm.MentionSel = min(vm.MentionSel+1, len(vm.Mentions)-1)
-			}
-			if box.Shortcut(0, ui.KeyUp) {
-				vm.MentionSel = max(vm.MentionSel-1, 0)
-			}
-		}
-		if box.Shortcut(0, ui.KeyEnter) {
-			acts.Send()
-		}
-		if c.Shortcut(ui.Cmd, ui.KeyEnter) {
-			acts.Send()
-		}
 	})
 }
 

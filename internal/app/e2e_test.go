@@ -88,8 +88,13 @@ func TestE2EJourney(t *testing.T) {
 	if !a.settingsOpen {
 		t.Fatal("the gear did not open settings")
 	}
-	// Select the panel agent in the rail — its resolved subtitle is
-	// unique on screen — and its form shows the relay editor.
+	// Groups live on their own tab now: switch first, then select the
+	// panel agent — its resolved subtitle is unique on screen — and its
+	// form shows the relay editor.
+	if err := tt.Click("Groups"); err != nil {
+		t.Fatalf("open the groups tab: %v", err)
+	}
+	tt.Frame()
 	if err := tt.Click("panel · 1 agents"); err != nil {
 		t.Fatalf("select the team agent: %v", err)
 	}

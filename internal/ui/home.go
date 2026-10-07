@@ -32,47 +32,52 @@ func Home(c *ui.Context, vm *ViewModel, acts Actions, suggestions []string) {
 			// the next task — typing straight into the composer still
 			// works and binds whatever the picker last chose.
 			if len(vm.Agents) > 0 {
-				ui.Row(c).Gap(8).Wrap().Justify(ui.Center).Children(func() {
-					for i := range vm.Agents {
-						ag := &vm.Agents[i]
-						active := ag.ID == vm.AgentID
-						card := ui.ButtonBase(c).Padding(8, 14).Radius(12).Gap(8).Cursor(ui.CursorPointer)
-						if active {
-							card.Background(vm.Pal.Sel).Border(1, vm.Pal.Border)
-						} else {
-							card.Border(1, vm.Pal.Border)
-						}
-						if card.Hovered() {
-							card.Background(vm.Pal.Hover)
-						}
-						if card.Clicked() {
-							acts.SetAgent(ag.ID)
-							vm.FocusComposer = true
-						}
-						card.Children(func() {
-							if ag.Emoji != "" {
-								ui.Text(c, ag.Emoji).FontSize(15)
+				// The launcher scrolls within a cap: a dozen agents wrap
+				// into rows that would push the suggestions and the
+				// composer off the panel (the home column is height-fit).
+				ui.Scroll(c).MaxHeight(200).Children(func() {
+					ui.Row(c).Gap(8).Wrap().Justify(ui.Center).Padding(2).Children(func() {
+						for i := range vm.Agents {
+							ag := &vm.Agents[i]
+							active := ag.ID == vm.AgentID
+							card := ui.ButtonBase(c).Padding(8, 14).Radius(12).Gap(8).Cursor(ui.CursorPointer)
+							if active {
+								card.Background(vm.Pal.Sel).Border(1, vm.Pal.Border)
+							} else {
+								card.Border(1, vm.Pal.Border)
 							}
-							ui.Column(c).Gap(1).Children(func() {
-								ui.Text(c, ag.Name).FontSize(12.5).SingleLine()
-								ui.Text(c, ag.Sub).FontSize(10).TextColor(t.TextMuted).SingleLine()
+							if card.Hovered() {
+								card.Background(vm.Pal.Hover)
+							}
+							if card.Clicked() {
+								acts.SetAgent(ag.ID)
+								vm.FocusComposer = true
+							}
+							card.Children(func() {
+								if ag.Emoji != "" {
+									ui.Text(c, ag.Emoji).FontSize(15)
+								}
+								ui.Column(c).Gap(1).Children(func() {
+									ui.Text(c, ag.Name).FontSize(12.5).SingleLine()
+									ui.Text(c, ag.Sub).FontSize(10).TextColor(t.TextMuted).SingleLine()
+								})
 							})
+						}
+						// Creating a group happens here, before the chatting
+						// does: the trailing card opens the new-group dialog
+						// (spec/agents.md).
+						grp := ui.ButtonBase(c).Padding(8, 14).Radius(12).Gap(8).
+							Cursor(ui.CursorPointer).Border(1, vm.Pal.Border)
+						if grp.Hovered() {
+							grp.Background(vm.Pal.Hover)
+						}
+						if grp.Clicked() {
+							acts.NewGroup()
+						}
+						grp.Children(func() {
+							ui.Icon(c, IconPlus).FontSize(14).TextColor(t.TextMuted)
+							ui.Text(c, "New group chat").FontSize(12.5).TextColor(t.TextMuted)
 						})
-					}
-					// Creating a group happens here, before the chatting
-					// does: the trailing card opens the new-group dialog
-					// (spec/agents.md).
-					grp := ui.ButtonBase(c).Padding(8, 14).Radius(12).Gap(8).
-						Cursor(ui.CursorPointer).Border(1, vm.Pal.Border)
-					if grp.Hovered() {
-						grp.Background(vm.Pal.Hover)
-					}
-					if grp.Clicked() {
-						acts.NewGroup()
-					}
-					grp.Children(func() {
-						ui.Icon(c, IconPlus).FontSize(14).TextColor(t.TextMuted)
-						ui.Text(c, "New group chat").FontSize(12.5).TextColor(t.TextMuted)
 					})
 				})
 			}

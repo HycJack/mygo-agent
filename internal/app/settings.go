@@ -487,7 +487,7 @@ func (a *app) addProvider() {
 func (a *app) addGroup() {
 	ag := Agent{ID: "ag-" + uid(), Name: "Group"}
 	a.agents = append(a.agents, ag)
-	a.settingsSel, a.settingsTab = ag.ID, uipkg.TabAgents
+	a.settingsSel, a.settingsTab = ag.ID, uipkg.TabGroups
 	a.settingsOpen = true
 	a.saveConfig()
 }
@@ -561,7 +561,7 @@ func (a *app) removeProvider(id string) {
 // the form never shows a resource from another tab.
 func (h settingsActions) SelectTab(tab string) {
 	switch tab {
-	case uipkg.TabAgents, uipkg.TabProvider, uipkg.TabTools, uipkg.TabSkills, uipkg.TabMCP:
+	case uipkg.TabAgents, uipkg.TabGroups, uipkg.TabProvider, uipkg.TabTools, uipkg.TabSkills, uipkg.TabMCP:
 		h.a.settingsTab = tab
 	}
 	switch tab {
@@ -570,10 +570,28 @@ func (h settingsActions) SelectTab(tab string) {
 			h.a.settingsSel = h.a.providers[0].ID
 		}
 	case uipkg.TabAgents:
-		if h.a.agentByID(h.a.settingsSel) == nil {
-			h.a.settingsSel = h.a.defaultAgentID()
+		// A group profile lives on the groups tab: landing here lands on
+		// a solo agent.
+		if ag := h.a.agentByID(h.a.settingsSel); ag == nil || len(ag.Panel) > 0 {
+			h.a.settingsSel = h.a.firstAgentID(false)
+		}
+	case uipkg.TabGroups:
+		// And a solo agent lives on the agents tab.
+		if ag := h.a.agentByID(h.a.settingsSel); ag == nil || len(ag.Panel) == 0 {
+			h.a.settingsSel = h.a.firstAgentID(true)
 		}
 	}
+}
+
+// firstAgentID returns the first profile with (or without) a panel —
+// the tab's first row; "" when the tab is empty.
+func (a *app) firstAgentID(wantPanel bool) string {
+	for i := range a.agents {
+		if len(a.agents[i].Panel) > 0 == wantPanel {
+			return a.agents[i].ID
+		}
+	}
+	return ""
 }
 
 // FetchModels asks the provider itself what it serves (GET /models on

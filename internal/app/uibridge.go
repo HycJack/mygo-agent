@@ -41,12 +41,20 @@ func (a *app) homeViewModel() *uipkg.ViewModel {
 		}
 	}
 	// The @-mention popup: the panel roster filtered by the mention
-	// being typed (spec/relay-router.md). Home or a solo thread has no
-	// panel and no popup.
+	// being typed (spec/relay-router.md). On a thread the panel comes
+	// from the thread's binding; on home it comes from the active
+	// selection — the agent the new task will bind, so naming members
+	// there starts the fan-out on the first turn.
 	vm.Mentions = vm.Mentions[:0]
 	vm.MentionSel = 0
+	var relay *Agent
 	if th := a.currentThread(); th != nil {
-		if members := a.panelFor(a.agentFor(th)); len(members) > 0 {
+		relay = a.agentFor(th)
+	} else if ag := a.agentByID(a.activeAgentID()); ag != nil {
+		relay = ag
+	}
+	if relay != nil {
+		if members := a.panelFor(relay); len(members) > 0 {
 			if q, typing := uipkg.MentionQuery(vm.Draft); typing {
 				names := make([]string, len(members))
 				for i, m := range members {

@@ -24,6 +24,7 @@ const (
 	TabTools    = "tools"
 	TabSkills   = "skills"
 	TabMCP      = "mcp"
+	TabGroups   = "groups"
 )
 
 // ProviderEditVM is one provider row of the list and, chosen, its form.
@@ -184,6 +185,7 @@ func settingsTabs(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 			label string
 		}{
 			{TabAgents, "Agents"},
+			{TabGroups, "Groups"},
 			{TabProvider, "Providers"},
 			{TabTools, "Tools"},
 			{TabSkills, "Skills"},
@@ -297,12 +299,23 @@ func Settings(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 // settingsAgents is the agents tab: the profiles on the left, the
 // chosen profile's form on the right.
 func settingsAgents(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
+	// Groups live on their own tab: a group is a routed panel, not a
+	// solo profile, and mixing them made both lists read as noise.
+	groups := vm.Tab == TabGroups
+	inTab := func(ag AgentEditVM) bool { return (len(ag.Panel) > 0) == groups }
 	ui.Column(c).Width(220).Background(vm.Pal.SidebarBG).BorderWidth(0, 1, 0, 0).
 		BorderColor(vm.Pal.Border).Children(func() {
-		railHeader(c, "AGENTS")
+		if groups {
+			railHeader(c, "GROUP CHATS")
+		} else {
+			railHeader(c, "AGENTS")
+		}
 		ui.Scroll(c).Grow(1).Padding(0, 8, 8).Children(func() {
 			for ai := range vm.Agents {
 				ag := &vm.Agents[ai]
+				if !inTab(*ag) {
+					continue
+				}
 				sub := ag.Sub
 				if sub == "" {
 					sub = "app default"
@@ -310,14 +323,16 @@ func settingsAgents(c *ui.Context, vm *SettingsVM, acts SettingsActions) {
 				railRow(c, vm, ag.ID == vm.Sel, strings.TrimSpace(ag.Emoji+" "+ag.Name), sub,
 					func() { acts.Select(ag.ID) }, "Remove agent", func() { acts.RemoveAgent(ag.ID) })
 			}
-			railAdd(c, vm, "Add agent", acts.AddAgent)
+			if !groups {
+				railAdd(c, vm, "Add agent", acts.AddAgent)
+			}
 			railAdd(c, vm, "New group...", acts.AddGroup)
 		})
 	})
 	ui.Column(c).Grow(1).MinWidth(0).Children(func() {
-		ai := slices.IndexFunc(vm.Agents, func(ag AgentEditVM) bool { return ag.ID == vm.Sel })
+		ai := slices.IndexFunc(vm.Agents, func(ag AgentEditVM) bool { return ag.ID == vm.Sel && inTab(ag) })
 		if ai < 0 {
-			emptyPane(c, "No agent selected.", "Add one, or pick a card on the home screen.")
+			emptyPane(c, "No group selected.", "Create one with New group…, or from the home screen.")
 			return
 		}
 		ag := &vm.Agents[ai]
