@@ -6,6 +6,7 @@ package app
 
 import (
 	"encoding/json"
+	"strings"
 	"image/png"
 	"os"
 	"path/filepath"
@@ -137,6 +138,25 @@ func TestScreenshots(t *testing.T) {
 	a.current = gth.ID
 	tt.Frame()
 	writeShot(t, tt, dir, "02b-thread-group")
+	a.current = th.ID
+
+	// 2c. An expanded reasoning block: a long thought must wrap inside
+	// the transcript's width, never run one line through the messages
+	// below it (the overlap regression).
+	oth := &Thread{ID: "t-ov", ProjectID: "default", Title: "Expanded thinking", Created: now, Updated: now}
+	long := strings.Repeat("The extraction stopped mid-line because the heredoc body ended before the closing brace was reached, so the parser saw an unterminated block. ", 6)
+	oth.Messages = []Message{
+		{ID: uid(), Role: "user", Text: "go", At: now},
+		{ID: uid(), Role: "assistant", AgentID: "ag-m1", At: now,
+			Blocks: []Block{
+				{Type: blockReasoning, Open: true, Text: long},
+				{Type: blockText, Text: "这是后续的结论文字——思考内容若溢出，这一行会和它重叠。"},
+			}},
+	}
+	a.threads = append(a.threads, oth)
+	a.current = oth.ID
+	tt.Frame()
+	writeShot(t, tt, dir, "02c-reasoning-open")
 	a.current = th.ID
 
 	// 3. Thread with the workspace panel open.
