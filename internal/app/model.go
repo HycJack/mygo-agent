@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"reflect"
 
 	"crypto/rand"
 	"encoding/hex"
@@ -664,25 +665,73 @@ func (a *app) byID(id string) *Thread {
 	return nil
 }
 
-// runState is one thread's in-flight turn: everything a stop needs.
+// runState is one thread's in-flight turns: everything a stop needs. A
+// parallel handoff runs several members at once, so a thread may hold
+// more than one live cancel.
 type runState struct {
-	cancel context.CancelFunc
+	cancels []context.CancelFunc
 }
 
-// runStart registers the thread's in-flight turn. A thread runs one
-// turn — the send guards see to that — so a stale entry here means a
-// guard failed somewhere, and the loser is stopped rather than left
-// spending tokens with nobody holding its card.
+// runStart registers the thread's in-flight turn, replacing whatever was
+// there — a thread runs one turn, the send guards see to that, so a
+// stale entry here means a guard failed somewhere, and the loser is
+// stopped rather than left spending tokens with nobody holding its card.
 func (a *app) runStart(thID string, cancel context.CancelFunc) {
 	a.runsMu.Lock()
 	defer a.runsMu.Unlock()
 	if a.runs == nil {
 		a.runs = map[string]*runState{}
 	}
-	if stale := a.runs[thID]; stale != nil && stale.cancel != nil {
-		stale.cancel()
+	if stale := a.runs[thID]; stale != nil {
+		for _, c := range stale.cancels {
+			c()
+		}
 	}
-	a.runs[thID] = &runState{cancel: cancel}
+	if cancel == nil {
+		// A nil cancel marks the thread running with nothing to stop —
+		// the routed relay holds the registry while the coordinator
+		// thinks.
+		a.runs[thID] = &runState{}
+		return
+	}
+	a.runs[thID] = &runState{cancels: []context.CancelFunc{cancel}}
+}
+
+// runAdd registers one more live turn on the thread — a parallel
+// handoff's members (spec/relay-router.md). No stale cancel: the batch's
+// members are peers, not losers.
+func (a *app) runAdd(thID string, cancel context.CancelFunc) {
+	a.runsMu.Lock()
+	defer a.runsMu.Unlock()
+	if a.runs == nil {
+		a.runs = map[string]*runState{}
+	}
+	st := a.runs[thID]
+	if st == nil {
+		a.runs[thID] = &runState{cancels: []context.CancelFunc{cancel}}
+		return
+	}
+	st.cancels = append(st.cancels, cancel)
+}
+
+// runRelease drops one finished turn's cancel; the thread stops
+// counting as running when the last one goes.
+func (a *app) runRelease(thID string, cancel context.CancelFunc) {
+	a.runsMu.Lock()
+	defer a.runsMu.Unlock()
+	st := a.runs[thID]
+	if st == nil || cancel == nil {
+		return
+	}
+	for i, c := range st.cancels {
+		if c != nil && reflect.ValueOf(c).Pointer() == reflect.ValueOf(cancel).Pointer() {
+			st.cancels = append(st.cancels[:i], st.cancels[i+1:]...)
+			break
+		}
+	}
+	if len(st.cancels) == 0 {
+		delete(a.runs, thID)
+	}
 }
 
 // runEnd clears the thread's entry: the turn is over, whatever the
@@ -712,9 +761,9 @@ func (a *app) currentRunning() bool {
 	return th != nil && a.isRunning(th.ID)
 }
 
-// stopThread cancels the thread's run and clears the entry. A thread
-// with no run is a no-op, which is what makes deleting or escaping on
-// an idle thread free.
+// stopThread cancels the thread's live turns and clears the entry. A
+// thread with no run is a no-op, which is what makes deleting or
+// escaping on an idle thread free.
 func (a *app) stopThread(thID string) {
 	a.runsMu.Lock()
 	st := a.runs[thID]
@@ -723,8 +772,12 @@ func (a *app) stopThread(thID string) {
 	// A stopped relay does not continue: finish finds no queue and ends
 	// the group turn with the participant that was running.
 	delete(a.groupQueue, thID)
-	if st != nil && st.cancel != nil {
-		st.cancel()
+	if st != nil {
+		for _, c := range st.cancels {
+			if c != nil {
+				c()
+			}
+		}
 	}
 }
 

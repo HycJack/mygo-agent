@@ -47,8 +47,9 @@ type ItemVM struct {
 	Type   string // ItemBlock/ItemGroup: the card kind
 	Text   string // ItemText
 	Blocks []BlockVM
-	At     int  // index of the first block in the message, for ToggleBlock
-	Open   bool // ItemGroup: expanded
+	At     int   // index of the first block in the message, for ToggleBlock
+	Ats    []int // ItemGroup: every member's block index (a kind folds across the prose)
+	Open   bool  // ItemGroup: expanded
 	Ms     int64
 	Failed int // ItemGroup: members that failed
 }
@@ -405,7 +406,9 @@ func groupHeader(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, m *Mes
 	})
 }
 
-// itemGroup is a folded run: one summary row that expands into its cards.
+// itemGroup is a folded kind: one summary row that expands into its
+// cards, each addressed by its true block index — a kind's members can
+// sit anywhere between the prose.
 func itemGroup(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, m *MessageVM, it *ItemVM) {
 	groupHeader(c, vm, acts, m, it)
 	if !it.Open {
@@ -415,7 +418,11 @@ func itemGroup(c *ui.Context, vm *TranscriptVM, acts TranscriptActions, m *Messa
 	// same cards it was folded from.
 	ui.Column(c).Gap(2).Padding(0, 0, 4, 12).Children(func() {
 		for bi := range it.Blocks {
-			block(c, vm, acts, m, it.Blocks[bi], it.At+bi)
+			at := it.At + bi
+			if bi < len(it.Ats) {
+				at = it.Ats[bi]
+			}
+			block(c, vm, acts, m, it.Blocks[bi], at)
 		}
 	})
 }

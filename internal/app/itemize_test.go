@@ -157,10 +157,11 @@ func TestItemizeKeepsASingleCardPlain(t *testing.T) {
 	}
 }
 
-// TestItemizeSeparatesRunsByInterveningProse: two runs of commands with a
-// sentence between them are two groups, because the sentence is the
-// reason to read both.
-func TestItemizeSeparatesRunsByInterveningProse(t *testing.T) {
+// TestItemizeFoldsAKindBehindOneHeader: two runs of commands with a
+// sentence between them are ONE group — the work-log interleaving is
+// exactly what buried the prose under collapsed rows before. The prose
+// keeps its place; the kind stands behind one header.
+func TestItemizeFoldsAKindBehindOneHeader(t *testing.T) {
 	m := &Message{Blocks: []Block{
 		{Type: blockCommand, Text: "ls"},
 		{Type: blockCommand, Text: "cat a"},
@@ -169,14 +170,14 @@ func TestItemizeSeparatesRunsByInterveningProse(t *testing.T) {
 		{Type: blockCommand, Text: "go vet"},
 	}}
 	items := itemize(m)
-	if len(items) != 3 {
-		t.Fatalf("items %+v, want group, text, group", items)
+	if len(items) != 2 {
+		t.Fatalf("items %+v, want group, text", items)
 	}
-	if items[0].Kind != uipkg.ItemGroup || items[1].Kind != uipkg.ItemText || items[2].Kind != uipkg.ItemGroup {
-		t.Fatalf("items %+v, want group, text, group", items)
+	if items[0].Kind != uipkg.ItemGroup || items[1].Kind != uipkg.ItemText {
+		t.Fatalf("items %+v, want group, text", items)
 	}
-	if items[2].At != 3 {
-		t.Fatalf("the second group is addressed at %d, want 3", items[2].At)
+	if len(items[0].Blocks) != 4 || items[0].At != 0 {
+		t.Fatalf("the group holds %d members at %d, want all four at 0", len(items[0].Blocks), items[0].At)
 	}
 }
 
@@ -271,12 +272,10 @@ func TestToggleBlockOpensAWholeRun(t *testing.T) {
 	}
 }
 
-// TestToggleBlockStopsAtTheRunBoundary: a card after the run must not be
-// dragged along, which is what would happen if the toggle scanned for
-// "the next block of any kind". Prose is the boundary — and a command
-// three cards later is still the common shape, so a scan that ignored the
-// break would fold the whole turn into one header.
-func TestToggleBlockStopsAtTheRunBoundary(t *testing.T) {
+// TestToggleBlockSpansTheKind: a kind folds across the prose, so one
+// click opens every command of the message — the folded group a click
+// comes from stands for all of them, wherever they sit.
+func TestToggleBlockSpansTheKind(t *testing.T) {
 	a, th := turnApp(t)
 	a.applyEvent(th, 0, "codex", cmdEvent("a", "ls"))
 	a.applyEvent(th, 0, "codex", cmdEvent("b", "cat a"))
@@ -285,11 +284,15 @@ func TestToggleBlockStopsAtTheRunBoundary(t *testing.T) {
 
 	h := transcriptActions{a: a, th: th}
 	h.ToggleBlock(th.Messages[0].ID, 0)
-	if !th.Messages[0].Blocks[0].Open || !th.Messages[0].Blocks[1].Open {
-		t.Fatalf("the run did not open together: %+v", th.Messages[0].Blocks)
+	if !th.Messages[0].Blocks[0].Open || !th.Messages[0].Blocks[1].Open || !th.Messages[0].Blocks[3].Open {
+		t.Fatalf("the kind did not open as one: %+v", th.Messages[0].Blocks)
 	}
-	if th.Messages[0].Blocks[3].Open {
-		t.Fatal("the toggle dragged in the command past the prose, so the two runs are really one")
+	// And the kind closes as one.
+	h.ToggleBlock(th.Messages[0].ID, 3)
+	for i, b := range th.Messages[0].Blocks {
+		if b.Type == blockCommand && b.Open {
+			t.Fatalf("command %d stayed open", i)
+		}
 	}
 }
 
@@ -386,5 +389,40 @@ func TestTranscriptVMBuildsItems(t *testing.T) {
 	a.update(func() { th.Messages[0].Blocks[0].Text += "!" })
 	if got := a.transcriptVM(th).Messages[0].Items[0].Text; got != "one!" {
 		t.Fatalf("the reused snapshot is stale: %q", got)
+	}
+}
+
+// TestItemizeFoldsAKindAcrossTheProse: a member's work-log interleaves
+// prose with commands and thinking; each kind folds into ONE group at
+// its first member, and the prose keeps its place.
+func TestItemizeFoldsAKindAcrossTheProse(t *testing.T) {
+	m := &Message{Blocks: []Block{
+		{Type: blockNote, Text: "→ 开发"},
+		{Type: blockText, Text: "first"},
+		{Type: blockCommand, Text: "$ a"},
+		{Type: blockReasoning, Text: "think"},
+		{Type: blockText, Text: "second"},
+		{Type: blockCommand, Text: "$ b"},
+		{Type: blockCommand, Text: "$ c"},
+		{Type: blockReasoning, Text: "think more"},
+	}}
+	items := itemize(m)
+	var kinds []string
+	for _, it := range items {
+		kinds = append(kinds, fmt.Sprintf("%s/%s@%d(n=%d)", it.Kind, it.Type, it.At, len(it.Blocks)))
+	}
+	// note@0 inline, text@1, commands group@2 (3 members), reasoning
+	// group@3 (2 members), text@4.
+	want := []string{"block/note@0(n=1)", "text/@1(n=0)", "group/command@2(n=3)", "group/reasoning@3(n=2)", "text/@4(n=0)"}
+	if strings.Join(kinds, "|") != strings.Join(want, "|") {
+		t.Fatalf("items = %v, want %v", kinds, want)
+	}
+	// The command group's members carry their true indices.
+	for _, it := range items {
+		if it.Kind == uipkg.ItemGroup && it.Type == blockCommand {
+			if len(it.Ats) != 3 || it.Ats[0] != 2 || it.Ats[2] != 6 {
+				t.Fatalf("command group ats = %v", it.Ats)
+			}
+		}
 	}
 }

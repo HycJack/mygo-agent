@@ -112,7 +112,8 @@ func Composer(c *ui.Context, vm *ViewModel, acts Actions) {
 			box.Border(1, t.Accent.Alpha(0.5))
 		}
 		box.Children(func() {
-			ta := ui.TextAreaBase(c, &vm.Draft).Placeholder("Plan, code, edit anything").FontSize(14).MinHeight(44)
+			ta := ui.TextAreaBase(c, &vm.Draft).
+				Placeholder("Plan, code, edit anything — @name to call on a panel member").FontSize(14).MinHeight(44)
 			if vm.FocusComposer {
 				ta.AutoFocus()
 				vm.FocusComposer = false

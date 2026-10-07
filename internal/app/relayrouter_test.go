@@ -1068,3 +1068,212 @@ func TestRelayOutlineRidesTheBrief(t *testing.T) {
 		t.Fatalf("the end brief lacks the outline: %s", (*routerBodies)[1])
 	}
 }
+
+// TestExtractMentionsOrderAndDedup: mentions come back in appearance
+// order, deduped; a second mention of the same member does not dispatch
+// it twice.
+func TestExtractMentionsOrderAndDedup(t *testing.T) {
+	roster := []relayMember{{Name: "架构"}, {Name: "测试"}, {Name: "发布"}}
+	got := extractMentions("@测试 先看风险，@架构 定方案，最后 @测试 复核", roster)
+	if len(got) != 2 || got[0] != "测试" || got[1] != "架构" {
+		t.Fatalf("mentions = %v, want 测试 then 架构", got)
+	}
+	if got := extractMentions("no mentions here", roster); len(got) != 0 {
+		t.Fatalf("mentions = %v, want none", got)
+	}
+}
+
+// fanoutFixture wires three panel members whose replies hold 300ms, and
+// records each request's arrival: two members genuinely in flight overlap
+// — the second arrives before the first's hold expires — while a serial
+// dispatch arrives only after the first finished. No gate, no way for a
+// late request (the wrap-up turn) to wedge the server.
+func fanoutFixture(t *testing.T, memberTail string, routes ...string) (*app, *Thread, *httptest.Server, *map[string]time.Time) {
+	t.Helper()
+	a := newTestApp(t)
+	a.backend = "builtin"
+	a.mode = 2
+	arrivals := map[string]time.Time{}
+	routerSrv, _ := routerFixture(t, nil, routes...)
+	memberSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		data, _ := io.ReadAll(r.Body)
+		body := string(data)
+		who := "wrapup"
+		for _, h := range []string{"MEMBER-A-HEAD", "MEMBER-B-HEAD", "MEMBER-C-HEAD"} {
+			if strings.Contains(body, h) {
+				who = h
+			}
+		}
+		arrivalMu.Lock()
+		arrivals[who] = time.Now()
+		arrivalMu.Unlock()
+		time.Sleep(300 * time.Millisecond)
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, "event: response.output_text.delta\n"+
+			`data: {"type":"response.output_text.delta","delta":"done by `+who+` `+memberTail+`"}`+"\n\n"+
+			"event: response.completed\n"+
+			`data: {"type":"response.completed","response":{"output":[]}}`+"\n\n")
+	}))
+	a.providers = []Provider{
+		{ID: "p1", Name: "Test", BaseURL: memberSrv.URL, APIKey: "k",
+			Models: []string{"test-model"}, Wire: harness.WireResponses},
+		{ID: "prt", Name: "Router", BaseURL: routerSrv.URL, Models: []string{"qwen3:8b"}},
+	}
+	a.providerID, a.model = "p1", "test-model"
+	a.agents = []Agent{
+		{ID: "default", Name: "Default"},
+		{ID: "ag-a", Name: "A", SystemPrompt: "MEMBER-A-HEAD"},
+		{ID: "ag-b", Name: "B", SystemPrompt: "MEMBER-B-HEAD"},
+		{ID: "ag-c", Name: "C", SystemPrompt: "MEMBER-C-HEAD"},
+		{ID: "ag-team", Name: "Team", Panel: []string{"A", "B", "C"}, PanelRoute: "router",
+			RouterProvider: "prt", RouterModel: "qwen3:8b"},
+	}
+	now := time.Now()
+	th := &Thread{ID: "t1", ProjectID: "default", AgentID: "ag-team", Created: now, Updated: now}
+	a.threads = append(a.threads, th)
+	return a, th, memberSrv, &arrivals
+}
+
+var arrivalMu sync.Mutex
+
+func waitSettled(t *testing.T, a *app, th *Thread) {
+	t.Helper()
+	deadline := time.Now().Add(20 * time.Second)
+	for {
+		settled := false
+		a.update(func() { settled = !a.isRunning(th.ID) && a.groupQueue[th.ID] == nil })
+		if settled {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the relay never settled")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+// TestComposerMentionFansOut: the user naming two members dispatches
+// them in parallel — B's request arrives while C's is still being held —
+// and the relay routes only after both land.
+func TestComposerMentionFansOut(t *testing.T) {
+	a, th, srv, arrivals := fanoutFixture(t, "",
+		`{"next":"","reason":"both answered"}`)
+	defer srv.Close()
+	a.startTurn(th, "@B @C evaluate this")
+	waitSettled(t, a, th)
+
+	// user + the two parallel members + wrap-up.
+	if len(th.Messages) != 4 {
+		t.Fatalf("messages = %d, want user + B + C + wrap-up", len(th.Messages))
+	}
+	if th.Messages[1].AgentID != "ag-b" || th.Messages[2].AgentID != "ag-c" {
+		t.Fatalf("attribution: %q then %q", th.Messages[1].AgentID, th.Messages[2].AgentID)
+	}
+	ab, ac := (*arrivals)["MEMBER-B-HEAD"], (*arrivals)["MEMBER-C-HEAD"]
+	if ab.IsZero() || ac.IsZero() {
+		t.Fatalf("a member never arrived: B=%v C=%v", ab, ac)
+	}
+	first, second := ab, ac
+	if second.Before(first) {
+		first, second = second, first
+	}
+	if second.Before(first.Add(250 * time.Millisecond)) {
+		t.Fatalf("the members did not overlap: arrivals %v then %v — serial dispatch",
+			first.Format("15:04:05.000"), second.Format("15:04:05.000"))
+	}
+	if th.Messages[3].AgentID != "ag-team" {
+		t.Fatalf("wrap-up author = %q", th.Messages[3].AgentID)
+	}
+}
+
+// TestMemberHandoffFansOut: a member naming two peers hands the floor
+// to both at once, no coordinator call in between.
+func TestMemberHandoffFansOut(t *testing.T) {
+	a, th, srv, _ := fanoutFixture(t, "@B @C 你们的看法呢",
+		`{"next":"A","reason":"start at the top"}`,
+		`{"next":"","reason":"all done"}`)
+	defer srv.Close()
+	a.startTurn(th, "go")
+	waitSettled(t, a, th)
+
+	agents := map[string]bool{}
+	for _, m := range th.Messages {
+		if m.Role == "assistant" {
+			agents[m.AgentID] = true
+		}
+	}
+	if !agents["ag-b"] || !agents["ag-c"] {
+		t.Fatalf("the handoff never reached B and C: %v", agents)
+	}
+}
+
+// TestInterjectionMentionRoutesTheBatch: an interjection that names a
+// member hands the floor to them once the current reply lands — the
+// named member's handoff carries the user's words.
+func TestInterjectionMentionRoutesTheBatch(t *testing.T) {
+	release := make(chan struct{})
+	a, th, srv, bodies, routerBodies := routerRelayFixture(t, release,
+		[]string{"alpha", "beta"},
+		`{"next":"B","reason":"after the user's note"}`,
+		`{"next":"","reason":"all done"}`)
+	defer srv.Close()
+	a.current = "t1"
+	a.startTurn(th, "plan the thing")
+	// The first-speaker routing holds the registry while it thinks.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		running := false
+		a.update(func() { running = a.isRunning("t1") })
+		if running {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the first routing never started")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	a.draft = "@A 重点看安全问题"
+	a.send()
+	a.update(func() {
+		if a.draft != "" {
+			t.Fatal("the interjection left the draft behind")
+		}
+	})
+	if len(th.Messages) != 2 || th.Messages[1].Role != "user" {
+		t.Fatalf("the interjection never joined the transcript: %+v", th.Messages)
+	}
+	close(release) // the coordinator names B; the interjection waits in pending
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		placed := false
+		a.update(func() { placed = len(th.Messages) >= 3 && th.Messages[2].AgentID == "ag-b" })
+		if placed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("B was never placed")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	// B landed; the pending "@A" mention fans out to A before the
+	// coordinator is ever asked again.
+	waitSettled(t, a, th)
+
+	// user + interjection + B + A(the named member) + wrap-up.
+	if len(th.Messages) != 5 {
+		t.Fatalf("messages = %d, want user + interjection + B + A + wrap-up", len(th.Messages))
+	}
+	if th.Messages[2].AgentID != "ag-b" {
+		t.Fatalf("first speaker = %q, want B", th.Messages[2].AgentID)
+	}
+	if th.Messages[3].AgentID != "ag-a" {
+		t.Fatalf("the named member = %q, want A", th.Messages[3].AgentID)
+	}
+	if !strings.Contains((*bodies)[1], "重点看安全问题") {
+		t.Fatal("A never saw the user's interjection")
+	}
+	// router calls: first speaker + the end. The @A handoff was direct.
+	if len(*routerBodies) != 2 {
+		t.Fatalf("router calls = %d, want first-speaker and end only", len(*routerBodies))
+	}
+}

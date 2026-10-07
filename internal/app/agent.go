@@ -236,12 +236,40 @@ func (a *app) startTurn(th *Thread, prompt string) {
 			// who speaks next: the coordinator picks the first speaker
 			// off the context and the request (spec/relay-router.md) —
 			// a fixed panel[0] made every conversation open with the
-			// same agent.
+			// same agent. The user's own @-names outrank it: naming
+			// members hands the floor straight to them.
 			if a.win != nil {
 				a.win.SetTitle("Codex — " + th.Title)
 			}
+			if names := a.mentionedMembers(a.agentFor(th), prompt); len(names) > 0 {
+				a.startFanout(th, a.agentFor(th), names, "named by the user (@...)", prompt)
+				return
+			}
 			a.routeFirstSpeaker(th, prompt)
 			return
+		}
+		// A sequence relay keeps its fixed order; a mention only moves
+		// the named members to the front, in mention order.
+		order := a.mentionedMembers(a.agentFor(th), prompt)
+		if len(order) > 0 {
+			byName := map[string]*Agent{}
+			for _, m := range panel {
+				byName[m.Name] = m
+			}
+			var front, rest []*Agent
+			seen := map[string]bool{}
+			for _, n := range order {
+				if m := byName[n]; m != nil && !seen[m.ID] {
+					front = append(front, m)
+					seen[m.ID] = true
+				}
+			}
+			for _, m := range panel {
+				if !seen[m.ID] {
+					rest = append(rest, m)
+				}
+			}
+			panel = append(front, rest...)
 		}
 		first = panel[0]
 		ids := make([]string, 0, len(panel)-1)
@@ -339,6 +367,41 @@ func (a *app) finish(th *Thread, at int, errText string) {
 			return
 		}
 		if router {
+			if st := a.groupQueue[th.ID]; st != nil && st.batchByAt[at] != nil {
+				// One member of a parallel handoff landed (spec/
+				// relay-router.md): the batch routes only when the last
+				// of them is in.
+				routing, retry, next := a.batchLanded(th, at, errText)
+				if retry != nil {
+					note := Message{ID: uid(), Role: "assistant", Running: true, At: time.Now(), AgentID: retry.ag.ID}
+					note.Blocks = append(note.Blocks, Block{Type: blockNote,
+						Text: "retrying — the previous turn failed: " + truncRunes(errText, 200)})
+					th.Messages = append(th.Messages, note)
+					nat := len(th.Messages) - 1
+					st.batchByAt[nat] = &batchMember{ag: retry.ag, at: nat, fork: retry.fork}
+					st.batchLeft++
+					a.saveThread(th)
+					a.dispatchBatchMember(th, "(retry the turn that failed)", nat, panelMemberAgent(retry.ag), retry.fork)
+					return
+				}
+				if next != nil {
+					now := time.Now()
+					msg := Message{ID: uid(), Role: "assistant", Running: true, At: now, AgentID: next.ag.ID}
+					msg.Blocks = append(msg.Blocks, Block{Type: blockNote,
+						Text: "→ " + next.ag.Name + ": the batch's next turn (CLI sessions run one at a time)"})
+					th.Messages = append(th.Messages, msg)
+					nat := len(th.Messages) - 1
+					st.batchByAt[nat] = &batchMember{ag: next.ag, at: nat}
+					a.saveThread(th)
+					a.dispatchBatchMember(th, next.prompt, nat, panelMemberAgent(next.ag), nil)
+					return
+				}
+				if !routing {
+					return // the rest of the batch is still out
+				}
+				a.routeRelay(th, len(th.Messages)-1)
+				return
+			}
 			if st := a.groupQueue[th.ID]; st != nil {
 				if errText != "" && st.retries < 1 {
 					// One replay of a member turn that failed on the

@@ -57,8 +57,26 @@ func (a *app) dispatch(th *Thread, prompt string, at int) {
 // dispatchParticipant is dispatch with an explicit agent — a panel
 // relay's member (spec/agents.md); nil means the thread's own agent.
 func (a *app) dispatchParticipant(th *Thread, prompt string, at int, ag *Agent) {
+	a.dispatchTurn(th, prompt, at, ag, nil, false)
+}
+
+// dispatchBatchMember dispatches one member of a parallel handoff: it
+// registers alongside its peers (runAdd, not runStart) and may run on
+// an isolated transcript view so concurrent loops never interleave one
+// shared history (spec/relay-router.md).
+func (a *app) dispatchBatchMember(th *Thread, prompt string, at int, ag *Agent, mem harness.Memory) {
+	a.dispatchTurn(th, prompt, at, ag, mem, true)
+}
+
+// dispatchTurn is the one dispatch path: snapshot the turn, wire the
+// approval callbacks, run the adapter off-thread, settle through finish.
+// add (not replace) registers a peer of a running batch.
+func (a *app) dispatchTurn(th *Thread, prompt string, at int, ag *Agent, mem harness.Memory, add bool) {
 	plan := a.planTurnFor(th, prompt, ag)
 	turn := plan.turn
+	if mem != nil {
+		turn.Memory = mem
+	}
 	turn.OnApproval = func(ctx context.Context, req harness.ApprovalRequest) harness.ApprovalDecision {
 		return a.waitForApproval(ctx, th, at, req)
 	}
@@ -71,7 +89,11 @@ func (a *app) dispatchParticipant(th *Thread, prompt string, at int, ag *Agent) 
 	}
 	h := a.newHarness(plan.backend, th, turn)
 	ctx, cancel := context.WithCancel(context.Background())
-	a.runStart(th.ID, cancel)
+	if add {
+		a.runAdd(th.ID, cancel)
+	} else {
+		a.runStart(th.ID, cancel)
+	}
 	go func() {
 		err := h.Run(ctx, turn, func(ev harness.Event) { a.applyEvent(th, at, h.Kind(), ev) })
 		a.finish(th, at, turnErrText(err))

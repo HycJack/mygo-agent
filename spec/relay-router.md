@@ -128,11 +128,25 @@ type relayState struct {
 
 `startTurn`/`regenerate` 在 router 模式下仍以 `panel[0]` 起步（首发言者固定，后续全由路由器接管）；"路由器也选首位发言者"列为 P3 备选。
 
+## 5.4 转录降噪（按种类跨位置折叠）
+
+成员工作日志把散文和命令/思考交错，按相邻 run 折叠只会留下一圈塌行。`itemize` 改为**按种类跨位置分组**：同一种类（command / reasoning / note；diff 另绑文件）出现 ≥2 次即全部折进一个组，组落在其首个成员的位置，散文保持原位；只出现一次的仍是普通卡片。`ToggleBlock` 对可分组种类做**全种类翻转**（一次点击开/关该种类全部卡片）；error/approval 刻意不分组、单独翻转。
+
 ## 5.5 接力纲要（rolling outline）
 
 每条成员回复落定时，`finish` 把一条有界 gist 追加进 `relayState.outline`（`名字: 要点≤120字`）。三条协调者线都读它：chat 简报在轮次状态后列出 "What each reply established: …"，decision 线进 `state.outline`，hybrid 的 advisor 同样可见。长讨论的早期决策不再被 6KB 尾巴截掉——这是摘要截尾问题的接力层解法。
 
-## 5.6 成员直通交接（explicit handoff，swarm 混合）
+## 5.6 @点名与并行 fan-out（swarm 混合，完整版）
+
+`@成员名` 是统一的点名语法，三个入口共享 `extractMentions`（按出现顺序、去重）：
+
+- **输入框**（新回合）：router 模式下用户 @n 个成员直接并行开工（不经协调者选首位）；sequence 模式只把被点名的成员提到队首。
+- **插话**（运行中）：点名是**路由指令**——`dispatchRouterMember` 消费插话时把含 mention 的留下，交给落定后的 `routeRelay` 处理；普通插话才随 handoff 送达。
+- **成员回复**：`@一人` 直通交接；**`@多人` 起 fan-out**——每人独立消息槽并发运行（builtin 成员用 `forkMemory` 隔离转录视图，落定时按序并入共享 ChatLog，两条并发循环绝不互写一份历史；CLI 成员共享线程会话，故排在并发批次之后串行），全部落定后才做下一次路由决策。护栏（轮数/停滞/预算/超时）在 fan-out 之前评估，是中央权威的底线；批次成员失败按单成员同规则重试一次。
+
+fan-out 期间注册表持有多份 cancel（`runAdd`/`runRelease`），Stop 一次取消全部；composer placeholder 提示 `@name` 语法。
+
+## 5.7 成员直通交接（explicit handoff，单人）
 
 成员回复末尾 `@成员名` 即直接交棒：`routeRelay` 的 default 分支先查 `explicitHandoff`，命中（且非自指）就直接派发——省一次路由调用；同名连讲/轮数等护栏先于直通交接评估，是中央权威的底线。面板协议教成员在"明确知道谁接棒"时使用，否则留给协调者。trace 里记 `handed off directly by X (@Y)`。
 

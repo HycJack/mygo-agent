@@ -28,17 +28,31 @@ func groupable(kind string) bool {
 }
 
 // itemize turns one message's blocks into ordered render items. Text is
-// always its own item; a run of two or more groupable blocks of the same
-// kind becomes one group, and a run of one stays a plain card so the
-// common "one command, then an answer" turn looks the way it always has.
+// always its own item; a kind that occurs twice or more folds ALL of its
+// members into one group where the first of them sits, however far apart
+// they are — a member's work-log interleaves prose with commands and
+// thinking, and folding only adjacent runs left twenty collapsed rows
+// around the prose (spec/relay-router.md). A kind seen once stays a
+// plain card, so a light "one command, then an answer" turn looks the
+// way it always has.
 //
 // Diffs group only while they touch the SAME file: two edits to one file
 // are one story, and one card with a combined count is more useful than
 // two cards; edits to different files are separate facts.
 func itemize(m *Message) []uipkg.ItemVM {
+	counts := map[string]int{}
+	for i := range m.Blocks {
+		b := &m.Blocks[i]
+		if groupable(b.Type) {
+			counts[groupKey(b)]++
+		}
+	}
+	consumed := map[int]bool{}
 	var items []uipkg.ItemVM
-	i := 0
-	for i < len(m.Blocks) {
+	for i := range m.Blocks {
+		if consumed[i] {
+			continue
+		}
 		b := &m.Blocks[i]
 		if b.Type == blockText {
 			// At is the block's position, which the view uses both to
@@ -47,32 +61,31 @@ func itemize(m *Message) []uipkg.ItemVM {
 			// would share one cache entry and the second would render the
 			// first's markdown.
 			items = append(items, uipkg.ItemVM{Kind: uipkg.ItemText, Text: b.Text, At: i})
-			i++
 			continue
 		}
 		if !groupable(b.Type) {
 			items = append(items, blockItem(i, b))
-			i++
 			continue
 		}
-		// Walk the run: same kind, and for a diff the same file.
-		end := i + 1
-		for end < len(m.Blocks) {
-			n := &m.Blocks[end]
-			if n.Type != b.Type {
-				break
-			}
-			if b.Type == blockDiff && n.File != b.File {
-				break
-			}
-			end++
-		}
-		if end-i == 1 {
+		key := groupKey(b)
+		if counts[key] < 2 {
 			items = append(items, blockItem(i, b))
-		} else {
-			items = append(items, groupItem(m.Blocks[i:end], i))
+			continue
 		}
-		i = end
+		// Collect the kind's every member across the message; the prose
+		// between them keeps its place, the work folds into one row.
+		run := []Block{*b}
+		ats := []int{i}
+		consumed[i] = true
+		for j := i + 1; j < len(m.Blocks); j++ {
+			if consumed[j] || groupKey(&m.Blocks[j]) != key {
+				continue
+			}
+			run = append(run, m.Blocks[j])
+			ats = append(ats, j)
+			consumed[j] = true
+		}
+		items = append(items, groupItem(run, ats))
 	}
 	// A thread written before the ordered sequence existed has its prose
 	// only in Message.Text. Synthesize one trailing text item so history
@@ -81,6 +94,15 @@ func itemize(m *Message) []uipkg.ItemVM {
 		items = append(items, uipkg.ItemVM{Kind: uipkg.ItemText, Text: m.Text})
 	}
 	return items
+}
+
+// groupKey is the folding identity of one block: its kind, except a diff
+// also binds to its file.
+func groupKey(b *Block) string {
+	if b.Type == blockDiff {
+		return blockDiff + ":" + b.File
+	}
+	return b.Type
 }
 
 // blockItem is a single card, addressed by its index in the message's
@@ -95,16 +117,17 @@ func blockItem(bi int, b *Block) uipkg.ItemVM {
 	}
 }
 
-// groupItem is a folded run. At is the index of its first member, which is
-// also the index ToggleBlock flips: the host opens or closes the whole run
-// from that one position, so a group needs no state of its own and
-// survives a reload with the thread.
-func groupItem(run []Block, at int) uipkg.ItemVM {
+// groupItem is a folded kind: one summary row that stands for every
+// member, wherever they sat between the prose. Ats are the members' true
+// block indices — the expanded cards address their own toggles with
+// them, and a scattered group's members are not At+k.
+func groupItem(run []Block, ats []int) uipkg.ItemVM {
 	it := uipkg.ItemVM{
 		Kind:   uipkg.ItemGroup,
 		Type:   run[0].Type,
 		Open:   run[0].Open,
-		At:     at,
+		At:     ats[0],
+		Ats:    ats,
 		Blocks: make([]uipkg.BlockVM, 0, len(run)),
 	}
 	for _, b := range run {

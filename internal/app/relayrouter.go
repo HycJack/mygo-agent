@@ -17,8 +17,11 @@ import (
 	"io"
 	"net/http"
 	"slices"
+	"sort"
 	"strings"
 	"time"
+
+	"mygo-agent/internal/harness"
 )
 
 // defaultPanelMaxRounds is the round budget when the agent did not set
@@ -73,6 +76,21 @@ type relayState struct {
 	spoken     []string  // member names in dispatch order (the rotation state the coordinator reads)
 	retries    int       // member turns replayed after a wire failure
 	outline    []string  // one bounded gist per member reply — the relay's rolling memory
+
+	// A parallel handoff (spec/relay-router.md): several members named
+	// at once run concurrently, each in its own message slot, and the
+	// relay routes only when the last of them lands.
+	batchLeft int
+	batchByAt map[int]*batchMember
+	batchSeq  []*batchMember // non-builtin members run one at a time after the batch
+}
+
+// batchMember is one member of a parallel handoff.
+type batchMember struct {
+	ag     *Agent
+	at     int
+	prompt string      // the CLI stragglers' handoff, built at fan-out time
+	fork   *forkMemory // builtin members only: an isolated transcript view
 }
 
 // relayRoute is the coordinator's decision, with what it cost.
@@ -246,16 +264,33 @@ func (a *app) routeRelay(th *Thread, at int) {
 		a.wrapUpRelay(th, fmt.Sprintf("relay stalled on %q for %d rounds", st.last, st.sameStreak))
 	default:
 		snap := a.panelSnapshot(th, ag, at)
+		// The user's fresh words outrank everything: an interjection
+		// that names members hands the floor to them once the current
+		// reply lands (spec/relay-router.md).
+		if len(st.pending) > 0 {
+			if names := a.mentionedMembers(ag, strings.Join(st.pending, "\n")); len(names) > 0 {
+				a.startFanout(th, ag, names,
+					fmt.Sprintf("the user named you while the panel was talking (@%s)", strings.Join(names, " @")), "")
+				return
+			}
+		}
 		// A member who knows exactly who is next says so: "@Name" in
 		// their reply passes the floor directly — no coordinator call.
-		// The guards above are the central authority that can still stop
-		// it (spec/relay-router.md).
-		if h := explicitHandoff(th.Messages[at].Text, snap.roster); h != "" && h != st.last {
-			if next := a.memberByName(ag, h); next != nil {
-				a.traceRoute(th, 0, relayRoute{Next: h,
-					Reason: "handed off directly by " + st.last + " (@" + h + ")"}, nil)
-				a.dispatchRouterMember(th, next,
-					fmt.Sprintf("the floor came straight from %s, who named you (@%s)", st.last, h), "")
+		// Two or more names run as a parallel batch. The guards above
+		// are the central authority that can still stop it.
+		if names := a.mentionedMembers(ag, th.Messages[at].Text); len(names) > 0 && !(len(names) == 1 && names[0] == st.last) {
+			who := st.last
+			if len(names) == 1 {
+				a.traceRoute(th, 0, relayRoute{Next: names[0],
+					Reason: "handed off directly by " + who + " (@" + names[0] + ")"}, nil)
+				if next := a.memberByName(ag, names[0]); next != nil {
+					a.dispatchRouterMember(th, next,
+						fmt.Sprintf("the floor came straight from %s, who named you (@%s)", who, names[0]), "")
+					return
+				}
+			} else {
+				a.startFanout(th, ag, names,
+					fmt.Sprintf("%s named you for this (@%s)", who, strings.Join(names, " @")), "")
 				return
 			}
 		}
@@ -263,17 +298,164 @@ func (a *app) routeRelay(th *Thread, at int) {
 	}
 }
 
-// explicitHandoff reads the floor handoff a member wrote into their
-// reply: a mention of a panel member's name with @ ("@B — your call").
-// The last mention wins.
-func explicitHandoff(text string, roster []relayMember) string {
-	best, name := -1, ""
+// startFanout dispatches a parallel handoff: every named member gets
+// its own message slot and runs at once (builtin members on an isolated
+// transcript view — two loops must not interleave one shared history),
+// and the relay routes only when the last of them lands. A non-builtin
+// member shares its CLI session with the thread, so those run one at a
+// time after the concurrent batch drains. The user's pending
+// interjections ride every member's handoff — they are why the batch
+// exists (spec/relay-router.md).
+func (a *app) startFanout(th *Thread, ag *Agent, names []string, reason, base string) {
+	st := a.groupQueue[th.ID]
+	if st == nil {
+		st = &relayState{start: time.Now()}
+		a.groupQueue[th.ID] = st
+		a.runStart(th.ID, nil)
+	}
+	st.batchByAt = map[int]*batchMember{}
+	pending := strings.Join(st.pending, "\n---\n")
+	st.pending = nil
+	first := true
+	for _, name := range names {
+		member := a.memberByName(ag, name)
+		if member == nil {
+			continue
+		}
+		note := "→ " + name
+		if reason != "" {
+			note += ": " + truncRunes(reason, 200)
+		}
+		now := time.Now()
+		msg := Message{ID: uid(), Role: "assistant", Running: true, At: now, AgentID: member.ID}
+		msg.Blocks = append(msg.Blocks, Block{Type: blockNote, Text: note})
+		th.Messages = append(th.Messages, msg)
+		at := len(th.Messages) - 1
+		prompt := base
+		if first && pending != "" {
+			if prompt != "" {
+				prompt += "\n\n"
+			}
+			prompt += "The user added while the panel was talking:\n" + pending
+		}
+		first = false
+		if reason != "" {
+			if prompt != "" {
+				prompt += "\n\n"
+			}
+			prompt += fmt.Sprintf("(Panel coordinator handed the floor to you: %s)", reason)
+		}
+		if prompt == "" {
+			prompt = panelNudge
+		}
+		bm := &batchMember{ag: member, at: at}
+		st.batchByAt[at] = bm
+		if a.resolveAgent(member).backend == "builtin" {
+			bm.fork = &forkMemory{a: a,
+				key:  harness.MemoryKey(th.ProjectID, th.ID),
+				priv: slices.Clone(th.ChatLog), seed: len(th.ChatLog)}
+			a.dispatchBatchMember(th, prompt, at, panelMemberAgent(member), bm.fork)
+		} else {
+			// One CLI session per thread: the batch's CLI members queue
+			// and run one at a time as their peers land.
+			bm.prompt = prompt
+			st.batchSeq = append(st.batchSeq, bm)
+		}
+		st.rounds++
+		st.spoken = append(st.spoken, name)
+	}
+	st.last = "" // a batch has no single last speaker
+	st.sameStreak = 1
+	st.batchLeft = len(st.batchByAt) + len(st.batchSeq)
+	a.saveThread(th)
+}
+
+// batchLanded settles one member of a parallel handoff: merge its
+// transcript view, run down the counter, queue the CLI stragglers — and
+// when the batch has fully landed, hand back whether it is time to
+// route. The retry of a failed batch member stays inside the batch.
+func (a *app) batchLanded(th *Thread, at int, errText string) (routing bool, retry *batchMember, next *batchMember) {
+	st := a.groupQueue[th.ID]
+	if st == nil {
+		return true, nil, nil
+	}
+	bm := st.batchByAt[at]
+	if bm == nil {
+		return true, nil, nil
+	}
+	delete(st.batchByAt, at)
+	if bm.fork != nil {
+		bm.fork.merge()
+	}
+	st.batchLeft--
+	if errText != "" && st.retries < 1 {
+		// One replay, as a solo member turn gets: the batch waits for it.
+		st.retries++
+		return false, bm, nil
+	}
+	if errText == "" {
+		st.retries = 0
+	}
+	if st.batchLeft > 0 {
+		if len(st.batchByAt) == 0 && len(st.batchSeq) > 0 {
+			// The concurrent members all landed: the CLI straggler's turn.
+			nx := st.batchSeq[0]
+			st.batchSeq = st.batchSeq[1:]
+			return false, nil, nx
+		}
+		return false, nil, nil
+	}
+	return true, nil, nil
+}
+
+// mentionedMembers resolves the panel members a text names with @.
+func (a *app) mentionedMembers(ag *Agent, text string) []string {
+	var roster []relayMember
+	for _, m := range a.panelFor(ag) {
+		roster = append(roster, relayMember{Name: m.Name})
+	}
+	return extractMentions(text, roster)
+}
+
+// extractMentions reads the panel members a text names with @, in the
+// order they appear, deduped — the floor handoff a member writes into a
+// reply ("@B — your call") and the composer's @-naming share one syntax
+// (spec/relay-router.md).
+func extractMentions(text string, roster []relayMember) []string {
+	type hit struct {
+		at      int
+		name    string
+		nameLen int
+	}
+	var hits []hit
 	for _, m := range roster {
-		if at := strings.LastIndex(text, "@"+m.Name); at > best {
-			best, name = at, m.Name
+		needle := "@" + m.Name
+		start := 0
+		for start < len(text) {
+			idx := strings.Index(text[start:], needle)
+			if idx < 0 {
+				break
+			}
+			at := start + idx
+			hits = append(hits, hit{at: at, name: m.Name, nameLen: len(needle)})
+			start = at + 1
 		}
 	}
-	return name
+	sort.Slice(hits, func(i, j int) bool {
+		if hits[i].at != hits[j].at {
+			return hits[i].at < hits[j].at
+		}
+		return hits[i].nameLen > hits[j].nameLen
+	})
+	var out []string
+	seen := map[string]bool{}
+	for _, h := range hits {
+		if !seen[h.name] {
+			seen[h.name] = true
+			out = append(out, h.name)
+		}
+	}
+	return out
 }
 
 // endRelay settles the group turn: the registry entry goes, the state
@@ -497,11 +679,24 @@ func (a *app) dispatchRouterMember(th *Thread, next *Agent, reason, base string)
 	}
 	// The user may have spoken while the panel was talking: the floor
 	// comes with what they added (the messages already sit in the
-	// transcript; the CLI digest picks them up from there).
+	// transcript; the CLI digest picks them up from there). An
+	// interjection that NAMES a member is a routing instruction, not
+	// context — it stays pending for the relay's next decision instead
+	// of being consumed here.
 	if len(st.pending) > 0 {
-		prompt += "\n\nThe user added while the panel was talking:\n" +
-			strings.Join(st.pending, "\n---\n")
-		st.pending = nil
+		var pass, keep []string
+		for _, p := range st.pending {
+			if len(a.mentionedMembers(a.agentFor(th), p)) > 0 {
+				keep = append(keep, p)
+			} else {
+				pass = append(pass, p)
+			}
+		}
+		if len(pass) > 0 {
+			prompt += "\n\nThe user added while the panel was talking:\n" +
+				strings.Join(pass, "\n---\n")
+		}
+		st.pending = keep
 	}
 	if a.resolveAgent(next).backend != "builtin" {
 		// The CLI member's session is private: digest, as in sequence.
@@ -989,4 +1184,39 @@ func truncRunes(s string, n int) string {
 		return string(r)
 	}
 	return string(r[:n]) + "…"
+}
+
+// forkMemory is one parallel member's isolated transcript view: it
+// seeds from the shared ChatLog at dispatch and keeps the member's
+// exchanges private while it runs, so two concurrent loops never
+// interleave writes into one history (threadMemory is the shared home).
+// When the member lands, the host appends the private suffix to the
+// shared log, in landing order.
+type forkMemory struct {
+	a    *app
+	key  string
+	priv []harness.ChatMessage
+	seed int // priv entries that are the shared log's, not the member's
+}
+
+func (f *forkMemory) LoadTranscript(key string) []harness.ChatMessage {
+	return slices.Clone(f.priv)
+}
+
+func (f *forkMemory) StoreTranscript(key string, msgs []harness.ChatMessage) {
+	f.priv = slices.Clone(msgs)
+}
+
+// merge appends the member's own entries to the shared transcript. Runs
+// inside a.update; merging twice is a no-op.
+func (f *forkMemory) merge() {
+	if f.seed >= len(f.priv) {
+		return
+	}
+	th := f.a.threadByMemoryKey(f.key)
+	if th == nil {
+		return
+	}
+	th.ChatLog = append(th.ChatLog, f.priv[f.seed:]...)
+	f.seed = len(f.priv)
 }

@@ -77,34 +77,29 @@ type transcriptActions struct {
 	th *Thread
 }
 
-// ToggleBlock opens or closes one card, or a whole folded run of alike
-// cards. A group has no state of its own: the view addresses it by the
-// position of its first member, and the host flips every member of the
-// run from that position, so a group survives a reload with the thread
-// instead of coming back folded or open at random.
+// ToggleBlock opens or closes every card of one kind in a message — the
+// folded group a click comes from stands for all of them, wherever they
+// sit between the prose, so one click opens the work and one click
+// closes it. A group has no state of its own: the open state is the open
+// state of its members, and it survives a reload with the thread.
 func (h transcriptActions) ToggleBlock(msgID string, bi int) {
 	for i := range h.th.Messages {
 		m := &h.th.Messages[i]
 		if m.ID != msgID || bi < 0 || bi >= len(m.Blocks) {
 			continue
 		}
+		key := groupKey(&m.Blocks[bi])
 		open := !m.Blocks[bi].Open
-		end := bi + 1
-		if groupable(m.Blocks[bi].Type) {
-			for end < len(m.Blocks) {
-				b := &m.Blocks[end]
-				// A diff run stops at the first edit to a different file:
-				// two edits to one file are one story, edits to two files
-				// are two.
-				if b.Type != m.Blocks[bi].Type ||
-					(m.Blocks[bi].Type == blockDiff && b.File != m.Blocks[bi].File) {
-					break
-				}
-				end++
-			}
+		// Errors and approvals are deliberately ungrouped — each says
+		// something actionable of its own — so they flip alone.
+		if !groupable(m.Blocks[bi].Type) {
+			m.Blocks[bi].Open = open
+			return
 		}
-		for j := bi; j < end; j++ {
-			m.Blocks[j].Open = open
+		for j := range m.Blocks {
+			if groupKey(&m.Blocks[j]) == key {
+				m.Blocks[j].Open = open
+			}
 		}
 		return
 	}
