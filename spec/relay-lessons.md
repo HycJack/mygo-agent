@@ -75,7 +75,9 @@
 
 ## 8.5 工具包边界：RichText 不可拖选（上游限制）
 
-`RichText(c).Selectable().Children(内联 span)` **同步了整段文本到 editor**（官方测试只断言 `editor.source`），但点击/拖选被 span 子元素截走、父 editor 收不到——拖选复制为空。纯 `Text(...).Selectable()` 正常。复现：三形态对照（纯 Text ✓ / 官方字面 RichText ✗ / 样式链 RichText ✗，双击 Cmd+C 均复制空）。上游修复前，可靠的复制出口是消息悬停 Copy 按钮（`WriteClipboard(整条文本)`）；按段落合并 RichText 的渲染保留——上游接通点击路径后即生效。
+`RichText(c).Selectable().Children(内联 span)` **同步了整段文本到 editor**（官方测试只断言 `editor.source`），但点击/拖选被 span 子元素截走、父 editor 收不到——拖选复制为空。纯 `Text(...).Selectable()` 正常。三形态复现留在 `cmd/richtext-repro`（`go run` 即出对照表，B 连焦点都不转移——复制回来的是相邻元素的选中残留）。
+
+**解法（已落地）**：同一 RichText 换**构造参数 spans** 形态——`RichText(c, []ui.Span{...}...)`，不经 Children 子元素，press 直接落在 selectable 元素上：可拖选、可复制、样式完整（Span 支持 Weight/Font/Background/Color/Strikethrough，覆盖全部内联样式）。约束：链接（`ui.Link`）是可点击元素不能变 span——**含链接的段落退回 Children 形态**（链接可点，放弃拖选），其余段落全部 spans 化。重构时的真坑：`strings.Builder` 按**值**传进 flush 闭包，副本被 flush 而原 buffer 继续累积——粗体后的一切文本重复出现；builder 一律走指针。
 
 ## 9. 测试复盘（本项目真实踩的）
 

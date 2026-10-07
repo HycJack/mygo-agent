@@ -236,21 +236,34 @@ func (md markdownRenderer) renderLines(c *ui.Context, text string, t *ui.Theme) 
 			// One selectable element per PARAGRAPH, not per line:
 			// selection lives inside a single text element, and the
 			// per-line fragments made a drag stop at every line break —
-			// message content read as unselectable. The paragraph's
-			// lines ride one RichText as spans, styling intact.
+			// message content read as unselectable. Link-free
+			// paragraphs ride constructor spans (the selectable form);
+			// a paragraph with links keeps the element form so the
+			// links stay clickable.
 			para := []string{trimmed}
 			for li+1 < len(lines) && paragraphContinues(lines[li+1]) {
 				li++
 				para = append(para, strings.TrimSpace(lines[li]))
 			}
-			ui.RichText(c).FontSize(14).LineHeight(1.6).Selectable().Children(func() {
-				for pi, pl := range para {
-					if pi > 0 {
-						md.renderInline(c, "\n", t)
+			if paragraphHasLink(para) {
+				ui.RichText(c).FontSize(14).LineHeight(1.6).Selectable().Children(func() {
+					for pi, pl := range para {
+						if pi > 0 {
+							md.renderInline(c, "\n", t)
+						}
+						md.renderInline(c, pl, t)
 					}
-					md.renderInline(c, pl, t)
+				})
+				continue
+			}
+			var spans []ui.Span
+			for pi, pl := range para {
+				if pi > 0 {
+					spans = append(spans, ui.Span{Text: "\n"})
 				}
-			})
+				spans = append(spans, md.inlineSpans(pl, t)...)
+			}
+			ui.RichText(c, spans...).FontSize(14).LineHeight(1.6).Selectable()
 		}
 	}
 }
@@ -413,6 +426,72 @@ func splitTableRow(line string) []string {
 
 // renderInline emits one line's inline formatting — `code`, **bold**,
 // ~~struck~~, [text](url) — as the children of a RichText paragraph.
+// inlineSpans renders one line's inline markdown as constructor spans —
+// the RichText form whose selectable editor actually receives presses
+// (a RichText built from Children elements has its presses swallowed by
+// them, spec/relay-lessons.md §8.5). Links stay element-form and keep
+// their click; a line carrying one must render through renderInline.
+func (md markdownRenderer) inlineSpans(line string, t *ui.Theme) []ui.Span {
+	var out []ui.Span
+	plain := &strings.Builder{}
+	flush := func() {
+		if plain.Len() > 0 {
+			out = append(out, ui.Span{Text: plain.String()})
+			plain.Reset()
+		}
+	}
+	for i := 0; i < len(line); {
+		switch {
+		case line[i] == '`':
+			if end := strings.IndexByte(line[i+1:], '`'); end >= 0 {
+				flush()
+				out = append(out, ui.Span{Text: line[i+1 : i+1+end],
+					Font: "monospace", Size: 11.5, Background: t.Surface})
+				i += end + 2
+				continue
+			}
+			plain.WriteByte(line[i])
+			i++
+		case strings.HasPrefix(line[i:], "**"):
+			if end := strings.Index(line[i+2:], "**"); end >= 0 {
+				flush()
+				out = append(out, ui.Span{Text: line[i+2 : i+2+end], Weight: 700})
+				i += end + 4
+				continue
+			}
+			plain.WriteByte(line[i])
+			i++
+		case strings.HasPrefix(line[i:], "~~"):
+			if end := strings.Index(line[i+2:], "~~"); end >= 0 {
+				flush()
+				out = append(out, ui.Span{Text: line[i+2 : i+2+end],
+					Strikethrough: true, Color: t.TextMuted})
+				i += end + 4
+				continue
+			}
+			plain.WriteByte(line[i])
+			i++
+		default:
+			plain.WriteByte(line[i])
+			i++
+		}
+	}
+	flush()
+	return out
+}
+
+// paragraphHasLink reports whether the paragraph carries a markdown
+// link: links are clickable elements and must render through
+// renderInline, at the cost of drag-selection.
+func paragraphHasLink(lines []string) bool {
+	for _, l := range lines {
+		if strings.Contains(l, "](") && strings.Contains(l, "[") {
+			return true
+		}
+	}
+	return false
+}
+
 func (md markdownRenderer) renderInline(c *ui.Context, line string, t *ui.Theme) {
 	var plain strings.Builder
 	flush := func() {
