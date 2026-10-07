@@ -123,7 +123,7 @@ func (a *app) regenerate(th *Thread) {
 		for _, m := range panel[1:] {
 			ids = append(ids, m.ID)
 		}
-		a.groupQueue[th.ID] = &relayState{queue: ids, rounds: 1, start: now}
+		a.groupQueue[th.ID] = &relayState{queue: ids, rounds: 1, start: now, spoken: []string{panel[0].Name}}
 		a.dispatchParticipant(th, promptForSend, at, panel[0])
 		return
 	}
@@ -185,7 +185,7 @@ func (a *app) startTurn(th *Thread, prompt string) {
 		for _, m := range panel[1:] {
 			ids = append(ids, m.ID)
 		}
-		a.groupQueue[th.ID] = &relayState{queue: ids, rounds: 1, start: now}
+		a.groupQueue[th.ID] = &relayState{queue: ids, rounds: 1, start: now, spoken: []string{first.Name}}
 	}
 	th.Messages = append(th.Messages, Message{ID: uid(), Role: "assistant", Running: true, At: now,
 		AgentID: first.ID})

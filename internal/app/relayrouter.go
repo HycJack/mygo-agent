@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"slices"
 	"strings"
 	"time"
 )
@@ -58,6 +59,7 @@ type relayState struct {
 	tokens     int64     // tokens the relay's members have spent so far
 	start      time.Time // when the relay began (timeout guard)
 	pending    []string  // user interjections awaiting the next handoff
+	spoken     []string  // member names in dispatch order (the rotation state the coordinator reads)
 }
 
 // relayRoute is the coordinator's decision.
@@ -85,9 +87,13 @@ type panelSnapshot struct {
 	// request is the user's ask this turn serves, and last the member
 	// who spoke before this decision: the "has the request been
 	// addressed" question is unanswerable without knowing the request,
-	// and a tail-bounded digest can lose it.
+	// and a tail-bounded digest can lose it. spoken/rounds are the
+	// rotation state — without them a coordinator cannot even take fair
+	// turns, let alone route by need.
 	request string
 	last    string
+	spoken  []string
+	rounds  int
 
 	// The chat side: the chat coordinator, or the hybrid advisor.
 	baseURL string
@@ -147,6 +153,8 @@ func (a *app) panelSnapshot(th *Thread, ag *Agent, at int) panelSnapshot {
 	}
 	if st := a.groupQueue[th.ID]; st != nil {
 		snap.last = st.last
+		snap.spoken = append([]string(nil), st.spoken...)
+		snap.rounds = st.rounds
 	}
 	// Chat side: the chat coordinator, or the hybrid advisor — the
 	// router fields over the app's.
@@ -302,6 +310,7 @@ func (a *app) dispatchRouterMember(th *Thread, next *Agent, reason string) {
 	}
 	st.last = next.Name
 	st.rounds++
+	st.spoken = append(st.spoken, next.Name)
 	note := "→ " + next.Name
 	if reason != "" {
 		note += ": " + truncRunes(reason, 200)
@@ -528,6 +537,9 @@ func decisionState(snap panelSnapshot, brief string) map[string]any {
 	if snap.last != "" {
 		state["last_speaker"] = snap.last
 	}
+	if len(snap.spoken) > 0 {
+		state["spoken_history"] = snap.spoken
+	}
 	if brief != "" {
 		state["brief"] = brief
 	} else {
@@ -610,24 +622,48 @@ func routeNameKnown(next string, roster []relayMember) bool {
 	return false
 }
 
-// routerSystemPrompt is the coordinator's brief: the roster with each
-// member's duty and the bounded transcript tail.
+// routerSystemPrompt is the coordinator's brief: roster, the user's
+// ask, the rotation state, then the transcript tail — the state rides
+// ahead of the digest, which is the part a long tail can crowd out.
 func routerSystemPrompt(snap panelSnapshot) string {
 	var b strings.Builder
 	b.WriteString("You are the coordinator of a panel of AI agents. Roster:\n")
 	for _, m := range snap.roster {
 		fmt.Fprintf(&b, "- %s: %s\n", m.Name, m.Desc)
 	}
+	if snap.request != "" {
+		b.WriteString("\nThe user's request:\n" + snap.request)
+	}
+	if len(snap.spoken) > 0 {
+		fmt.Fprintf(&b, "\nRelay state: %d replies so far. Speakers in order: %s.",
+			snap.rounds, strings.Join(snap.spoken, " → "))
+		if pending := notYetSpoken(snap); len(pending) > 0 {
+			b.WriteString(" Not yet spoken: " + strings.Join(pending, ", ") + ".")
+		}
+	}
 	b.WriteString("\nConversation so far:\n" + snap.digest + `
 Decide which member should speak next. Respond ONLY with a JSON object:
 {"next": "<member name>", "reason": "<one short sentence>"}
-Use {"next": "", "reason": "..."} when the user's request has been fully
+Take fair turns first: before anyone speaks twice, every member who can
+contribute gets a turn; afterwards route by what the task needs. Use
+{"next": "", "reason": "..."} when the user's request has been fully
 addressed and another reply would add nothing. You may pick the same
 member again if they should continue. Never pick a member whose duties
 do not match what the conversation needs next. A member ending with a
 question or open options is not done: route it to whoever is best
 placed to decide or answer, unless only the user can.`)
 	return b.String()
+}
+
+// notYetSpoken lists roster members the relay has not dispatched yet.
+func notYetSpoken(snap panelSnapshot) []string {
+	var out []string
+	for _, m := range snap.roster {
+		if !slices.Contains(snap.spoken, m.Name) {
+			out = append(out, m.Name)
+		}
+	}
+	return out
 }
 
 // routerPost is the HTTP half every router wire shares: one bounded

@@ -93,6 +93,10 @@ func testSnapshot(baseURL string) panelSnapshot {
 		roster:   []relayMember{{Name: "A", Desc: "architect"}, {Name: "B", Desc: "reviewer"}},
 		digest:   "User: hi\n\nA: hello\n",
 		at:       2,
+		request:  "review my pr",
+		last:     "A",
+		spoken:   []string{"A"},
+		rounds:   1,
 		model:    "qwen3:8b",
 		baseURL:  baseURL,
 	}
@@ -263,6 +267,13 @@ func TestRouteDecisionCoversTheWire(t *testing.T) {
 		// Open choices left by a member are routable work, not an end.
 		if !strings.Contains((*bodies)[0], "open options") {
 			t.Fatal("the advisor was never told to flag pending choices")
+		}
+		// The rotation state rides ahead of the digest: without it a
+		// coordinator cannot even take fair turns.
+		if !strings.Contains((*bodies)[0], "Speakers in order: A") ||
+			!strings.Contains((*bodies)[0], "Not yet spoken: B") ||
+			!strings.Contains((*bodies)[0], "The user's request") {
+			t.Fatalf("the brief lacks the rotation state or the request: %s", (*bodies)[0])
 		}
 	})
 	t.Run("unknown name is corrected once", func(t *testing.T) {
