@@ -1,205 +1,162 @@
 # 方案：群聊接力路由（Panel Router）
 
-状态：**P1、P2 已落地 + 四轮迭代**（纲要/直通交接/总结/插话/护栏可配/trace/黄金集均已落地）（sequence 模式零行为变化；router 模式 + 三层护栏 + note 呈现 + 测试在 `internal/app/relayrouter.go` / `relayrouter_test.go`）；P3（@mention、设置 UI、路由器选首位发言者、`panel_blurb`）未启动。设置界面暂不暴露新字段，手编 config.json 即可；`syncAgent` 只回写 VM 已有字段，编辑其他设置不会抹掉新配置。目标：解决"群聊接力必须人工发一条消息才能推进、无法决定谁下一个发言、何时结束"的问题——引入 host 侧的路由决策步骤（supervisor 模式），由本地 Ollama 小模型担任协调者。仍不引入消息总线/常驻守护（spec/agents.md 的红线不变）：接力骨架（`finish()` → `dispatchParticipant`）保留，只把"固定 FIFO 队列"换成"每轮结束后的路由决策"。
+状态：**已全部落地**。sequence 模式（原始行为）与 router 模式并存；router 侧已交付：三线协调者（chat / decision / hybrid）、路由选首位发言者、@点名三入口与并行 fan-out、回声防护、接力纲要、面板协议、可配置护栏、总结陈词、中途插话、路由 trace、黄金回归集、设置 UI 全字段。经验沉淀（坑与模式）在 [relay-lessons.md](relay-lessons.md)，本文是契约。目标：解决"群聊接力必须人工发一条消息才能推进、无法决定谁下一个发言、何时结束"——host 侧的路由决策（supervisor 模式）。不引入消息总线/常驻守护（spec/agents.md 红线不变）：接力骨架（`finish()` → 派发）保留，固定 FIFO 队列换成"每轮结束后的路由决策"。
 
-## 1. 问题（代码事实）
+## 1. 问题（原始代码事实）
 
-- 触发面只有人工：`send/resend/regenerate` 是 `startTurn` 仅有的调用方（`internal/app/agent.go:14/31/43`）；agent 回复只写进共享转录，没有路径把"成员发言完成"转成新决策。
-- 接力一轮即终：`nextPanelMember` FIFO pop（`agent.go:178`），队列空即 `runEnd`（`agent.go:212`）；每个成员只说一次，顺序 = `Agent.Panel` 配置顺序。
-- 固定话术交接：下一位只收到 `panelNudge`（`agent.go:112`），上下文里没有"该谁发言、为什么"的信息。
+- 触发面只有人工：`send/resend/regenerate` 是 `startTurn` 仅有的调用方；成员发言完成无法转成新决策。
+- 接力一轮即终：FIFO pop 队列空即结束，每成员只说一次，顺序 = `Panel` 配置顺序。
+- 固定话术交接：下一位只收到 `panelNudge`，上下文没有"该谁发言、为什么"。
 
-对照主流设计（AutoGen SelectorGroupChat / LangGraph supervisor / CrewAI hierarchical）：共同点是**每轮结束后由 host 做一次路由决策（选下一个发言者或宣布结束），并配终止护栏**。本方案取 supervisor 模式，路由决策用独立的小模型调用。
+对照主流（AutoGen SelectorGroupChat / LangGraph supervisor / CrewAI hierarchical）：共同点是**每轮结束后 host 做一次路由决策（选下一个发言者或宣布结束），并配终止护栏**。
 
 ## 2. 设计总览
 
 ```
-用户消息 ──▶ startTurn ──▶ 派发成员① ──▶ finish
-                                          │
-                              ┌───────────┴───────────┐
-                              │ sequence(现状)         │ router(新增)
-                              │ FIFO pop 下一位        │ 路由调用(Ollama, 异步):
-                              │ 队列空→runEnd          │ {"next":"<name>"|"","reason":…}
-                              └───────────┬───────────┘
-                                          ▼
-                              next==nil → runEnd
-                              否则追加 placeholder → dispatchParticipant ──▶ finish(循环)
+用户消息(可含 @点名) ──▶ startTurn
+        │ @点名 → 并行 fan-out(被点名者同时开工)      │ 无点名 → 协调者选首位
+        ▼                                            ▼
+   成员回合 ──▶ finish ──▶ 路由决策(异步,运行注册表保持持有)
+                              │  守护栏先评估(轮数/token/超时/停滞)
+                              │  插话里的 @点名 优先
+                              │  成员回复的 @点名 直通交接(每成员每回合一次)
+                              ▼
+        next==""(完成) → 总结回合 → 结束
+        否则 → placeholder + 交接词 → 派发 ──▶ finish(循环)
 ```
 
-- **路由器是一个独立的、便宜的一次性 chat 调用**，不走任何成员的 harness：输入 = 成员名册（名字 + 职责描述）+ 转录尾部摘要，输出 = 严格 JSON。Ollama 的 OpenAI 兼容端点（`http://localhost:11434/v1`）直接复用现有 `Provider` 配置，不需要新的客户端抽象层。
-- **"什么时候结束"由路由器回答**：输出 `{"next":""}` 即结束接力；`panel_max_rounds` 和同成员连讲上限是硬护栏，路由器失去约束时兜底。
-- **"哪个 agent 干活"由路由器回答**：从成员名册里挑，依据是各成员职责描述与当前对话所需。
+- 协调者是独立、便宜的一次性调用，不走任何成员的 harness；输入 = 名册（职责描述）+ 用户原始请求 + 轮次状态 + 接力纲要 + 转录尾部。
+- "谁下一个发言"与"何时结束"都由协调者回答（`{"next":"<name>"|"","reason":…}`）；护栏是协调者无法说服的硬底线。
 
-## 3. 配置面（config v2 增量字段）
+## 3. 配置面（config v2，Agent 增量字段）
 
-`Agent`（`internal/config/config.go:68`）新增，全部遵循"空值继承 app 默认"的现有惯例：
+全部遵循"空值继承/默认"惯例：
 
 ```jsonc
 {
-  "name": "主持 agent",
-  "panel": ["架构师", "评审员"],          // 现有字段不变
-  "panel_route": "router",               // "" | "sequence"(默认,现行为) | "router"
-  "panel_max_rounds": 8,                 // router 模式下的接力派发次数上限;0 → 默认 8。sequence 模式忽略
-  "router_provider": "prov-ollama",      // 空 → app 默认 provider
-  "router_model": "qwen3:8b"             // 空 → app 默认 model
+  "panel": ["架构师", "评审员"],        // 现有字段:成员名(与 mcp_servers 同惯例)
+  "panel_route": "router",             // "" | "sequence"(默认) | "router"
+  "panel_max_rounds": 8,               // 派发次数上限;0 → 默认 8。sequence 忽略
+  "panel_max_tokens": 0,               // 接力全程 token 预算;0 关闭
+  "panel_timeout": 0,                  // 接力整体墙钟秒数;0 关闭
+  "panel_stall_rounds": 0,             // 同成员连讲上限;0 → 默认 5
+  "panel_summarizer": "",              // 总结者成员名;空 → 线程绑定的 agent
+  "panel_blurb": "",                   // 成员职责行(路由名册读);空 → system prompt 首行
+  "router_provider": "",               // 协调者(或 hybrid advisor)provider;空 → app 默认
+  "router_model": "",                  // 同上
+  "router_wire": "",                   // "" (chat) | "decision" | "hybrid"
+  "router_judge_provider": "",         // decision/hybrid 的 judge;空回退 router 字段
+  "router_judge_model": ""
 }
 ```
 
-Ollama 作为普通 Provider 注册（设置页或手编 config.json，无需新概念）。chat 线路由（任意 OpenAI 兼容模型）与 decision 线路由（tev1 类）的配置示例：
+**两种角色，两套配置，别混淆**：带 panel 的 agent（群主）的 `router_*` 是协调者的模型；该 agent 自己的 backend/provider/model/mode/tools 是**总结回合**（§6.6）的执行配置——接力结束时由绑定的 agent（除非 `panel_summarizer` 另指）亲自写结论，用的是它自己的档案。设置页的 Group 表单里后者就是为此服务的。
 
-```jsonc
-// chat 线:协调者自拟 JSON
-{ "id": "prov-ollama", "name": "Ollama", "base_url": "http://localhost:11434/v1",
-  "wire": "chat", "models": ["qwen3:8b"] }
-// agent: {"panel_route": "router", "router_provider": "prov-ollama", "router_model": "qwen3:8b"}
+成员职责：路由名册优先读 `panel_blurb`（≤200 字符），空则 `system_prompt` 首行（`promptHead`，160 字符）——路由依据与角色人格解耦，调路由措辞不影响成员行为。
 
-// decision 线:Jev 决策 API,答案受约束、带概率(同一个 provider 即可)
-// agent: {"panel_route": "router", "router_provider": "prov-ollama",
-//         "router_model": "tev1", "router_wire": "decision"}
+## 3.5 决策线（decision）与混合线（hybrid）
 
-// hybrid 线(推荐):大模型写态势简报 + 决策模型做最终裁决
-// agent: {"panel_route": "router",
-//         "router_provider": "<big-chat-provider>", "router_model": "<big-model>",
-//         "router_wire": "hybrid",
-//         "router_judge_provider": "prov-ollama", "router_judge_model": "tev1"}
-```
+- **chat**（默认）：非流式 chat completions，temperature 0，`response_format: json_object`；宽容解析（严格 JSON → 剥围栏 → 剥夹文本）；念错名册名字有一次纠正往返。单次调用超时 2 分钟（推理模型读长摘要超过 30 秒是正常的，2026-10 实测 30s 会把健康路由掐成不可用），2 次尝试（429/5xx/传输错误）。
+- **decision**：Jev 决策 API（Ollama ≥ 0.35 `/v1/systemone`，tev1 类）。choice 题的选项就是成员名（不可能答到名册外），noul 题判完成（`p ≥ 0.5` 结束）；单一成员 panel 不出 choice 题（API 限 2–26 选项）。上下文约 2k token：judge 读结构化 state（members/request/last_speaker/spoken_history/outline），不读原始长摘要。
+- **hybrid**：大模型（advisor，chat 线，读 6KiB 全摘要）写 2-3 句态势简报，judge（decision 线）对简报做最终裁决；advisor 失败降级为 decision 线，不是单点依赖。判决理由（概率/置信度/简报）进 note 与交接词。
 
-成员职责描述：路由名册直接取各成员 `SystemPrompt` 的首行/头部（约 160 字符），**不新增描述字段**；路由质量不够时再考虑加 `panel_blurb`（P3 备选）。
+chat 简报的构成顺序（被截断的只会是尾巴）：名册 → 用户原始请求 → 轮次状态（`N replies so far. Speakers in order: … Not yet spoken: …`）→ 接力纲要（每成员一条 gist）→ 6KiB 对话尾巴 → 指令（先公平轮转后按需路由；开放选项不是 done，路由给能拍板的人）。这个顺序是实测调出来的：点名状态和请求放后面就丢。
 
-## 3.5 决策线（decision wire，tev1 类模型）与混合线（hybrid）
+## 4. 路由器实现（`internal/app/relayrouter.go`）
 
-`panel_route: "router"` 的协调者默认走 chat completions + JSON 提示词。Agent 另有两个新字段控制协调者形态：
+- 三线共享 `routerPost`（有界 POST + 瞬态重试）；决策统一成 `relayRoute{Next, Reason, Tokens}`。
+- **快照纪律**：名册、摘要、endpoint 在主线程快照后交给 goroutine；回来必须 `a.update` 并复验线程存在且运行中，路由期间 Stop/删线程则决策丢弃。
+- **trace**：每次决策落一行（kind `route`：结果/失败、耗时、reply 报告的 token）——协调成本可审计。
+- **黄金回归集**（`relayrouter_golden_test.go`）：四个脚本化场景，`MYGO_GOLDEN_BASEURL`(+MODEL/KEY) 门控跑真模型。断言是性质（接受名字集合、负向断言），不钉死唯一答案。改协调者提示词后必跑。
 
-- **`router_wire: "decision"`** — Jev 决策 API（Ollama ≥ 0.35 的 `/v1/systemone`，本地 `ollama.com/library/tev1` 一族）：
-- **`router_wire: "hybrid"`** — 两级协调：**大模型（advisor）理解，决策模型（judge）裁决**。advisor（`router_provider/router_model`，chat 线，看 6 KiB 全摘要）写 2-3 句态势简报（当前阶段、已确立的结论、下一步该做什么/为何可以结束）；judge（`router_judge_provider/router_judge_model`，空则回退 router 字段）拿简报出 choice/noul 两题做最终裁决。advisor 失败不终止接力——回退为 decision 线的摘要态。
-
-decision 线要点：
-
-- **请求**：`POST {base}/v1/systemone`（judge 侧 Provider 的 base_url，如 `http://localhost:11434/v1`）。state 为结构化对象：members（名字→职责）、**request（本回合的用户原始请求）**、last_speaker、以及 brief（hybrid）或 conversation（decision 的摘要尾部）。
-- **答案约束**：choice 的选项就是成员名，回答不可能跑到名册之外（chat 线的纠正重试在 decision 线不存在）；`noul` 的值即概率，`p(done) ≥ 0.5` 结束接力。单一成员的 panel 不出 choice 题（API 要求 2–26 个选项）；成员多于 26 个是降级。
-- **预算**：tev1 类的可用上下文约 2k token——decision 线摘要上限 2500 字节，hybrid 线 judge 读简报不读原始摘要；成员职责用 `promptHead` 160 字符。
-- **理由呈现**：judge 的概率与置信度进 note 与交接提示词；hybrid 再拼上 advisor 简报（note 截 200 字符，交接词完整）。
-- **调参经验**（真机冒烟，2026-10）：纯 decision 线对单薄摘要 tev1 倾向判 done（p≈0.53）——根因是尾部摘要可能丢掉用户原始请求，"请求是否已解决"无从判断。hybrid 线把 request + 简报喂给 judge，正是为此；若仍过早结束，优先加重 done 题指令，必要时把 `doneProbability` 做成配置。
-
-## 4. 路由器实现（新文件 `internal/app/relayrouter.go`）
-
-- **请求**：非流式 `POST {base}/chat/completions`，`stream:false`、`temperature:0`、`response_format:{"type":"json_object"}`（Ollama 支持；不支持时靠解析兜底）。带 `Authorization: Bearer <key>`（Ollama 可留空 key）。单次调用超时 2 分钟（推理模型读长摘要可能超过半分钟，2026-10 实测 30s 会把健康路由掐成 "coordinator unavailable"），2 次尝试（429/5xx 与传输错误重试）。
-- **System prompt**（草案）：
-
-```
-You are the coordinator of a panel of AI agents. Roster:
-- 架构师: <SystemPrompt 头部>
-- 评审员: <SystemPrompt 头部>
-
-Conversation so far:
-<panelDigest 尾部 6KB>
-
-Decide which member should speak next. Respond ONLY with JSON:
-{"next": "<member name>", "reason": "<one short sentence>"}
-Use {"next": "", "reason": "..."} when the user's request has been fully
-addressed and another reply would add nothing. You may pick the same
-member again if they should continue. Never pick a member whose
-specialty does not match what the conversation needs next.
-```
-
-- **解析**（宽容序）：`json.Unmarshal` 到 `{"next","reason"}` → 失败则截取文本中第一个 `{...}` 再试 → 仍失败视为路由失败（见 §6 降级）。`next` 按成员**名字**匹配（与 `Panel` 用名字的惯例一致），匹配不到也视为失败。
-- **快照纪律**（同 `builtinHarness` 的既有规则）：名册、摘要、endpoint 全部在主线程快照后交给 goroutine；goroutine 回来必须重新走 `a.update` 并复验 `a.byID(th.ID) != nil && a.isRunning(th.ID)` 才派发——路由期间用户 Stop 或删线程则结果直接丢弃。
-
-## 5. finish() 改造（`internal/app/agent.go:193`）
-
-接力状态从 `groupQueue map[string][]string` 换成：
+## 5. 接力状态与 finish 分流
 
 ```go
 type relayState struct {
-    queue      []string // sequence 模式:剩余成员(FIFO 不变)
-    rounds     int      // 本回合已派发的成员次数(router 模式计数)
-    last       string   // 上一个发言成员名
-    sameStreak int      // 同名连续发言次数(停滞护栏)
+    queue      []string  // sequence:剩余成员(FIFO 原样)
+    rounds     int       // 本回合已派发次数
+    last       string    // 上一发言成员(停滞护栏)
+    sameStreak int       // 连续发言计数
+    tokens     int64     // 成员已耗 token(预算护栏)
+    start      time.Time // 接力开始(超时护栏)
+    pending    []string  // 用户插话,等下一次交接
+    spoken     []string  // 派发顺序(轮次状态,协调者读)
+    retries    int       // 成员回合重试计数
+    outline    []string  // 接力纲要:每成员一条 gist
+    honored    map[string]bool // 成员 mention 已派发过的成员(回声防护)
+    batchLeft  int                   // 并行批次在途数
+    batchByAt  map[int]*batchMember  // 并发成员(按消息槽)
+    batchSeq   []*batchMember        // CLI 成员,批次后串行
 }
 ```
 
-`finish` 消息落定后分流：
+`finish` 分流：**sequence** 原样（FIFO pop，零行为变化）。**router**：
 
-- **sequence**：现有路径原样保留（同步 pop → dispatch 或 runEnd），零行为变化，现有测试不动。
-- **router**：
-  1. `rounds+1 > maxRounds` 或 `sameStreak >= 3` → 追加一条 note block（"接力达到轮数上限/检测到停滞，结束"）→ `runEnd`；
-  2. 否则主线程快照名册+摘要，`go a.routePanelTurn(snap)`；**运行注册表条目此时不释放**（不复用 `runEnd`），路由期间该线程保持"运行中"（composer 不能并发发送，Stop 仍有效——`stopThread` 清 `runs` 条目，路由结果复验时自然丢弃）；
-  3. `routePanelTurn` 拿到决策后回 `a.update`：`next==""` 或复验失败/降级结束 → `runEnd` + 清队列 + `refreshGit`（对齐现有 `finish` 尾部）；否则按名字解析成员（中途被删则再路由一次，再失败 runEnd），追加 placeholder（AgentID = 该成员），把 `reason` 作为该消息第一条 note block 折叠展示，prompt 用 `"(Panel coordinator handed the floor to you: <reason>)"` 替换 `panelNudge`（builtin 成员不加，保持转录干净——理由已在其共享转录的 note block 里可见，CLI 成员拼在 digest prompt 里）。
-  4. 每次派发前 `rounds++`，更新 `last`/`sameStreak`。
-
-`startTurn`/`regenerate` 在 router 模式下仍以 `panel[0]` 起步（首发言者固定，后续全由路由器接管）；"路由器也选首位发言者"列为 P3 备选。
+1. 批次成员落定 → 合并其 fork 转录、递减计数；失败重试一次（同成员，新槽）；批次未空则等待；CLI 排队成员依次补位；**全部落定才路由**。
+2. 普通成员落定 → token/纲要入账 → 失败重试一次 → `routeRelay`。
+3. `routeRelay` 顺序：护栏（触发即总结收场）→ 插话里的 @点名 → 成员回复的 @点名（honored 过滤）→ 协调者（异步，注册表保持持有——线程保持运行态：无并发发送、Stop 有效、决策回来复验）。
+4. 首位发言者同样由协调者选（`routeFirstSpeaker`，用户 @点名优先）；兜底：协调者失败/答空/念错名 → `panel[0]`——接力死在开跑前比默认选人更糟。
+5. 每次派发更新 `rounds/last/sameStreak/spoken/outline`。
 
 ## 5.4 转录降噪（按种类跨位置折叠）
 
-成员工作日志把散文和命令/思考交错，按相邻 run 折叠只会留下一圈塌行。`itemize` 改为**按种类跨位置分组**：同一种类（command / reasoning / note；diff 另绑文件）出现 ≥2 次即全部折进一个组，组落在其首个成员的位置，散文保持原位；只出现一次的仍是普通卡片。`ToggleBlock` 对可分组种类做**全种类翻转**（一次点击开/关该种类全部卡片）；error/approval 刻意不分组、单独翻转。
+成员工作日志把散文和命令/思考交错，按相邻 run 折叠只剩一圈塌行。`itemize` **按种类跨位置分组**：同种类（command/reasoning/note；diff 另绑文件）≥2 次全部折进一个组（"5 commands · 4.1s"），组落首个成员位置，散文保持原位；单次出现仍是普通卡片。`ToggleBlock` 对可分组种类做全种类翻转；error/approval 刻意不分组。heredoc 写文件（多行命令）落定自动展开并显示完整命令文本——内容在命令里，不展开等于工作成果不可见。
 
 ## 5.5 接力纲要（rolling outline）
 
-每条成员回复落定时，`finish` 把一条有界 gist 追加进 `relayState.outline`（`名字: 要点≤120字`）。三条协调者线都读它：chat 简报在轮次状态后列出 "What each reply established: …"，decision 线进 `state.outline`，hybrid 的 advisor 同样可见。长讨论的早期决策不再被 6KB 尾巴截掉——这是摘要截尾问题的接力层解法。
+每条成员回复落定时追加一条 gist（`名字: 要点≤120字`）进 `relayState.outline`，三条协调者线都读（列在摘要之前——截断只会截尾巴）。长讨论的早期决策不再被 6KiB 尾巴截掉。
 
-## 5.6 @点名与并行 fan-out（swarm 混合，完整版）
+## 5.6 @点名与并行 fan-out
 
-`@成员名` 是统一的点名语法，三个入口共享 `extractMentions`（按出现顺序、去重）：
+`@成员名` 统一语法，`extractMentions`（出现顺序、去重）供三入口共享：
 
-- **输入框**（新回合）：router 模式下用户 @n 个成员直接并行开工（不经协调者选首位）；sequence 模式只把被点名的成员提到队首。
-- **插话**（运行中）：点名是**路由指令**——`dispatchRouterMember` 消费插话时把含 mention 的留下，交给落定后的 `routeRelay` 处理；普通插话才随 handoff 送达。
-- **成员回复**：`@一人` 直通交接；**`@多人` 起 fan-out**——每人独立消息槽并发运行（builtin 成员用 `forkMemory` 隔离转录视图，落定时按序并入共享 ChatLog，两条并发循环绝不互写一份历史；CLI 成员共享线程会话，故排在并发批次之后串行），全部落定后才做下一次路由决策。护栏（轮数/停滞/预算/超时）在 fan-out 之前评估，是中央权威的底线；批次成员失败按单成员同规则重试一次。
+- **输入框**（新回合）：router 下 @n 人直接并行开工，不经协调者选首位；sequence 只把被点名者提到队首。
+- **插话**（运行中）：点名是**路由指令**——handoff 消费插话时把含 mention 的留在 pending，交给落定后的 `routeRelay`；普通插话才随交接词送达。
+- **成员回复**：@一人直通交接（省一次路由调用）；@多人起 fan-out。
 
-fan-out 期间注册表持有多份 cancel（`runAdd`/`runRelease`），Stop 一次取消全部；composer placeholder 提示 `@name` 语法。
+**并行 fan-out**：每人独立消息槽并发运行；builtin 成员用 `forkMemory` 隔离转录视图（派发时快照共享 ChatLog，落定时按完成顺序并入私有后缀——两条并发循环绝不互写一份历史）；CLI 成员共享线程会话，排在并发批次之后串行。全部落定才路由。护栏先于 fan-out 评估；注册表持有多份 cancel（`runAdd`/`runRelease`），Stop 一次取消全部；批次成员失败重试一次。
 
-**回声防护（honored 集合）**：成员回复必然引用请求里的 @（"先回应 @B 的建议"），把回声当新交接会让同一成员每轮被重新派发——一个轮数兜底的循环，协调者全程没有发言权。`relayState.honored` 记录本回合已被**成员 mention** 派发过的成员：成员 mention 每回合对每人只生效一次，之后回落协调者；用户亲自 @ 不受限（说两遍就是两遍）。
+**回声防护（honored）**：成员回复必然引用请求里的 @，把回声当新交接 = 同一成员每轮重跑（轮数兜底的循环，协调者全程没有发言权）。成员 mention 每回合对每人只生效一次，之后回落协调者；**用户亲自 @ 不受限**。
 
-## 5.7 成员直通交接（explicit handoff，单人）
+## 5.7 面板协议（panel protocol）
 
-成员回复末尾 `@成员名` 即直接交棒：`routeRelay` 的 default 分支先查 `explicitHandoff`，命中（且非自指）就直接派发——省一次路由调用；同名连讲/轮数等护栏先于直通交接评估，是中央权威的底线。面板协议教成员在"明确知道谁接棒"时使用，否则留给协调者。trace 里记 `handed off directly by X (@Y)`。
+成员提示词是对着人写的，遇到选择的本能是把题抛回用户——面板当场停摆，协调者还顺势收场。派发时在成员 system prompt 的**拷贝**上追加协议：给明确推荐（方案+理由+成本）让面板推进，不把选择题交回用户；真正的业务取舍才留给用户且仍先给推荐；可用 `@名字` 直通交接。三个实现要点：用拷贝（路由名册与设置页读的仍是干净档案）；忽略 system prompt 的后端（codex/pi）协议改走交接词文本（先查证每个适配器实际消费哪些字段）；协议内容即路由行为的契约，改动需过黄金集。
 
-## 5.7 路由黄金回归集（golden set）
+## 6. 护栏（终止条件可配置）
 
-`relayrouter_golden_test.go`：四个脚本化场景（固定转录+轮次状态 → 期望 next 集合或 done），`MYGO_GOLDEN_BASEURL`(+MODEL/KEY) 门控跑在真模型上。断言是性质（接受名字集合、负向断言"已发言者不得重复"），不钉死唯一答案——真模型是概率性的，钉死名字的黄金集会按日程表失败。2026-10 对 MiniMax M3.1 Flash 四场景全命中。
-
-## 6. 护栏（终止条件可配置，spec/relay-router.md）
-
-路由接力的终止条件在 agent 上逐项可配（零值 = 各自默认或关闭），每次派发前依次评估，触发即落 note 结束接力：
+每次派发前依次评估，触发即落 note 总结收场（§6.6）：
 
 | 配置 | 零值默认 | 语义 |
 |---|---|---|
-| `panel_max_rounds` | 8 | 单回合成员派发次数上限（AutoGen `MaxMessageTermination` 的对应物） |
-| `panel_max_tokens` | 关 | 接力全程的成员 token 预算（finish 落定时从各消息的 turn 累计值汇入 `relayState.tokens`） |
-| `panel_timeout` | 关 | 接力整体墙钟秒数上限（悬挂的成员回合另有 per-request 超时兜底） |
-| `panel_stall_rounds` | 3 | 同成员连续发言上限（Magentic-One 停滞检测的最小版本，防互相恭维空转） |
+| `panel_max_rounds` | 8 | 派发次数上限（AutoGen `MaxMessageTermination` 对应物） |
+| `panel_max_tokens` | 关 | 接力全程 token 预算 |
+| `panel_timeout` | 关 | 整体墙钟秒数（单请求另有超时兜底） |
+| `panel_stall_rounds` | 5 | 同成员连讲上限（太小会掐死连续干活的执行者） |
 
-外加一条不可配置的底线：**降级**——路由调用失败（超时/非 JSON/名字不匹配，重试后仍失败）→ 追加 note"路由不可用，接力结束"→ `runEnd`。**绝不因路由器挂掉把用户卡在运行态**。
+不可配置的底线：**降级**——协调者失败（超时/坏 JSON/名字不符，重试后仍败）→ note → 总结收场。绝不因路由器挂掉把用户卡在运行态。
 
 ## 6.5 中途插话（interjection）
 
-运行中的 routed 接力不再挡用户发言：composer 的发送键在有草稿时变为"插话"（Enter 同样生效）。
-
-- `send()` 在运行态改走 `interject()`：用户消息**立即入转录**（UI 即时可见），并排入 `relayState.pending`；下一个成员被派发时，交接提示词拼上 `The user added while the panel was talking: …`——话头连同协调者的理由一起交给接棒者。正在发言的成员看不到插话（其上下文已快照），与 Slack 群聊的直觉一致。
-- sequence 接力与 solo 回合不可插话（draft 保留，行为同旧版）：sequence 的队列是死的，插话语义不成立。
-- 协调者的裁决自然会看到插话（转录/简报已包含），无需特殊处理。
+运行中的 routed 接力不挡用户发言：composer 有草稿时发送键变"插话"（Enter 同效）。`interject()` 把消息立即入转录并排入 `pending`；正在发言的成员看不到（上下文已快照）；无 mention 的插话随下一次交接词送达，含 mention 的作为路由指令生效。sequence/solo 不可插话（队列是死的，语义不成立）。
 
 ## 6.6 总结陈词（wrap-up）
 
-接力结束（协调者判 done、或任一护栏触发）不再直接收场——最后一句是最后一个专业角色的发言，用户得自己拼结论。收尾时追加一个**总结回合**：
-
-- **总结者**：`panel_summarizer`（成员名）指定；空则线程绑定的 agent（如「产品流水线」自己）。
-- **任务**：基于全部讨论写面向用户的最终结论——决策/推荐、关键理由、开放问题与下一步；简明，不复述每段发言。
-- **触发**：`wrapUpRelay`——先按 §6 落 note 拆状态，再派发总结回合；总结回合结束时 `finish` 找不到接力状态，自然终止。`rounds == 0`（无人发言）不总结。
-- 被护栏中断的接力同样总结：未完成的工作也得告诉用户"哪些已定、哪些悬置"。
+接力结束（判 done、护栏、降级）不再停在最后一个专业角色的发言上：`wrapUpRelay` 先落 note 拆状态，再派发**总结回合**——总结者（`panel_summarizer` 指定，空则线程绑定的 agent）基于全部讨论写面向用户的结论（决策/推荐、关键理由、开放问题）。总结回合用总结者自己的执行档案运行（模型/模式/工具）；它落定时接力状态已不存在，`finish` 自然终止。`rounds==0` 不总结；被护栏中断的接力同样总结（未完成也得说清"哪些已定、哪些悬置"）。
 
 ## 7. UI
 
-- 路由决策以 `blockNote` 呈现在每个成员消息卡上："→ 评审员：方案风险需要独立审查"（复用现有 note 折叠渲染，`internal/app/types.go:23`）。
-- 设置面：panel_route / panel_max_rounds / router provider+model 的编辑项（agents 设置 ViewModel+Actions 已就位，加字段）；落地前允许手编 config.json。
-- @mention（P3，可选）：composer 消息里的 `@名字` 命中 panel 成员 → 该成员第一个发言，其余交路由器。只做快捷路径，不做新机制。
+- 路由决策以 note 呈现：`→ 成员: 理由`（含概率/置信度或简报摘录）；结束原因落 note。
+- 设置页 GROUP RELAY 区全字段：成员、Sequence/Router 段选、Chat/Decision/Hybrid 段选、blurb、轮数、停滞、token 预算、超时、总结者、路由 provider/model——数字留空即默认或关闭，typo 保留原值；回环测试钉住"重渲染不漂移"。群主 agent 的执行字段（backend/model/mode/tools）服务总结回合（§3）。
+- composer：运行中且有草稿 → 插话键；placeholder 提示 `@name` 语法。
+- 转录：运行中全程 spinner；markdown 全部可选中复制；按种类折叠（§5.4）。
+- header：接力运行中显示 `relay N`（·`Xk/Yk tokens` 设了预算时）。
 
-## 8. 测试计划
+## 8. 测试
 
-- `relayrouter_test.go`：httptest 假 OpenAI 兼容服务（`builtin/llm_test.go` 有先例）。覆盖：正常 JSON；```json 围栏包裹；前后夹杂文本；非法 JSON → 降级；超时与 5xx 重试后降级；`response_format` 被服务端忽略仍可解析。
-- app 层（参照现有 agents/harness 测试的 fake provider 模式）：router 模式下按 mock 路由器指示两成员交替发言多轮；`panel_max_rounds` 截断并落 note；同成员连讲 3 次截断；路由返回 `""` → runEnd；路由期间 `stopThread` → 不派发、注册表清空；成员中途被删 → 重路由一次后结束。
-- 回归：sequence 模式现有测试不改一行通过。
+- 单元：解析宽容序、三线 wire（httptest 假服务）、护栏表驱动、mention 顺序/去重、itemize 分组。
+- 接力链路：fan-out 真并发（**到达时间重叠断言**——barrier channel 会被总结回合等晚到请求卡死，`srv.Close()` 连带挂死整个测试）、批次汇合后路由、回声不重复派发（回复引用 @ 只跑一次，之后协调者接管）、插话 mention、Stop 丢弃在途决策、sequence 零行为变化。
+- 黄金集（§4）跑真模型；race 全量必须绿（fixture 共享变量加锁是真实教训，见 relay-lessons.md §9）。
 
-## 9. 分阶段
+## 9. 迭代路径（已全部走完）
 
-- **P1**：config 字段 + `relayState` 改形 + sequence 行为零变化（重构不引入新行为）。
-- **P2**：relayrouter.go（客户端+解析）+ finish() router 分流 + 护栏 + note 呈现。完成后核心问题解决。
-- **P3**（可选）：@mention、设置 UI 字段、路由器选首位发言者、`panel_blurb` 成员描述字段。
+固定顺序接力 → 路由决策（chat）→ 护栏+降级 → 轮次状态+面板协议 → 点名/直通交接/并行 fan-out → 总结回合 → trace+黄金集 → UI 打磨。每步独立交付且向后兼容：无 `panel_route` 的旧配置行为不变。
