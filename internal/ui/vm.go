@@ -22,10 +22,12 @@ type ViewModel struct {
 	// Composer state.
 	Draft         string
 	Running       bool
-	CanInterject  bool // a routed relay is running: a non-empty draft sends as an interjection
-	FocusComposer bool // consumed once: the view clears it after focusing
-	Mode          int  // 0 read-only, 1 agent, 2 full
-	Effort        int  // 0 low, 1 medium, 2 high
+	CanInterject  bool     // a routed relay is running: a non-empty draft sends as an interjection
+	Mentions      []string // @-mention candidates while one is being typed; empty hides the popup
+	MentionSel    int      // the highlighted candidate row
+	FocusComposer bool     // consumed once: the view clears it after focusing
+	Mode          int      // 0 read-only, 1 agent, 2 full
+	Effort        int      // 0 low, 1 medium, 2 high
 	Model         string
 	ProviderID    string
 	Providers     []ProviderVM // the model picker's rows
@@ -118,9 +120,30 @@ func Composer(c *ui.Context, vm *ViewModel, acts Actions) {
 				ta.AutoFocus()
 				vm.FocusComposer = false
 			}
+			if len(vm.Mentions) > 0 {
+				mentionPopup(c, vm)
+			}
 			composerRow(c, vm, acts)
 		})
-		// Enter sends while the composer has the focus.
+		// Enter sends while the composer has the focus — unless the
+		// mention popup is open, where Enter completes the highlighted
+		// candidate instead (Tab does too; Esc closes without picking).
+		if len(vm.Mentions) > 0 {
+			if box.Shortcut(0, ui.KeyEnter) || box.Shortcut(0, ui.KeyTab) {
+				completeMention(vm, vm.MentionSel)
+				return
+			}
+			if box.Shortcut(0, ui.KeyEscape) {
+				vm.Mentions = nil
+				return
+			}
+			if box.Shortcut(0, ui.KeyDown) {
+				vm.MentionSel = min(vm.MentionSel+1, len(vm.Mentions)-1)
+			}
+			if box.Shortcut(0, ui.KeyUp) {
+				vm.MentionSel = max(vm.MentionSel-1, 0)
+			}
+		}
 		if box.Shortcut(0, ui.KeyEnter) {
 			acts.Send()
 		}
@@ -128,6 +151,47 @@ func Composer(c *ui.Context, vm *ViewModel, acts Actions) {
 			acts.Send()
 		}
 	})
+}
+
+// mentionPopup is the @-mention candidate row: one pill per member,
+// highlighted selection, click to complete. The pills sit between the
+// text area and the action row, inside the composer's card.
+func mentionPopup(c *ui.Context, vm *ViewModel) {
+	t := c.Theme()
+	ui.Row(c).Gap(6).Wrap().Children(func() {
+		for i, name := range vm.Mentions {
+			pill := ui.ButtonBase(c).Label("@"+name).Padding(4, 10).Radius(8).
+				Cursor(ui.CursorPointer).FontSize(12.5)
+			picked := i == vm.MentionSel
+			if picked {
+				pill.Background(t.Accent.Alpha(0.16)).Border(1, t.Accent.Alpha(0.5))
+			} else {
+				pill.Background(vm.Pal.Hover)
+				if pill.Hovered() {
+					pill.Background(t.Accent.Alpha(0.10))
+					vm.MentionSel = i
+				}
+			}
+			if pill.Clicked() {
+				completeMention(vm, i)
+			}
+			pill.Children(func() {
+				ui.Text(c, "@"+name).FontSize(12.5).TextColor(t.Text)
+			})
+		}
+	})
+}
+
+// completeMention replaces the draft's trailing "@query" with the
+// picked "@name " and closes the popup. The draft is the view-owned
+// binding: the edit lands on it and syncVM mirrors it into host state.
+func completeMention(vm *ViewModel, i int) {
+	if i < 0 || i >= len(vm.Mentions) {
+		return
+	}
+	vm.Draft = ApplyMention(vm.Draft, vm.Mentions[i])
+	vm.Mentions = nil
+	vm.MentionSel = 0
 }
 
 // composerMaxWidth is how wide the composer may grow. It sits between the

@@ -40,6 +40,22 @@ func (a *app) homeViewModel() *uipkg.ViewModel {
 			vm.CanInterject = true
 		}
 	}
+	// The @-mention popup: the panel roster filtered by the mention
+	// being typed (spec/relay-router.md). Home or a solo thread has no
+	// panel and no popup.
+	vm.Mentions = vm.Mentions[:0]
+	vm.MentionSel = 0
+	if th := a.currentThread(); th != nil {
+		if members := a.panelFor(a.agentFor(th)); len(members) > 0 {
+			if q, typing := uipkg.MentionQuery(vm.Draft); typing {
+				names := make([]string, len(members))
+				for i, m := range members {
+					names[i] = m.Name
+				}
+				vm.Mentions = uipkg.MentionCandidates(q, names)
+			}
+		}
+	}
 	vm.FocusComposer = a.focusComposer
 	vm.Mode = a.mode
 	vm.Effort = a.effort
